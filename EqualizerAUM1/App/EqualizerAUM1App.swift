@@ -1,5 +1,8 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
+
+private let m1NodeDragType = UTType(exportedAs: "com.ruimingchen.equalizerau.preamp-node-drag")
 
 enum M1RuntimeBootstrap {
     static var abiVersion: UInt32 { EAUM1RuntimeABIVersion() }
@@ -9,26 +12,39 @@ enum M1RuntimeBootstrap {
 final class M1AppModel: ObservableObject {
     @Published private(set) var snapshot = M1ProductSnapshot(
         draft: .transparentRecovery,
-        selectedNodeID: nil,
+        selectedNodeIDs: [],
+        focusedNodeID: nil,
         persistence: .recovery,
         audio: .stopped,
         outputLayout: nil,
         activeDiagnostics: nil,
         expectedDiagnostics: nil,
+        activeConfigurationGeneration: nil,
+        expectedConfigurationGeneration: nil,
         canEdit: false,
         canSetEffects: false,
         canSave: false,
         canStart: false,
         canStop: false,
+        canUndo: false,
+        canRedo: false,
+        canUseSelection: false,
+        hasUnsavedNodes: false,
+        hasUnsavedEffects: false,
         visibleError: nil
     )
 
     let controller: M1ProductController
     private var didBootstrap = false
-    private var editTask: Task<Void, Never>?
+    private var commandTask: Task<Void, Never>?
+    private var stopTask: Task<Void, Never>?
+    private var commandSequence: UInt64 = 0
+    private var terminationPending = false
+    private let pasteboard: any M1PasteboardAccess
 
-    init(controller: M1ProductController) {
+    init(controller: M1ProductController, pasteboard: any M1PasteboardAccess = M1SystemPasteboard()) {
         self.controller = controller
+        self.pasteboard = pasteboard
     }
 
     func bootstrap() {
@@ -37,8 +53,8 @@ final class M1AppModel: ObservableObject {
         perform { await self.controller.bootstrap() }
     }
 
-    func select(_ id: UUID?) {
-        performEdit { await self.controller.selectNode(id) }
+    func select(_ id: UUID?, mode: M1SelectionMode) {
+        performEdit { await self.controller.selectNode(id, mode: mode) }
     }
 
     func add(before id: UUID?) {
@@ -65,9 +81,47 @@ final class M1AppModel: ObservableObject {
         performEdit { try await self.controller.setChannels(id: id, channels: channels) }
     }
 
+    func beginGesture(_ id: UUID) { performEdit { await self.controller.beginEditGesture(id) } }
+    func endGesture(_ id: UUID) { performEdit { await self.controller.endEditGesture(id) } }
+    func undo() { performEdit { try await self.controller.undo() } }
+    func redo() { performEdit { try await self.controller.redo() } }
+    func selectAll() { performEdit { await self.controller.selectAllNodes() } }
+    func moveFocus(by offset: Int, extending: Bool) {
+        guard !(NSApp.keyWindow?.firstResponder is NSTextView) else { return }
+        performEdit { await self.controller.moveSelectionFocus(by: offset, extending: extending) }
+    }
+    func deleteSelection() { performEdit { try await self.controller.deleteSelectedPreamps() } }
+    func copy() { perform { try await self.controller.copySelection(to: self.pasteboard) } }
+    func cut() { perform { try await self.controller.cutSelection(to: self.pasteboard) } }
+    func paste() { performEdit { try await self.controller.paste(from: self.pasteboard) } }
+    func moveSelection(to index: Int, operation: M1NodeDragOperation) {
+        performEdit {
+            try await self.controller.moveSelectedPreamps(to: index, operation: operation)
+        }
+    }
+
+    func beginDrag(_ id: UUID) -> NSItemProvider {
+        if !snapshot.selectedNodeIDs.contains(id) {
+            select(id, mode: .replacing)
+        }
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(
+            forTypeIdentifier: m1NodeDragType.identifier,
+            visibility: .ownProcess
+        ) { completion in
+            completion(Data(), nil)
+            return nil
+        }
+        return provider
+    }
+
     func save() { perform { try await self.controller.save() } }
     func start() {
-        Task {
+        guard !terminationPending else { return }
+        let predecessor = commandTask
+        commandSequence &+= 1
+        commandTask = Task {
+            await predecessor?.value
             do {
                 let configuration = try await controller.beginStart()
                 snapshot = await controller.snapshot()
@@ -76,7 +130,20 @@ final class M1AppModel: ObservableObject {
             snapshot = await controller.snapshot()
         }
     }
-    func stop() { perform { try await self.controller.stop() } }
+    func stop() {
+        guard !terminationPending else { return }
+        let predecessor = stopTask
+        commandSequence &+= 1
+        stopTask = Task {
+            await predecessor?.value
+            do {
+                try await controller.stop()
+            } catch {
+                await controller.reportCommandError(String(describing: error))
+            }
+            snapshot = await controller.snapshot()
+        }
+    }
     func retryPersistence() { perform { try await self.controller.retryUncertainPersistence() } }
     func retryOutput() { perform { try await self.controller.retryOutputDiscovery() } }
     func setEffects(_ enabled: Bool) { perform { try await self.controller.setEffectsEnabled(enabled) } }
@@ -85,26 +152,85 @@ final class M1AppModel: ObservableObject {
         try await controller.shutdown()
     }
 
+    func requestTermination() async -> M1TerminationDecision {
+        terminationPending = true
+        await drainCommands()
+        let decision = await controller.requestTermination()
+        snapshot = await controller.snapshot()
+        if case .stayOpen = decision { terminationPending = false }
+        return decision
+    }
+
+    func resolveTermination(_ action: M1TerminationAction) async -> M1TerminationDecision {
+        await drainCommands()
+        let decision = await controller.resolveTermination(action)
+        snapshot = await controller.snapshot()
+        if case .stayOpen = decision { terminationPending = false }
+        return decision
+    }
+
     private func perform(_ operation: @escaping @MainActor () async throws -> Void) {
-        Task {
+        guard !terminationPending else { return }
+        commandSequence &+= 1
+        let predecessor = commandTask
+        let task = Task {
+            await predecessor?.value
             async let operationResult: Void = operation()
             await Task.yield()
             snapshot = await controller.snapshot()
-            do { try await operationResult } catch {}
+            do {
+                try await operationResult
+            } catch {
+                await controller.reportCommandError(String(describing: error))
+            }
             snapshot = await controller.snapshot()
             if snapshot.expectedDiagnostics != nil {
                 await controller.waitForPendingApplication()
                 snapshot = await controller.snapshot()
             }
         }
+        commandTask = task
     }
 
     private func performEdit(_ operation: @escaping @MainActor () async throws -> Void) {
-        let predecessor = editTask
-        editTask = Task {
+        guard !terminationPending else { return }
+        let predecessor = commandTask
+        commandSequence &+= 1
+        commandTask = Task {
             await predecessor?.value
-            do { try await operation() } catch {}
+            do {
+                try await operation()
+            } catch {
+                await controller.reportCommandError(String(describing: error))
+            }
             snapshot = await controller.snapshot()
+        }
+    }
+
+    private func drainCommands() async {
+        while true {
+            let sequence = commandSequence
+            let tail = commandTask
+            let stopTail = stopTask
+            await tail?.value
+            await stopTail?.value
+            if sequence == commandSequence { return }
+        }
+    }
+}
+
+private final class M1SystemPasteboard: M1PasteboardAccess, @unchecked Sendable {
+    private let type = NSPasteboard.PasteboardType("com.ruimingchen.equalizerau.preamp-nodes")
+
+    func readNodes() async -> Data? {
+        await MainActor.run { NSPasteboard.general.data(forType: type) }
+    }
+
+    func writeNodes(_ data: Data) async -> Bool {
+        await MainActor.run {
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            return pasteboard.setData(data, forType: type)
         }
     }
 }
@@ -112,6 +238,7 @@ final class M1AppModel: ObservableObject {
 @MainActor
 private final class M1TerminationDelegate: NSObject, NSApplicationDelegate {
     weak var model: M1AppModel?
+    var restoreEditorWindow: (() -> Void)?
     private var terminationPending = false
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -121,15 +248,72 @@ private final class M1TerminationDelegate: NSObject, NSApplicationDelegate {
         guard !terminationPending else { return .terminateLater }
         terminationPending = true
         Task {
-            do {
-                try await model.shutdown()
+            var decision = await model.requestTermination()
+            while case let .prompt(prompt) = decision {
+                guard let action = self.present(prompt) else {
+                    _ = await model.resolveTermination(.cancel)
+                    self.terminationPending = false
+                    self.restoreEditorWindow?()
+                    sender.reply(toApplicationShouldTerminate: false)
+                    return
+                }
+                decision = await model.resolveTermination(action)
+            }
+            switch decision {
+            case .terminate:
                 sender.reply(toApplicationShouldTerminate: true)
-            } catch {
+            case .stayOpen, .prompt:
                 self.terminationPending = false
+                self.restoreEditorWindow?()
                 sender.reply(toApplicationShouldTerminate: false)
             }
         }
         return .terminateLater
+    }
+
+    private func present(_ prompt: M1TerminationPrompt) -> M1TerminationAction? {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        switch prompt {
+        case .unsavedNodes:
+            alert.messageText = "Save changes before quitting?"
+            alert.informativeText = "Your Preamp edits have not been saved."
+            alert.addButton(withTitle: "Save and Exit")
+            alert.addButton(withTitle: "Discard")
+            alert.addButton(withTitle: "Cancel")
+            return action(for: alert.runModal(), primary: .saveAndExit, secondary: .discardAndExit)
+        case .unsavedEffects:
+            alert.messageText = "Effects state is not saved"
+            alert.informativeText = "Retry saving, or exit and restore the on-disk state next time."
+            alert.addButton(withTitle: "Retry")
+            alert.addButton(withTitle: "Exit")
+            alert.addButton(withTitle: "Cancel")
+            return action(for: alert.runModal(), primary: .retry, secondary: .exit)
+        case .unsavedNodesAndEffects:
+            alert.messageText = "Save all changes before quitting?"
+            alert.informativeText = "Preamp edits and the Effects state have not been saved."
+            alert.addButton(withTitle: "Save and Exit")
+            alert.addButton(withTitle: "Discard and Exit")
+            alert.addButton(withTitle: "Cancel")
+            return action(for: alert.runModal(), primary: .saveAndExit, secondary: .discardAndExit)
+        case let .uncertainPersistence(generation):
+            alert.messageText = "Configuration durability is uncertain"
+            alert.informativeText = "Retry the final sync for generation \(generation), or exit without claiming which complete file is on disk."
+            alert.addButton(withTitle: "Retry")
+            alert.addButton(withTitle: "Exit")
+            alert.addButton(withTitle: "Cancel")
+            return action(for: alert.runModal(), primary: .retry, secondary: .exit)
+        }
+    }
+
+    private func action(
+        for response: NSApplication.ModalResponse,
+        primary: M1TerminationAction,
+        secondary: M1TerminationAction
+    ) -> M1TerminationAction? {
+        if response == .alertFirstButtonReturn { return primary }
+        if response == .alertSecondButtonReturn { return secondary }
+        return nil
     }
 }
 
@@ -141,6 +325,7 @@ private final class M1RouteHolder: @unchecked Sendable {
 @main
 struct EqualizerAUM1App: App {
     @NSApplicationDelegateAdaptor(M1TerminationDelegate.self) private var appDelegate
+    @Environment(\.openWindow) private var openWindow
     @StateObject private var model: M1AppModel
 
     init() {
@@ -181,10 +366,18 @@ struct EqualizerAUM1App: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup("EqualizerAU", id: "editor") {
             M1EditorView(model: model)
                 .onAppear {
                     appDelegate.model = model
+                    appDelegate.restoreEditorWindow = {
+                        if let window = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeKey }) {
+                            window.makeKeyAndOrderFront(nil)
+                        } else {
+                            openWindow(id: "editor")
+                        }
+                        NSApp.activate(ignoringOtherApps: true)
+                    }
                     model.bootstrap()
                 }
         }
@@ -195,6 +388,47 @@ struct EqualizerAUM1App: App {
                 Button("Save") { model.save() }
                     .keyboardShortcut("s")
                     .disabled(!model.snapshot.canSave)
+            }
+            CommandGroup(replacing: .undoRedo) {
+                Button("Undo") { model.undo() }
+                    .keyboardShortcut("z")
+                    .disabled(!model.snapshot.canUndo)
+                Button("Redo") { model.redo() }
+                    .keyboardShortcut("z", modifiers: [.command, .shift])
+                    .disabled(!model.snapshot.canRedo)
+            }
+            CommandGroup(replacing: .pasteboard) {
+                Button("Cut") { model.cut() }
+                    .keyboardShortcut("x")
+                    .disabled(!model.snapshot.canUseSelection)
+                Button("Copy") { model.copy() }
+                    .keyboardShortcut("c")
+                    .disabled(!model.snapshot.canUseSelection)
+                Button("Paste") { model.paste() }
+                    .keyboardShortcut("v")
+                    .disabled(!model.snapshot.canEdit)
+                Button("Select All") { model.selectAll() }
+                    .keyboardShortcut("a")
+                    .disabled(!model.snapshot.canEdit)
+            }
+            CommandGroup(after: .pasteboard) {
+                Button("Delete") { model.deleteSelection() }
+                    .keyboardShortcut(.delete, modifiers: [])
+                    .disabled(!model.snapshot.canUseSelection)
+            }
+            CommandGroup(after: .textEditing) {
+                Button("Move Focus Up") { model.moveFocus(by: -1, extending: false) }
+                    .keyboardShortcut(.upArrow, modifiers: [])
+                    .disabled(!model.snapshot.canEdit)
+                Button("Move Focus Down") { model.moveFocus(by: 1, extending: false) }
+                    .keyboardShortcut(.downArrow, modifiers: [])
+                    .disabled(!model.snapshot.canEdit)
+                Button("Extend Selection Up") { model.moveFocus(by: -1, extending: true) }
+                    .keyboardShortcut(.upArrow, modifiers: [.shift])
+                    .disabled(!model.snapshot.canEdit)
+                Button("Extend Selection Down") { model.moveFocus(by: 1, extending: true) }
+                    .keyboardShortcut(.downArrow, modifiers: [.shift])
+                    .disabled(!model.snapshot.canEdit)
             }
         }
     }
@@ -254,10 +488,7 @@ private struct M1EditorView: View {
     }
 
     private var chain: some View {
-        List(selection: Binding(
-            get: { model.snapshot.selectedNodeID },
-            set: { model.select($0) }
-        )) {
+        List {
             ForEach(Array(model.snapshot.draft.nodes.enumerated()), id: \.element.id) { index, node in
                 HStack(spacing: 10) {
                     Button { model.add(before: node.id) } label: {
@@ -290,18 +521,26 @@ private struct M1EditorView: View {
                                 )
                             )
                         }
+                        Divider()
+                        Button("Add Custom Channel…") {
+                            addCustomChannel(to: node)
+                        }
                     } label: {
                         Text(channelSummary(node.channels))
                     }
                     .frame(width: 110, alignment: .leading)
 
-                    Slider(
+                     Slider(
                         value: Binding(
                             get: { node.gainDB },
                             set: { model.setGain($0, id: node.id) }
                         ),
                         in: -20...20,
-                        step: 0.1
+                        step: 0.1,
+                        onEditingChanged: { editing in
+                            if editing { model.beginGesture(node.id) }
+                            else { model.endGesture(node.id) }
+                        }
                     )
                     TextField(
                         "Gain",
@@ -331,7 +570,16 @@ private struct M1EditorView: View {
                     }
                     .help("Delete Preamp")
                 }
-                .tag(node.id)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    model.select(node.id, mode: currentSelectionMode())
+                }
+                .listRowBackground(rowBackground(for: node.id))
+                .onDrag { model.beginDrag(node.id) }
+                .onDrop(
+                    of: [m1NodeDragType],
+                    delegate: M1NodeDropDelegate(model: model, destination: index)
+                )
                 .disabled(!model.snapshot.canEdit)
             }
         }
@@ -345,17 +593,34 @@ private struct M1EditorView: View {
             }
             .padding(10)
             .background(.bar)
+            .onDrop(
+                of: [m1NodeDragType],
+                delegate: M1NodeDropDelegate(
+                    model: model,
+                    destination: model.snapshot.draft.nodes.count
+                )
+            )
         }
     }
 
     private var status: some View {
-        HStack {
-            Image(systemName: statusIcon)
-            Text(statusText)
-            Spacer()
-            if let layout = model.snapshot.outputLayout {
-                Text("\(layout.channels.count) ch  \(Int(layout.sampleRate)) Hz")
-                    .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Image(systemName: statusIcon)
+                Text(statusText)
+                Spacer()
+                if let layout = model.snapshot.outputLayout {
+                    Text("\(layout.channels.count) ch  \(Int(layout.sampleRate)) Hz")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let diagnostics = model.snapshot.activeDiagnostics,
+               let generation = model.snapshot.activeConfigurationGeneration {
+                diagnosticLine(label: "Active G\(generation)", diagnostics: diagnostics)
+            }
+            if let diagnostics = model.snapshot.expectedDiagnostics,
+               let generation = model.snapshot.expectedConfigurationGeneration {
+                diagnosticLine(label: "Expected G\(generation)", diagnostics: diagnostics)
             }
         }
         .font(.caption)
@@ -369,6 +634,78 @@ private struct M1EditorView: View {
     private var statusText: String {
         if let error = model.snapshot.visibleError { return error }
         return "\(String(describing: model.snapshot.audio)) · \(String(describing: model.snapshot.persistence))"
+    }
+
+    @ViewBuilder
+    private func diagnosticLine(
+        label: String,
+        diagnostics: M1ProcessingBuildDiagnostics
+    ) -> some View {
+        let details = diagnosticDetails(diagnostics)
+        if !details.isEmpty {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                Text(label).fontWeight(.semibold)
+                Text(details.joined(separator: " · "))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+        }
+    }
+
+    private func diagnosticDetails(_ diagnostics: M1ProcessingBuildDiagnostics) -> [String] {
+        var details: [String] = []
+        let unresolved = diagnostics.unresolvedChannels.flatMap(\.identifiers).map(\.rawValue)
+        if !unresolved.isEmpty {
+            details.append("Unresolved: \(unresolved.joined(separator: ", "))")
+        }
+        if !diagnostics.clippingRiskChannels.isEmpty {
+            details.append(
+                "Clipping risk: \(diagnostics.clippingRiskChannels.map(\.rawValue).joined(separator: ", "))"
+            )
+        }
+        if !diagnostics.gainBoundaries.isEmpty {
+            let channels = diagnostics.gainBoundaries.map { $0.channel.rawValue }
+            details.append("Gain boundary: \(channels.joined(separator: ", "))")
+        }
+        return details
+    }
+
+    private func rowBackground(for id: UUID) -> some View {
+        let selected = model.snapshot.selectedNodeIDs.contains(id)
+        let focused = model.snapshot.focusedNodeID == id
+        return ZStack {
+            if selected { Color.accentColor.opacity(0.18) }
+            if focused {
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(Color.accentColor, lineWidth: 1)
+                    .padding(2)
+            }
+        }
+    }
+
+    private func currentSelectionMode() -> M1SelectionMode {
+        let modifiers = NSEvent.modifierFlags
+        if modifiers.contains(.shift) { return .extending }
+        if modifiers.contains(.command) { return .toggling }
+        return .replacing
+    }
+
+    private func addCustomChannel(to node: M1PreampNode) {
+        let alert = NSAlert()
+        alert.messageText = "Add Custom Channel"
+        alert.informativeText = "Enter a non-empty channel identifier. It will be normalized to uppercase."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Add")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn,
+              let identifier = M1ChannelIdentifier(field.stringValue) else { return }
+        model.setChannels(
+            updatedChannels(node.channels, identifier: identifier, selected: true),
+            id: node.id
+        )
     }
 
     private func channelSummary(_ selection: M1ChannelSelection) -> String {
@@ -404,5 +741,26 @@ private struct M1EditorView: View {
             identifiers.removeAll { $0 == identifier }
         }
         return identifiers.isEmpty ? .all : .identifiers(identifiers)
+    }
+}
+
+@MainActor
+private struct M1NodeDropDelegate: DropDelegate {
+    let model: M1AppModel
+    let destination: Int
+
+    func validateDrop(info: DropInfo) -> Bool {
+        model.snapshot.canEdit && info.hasItemsConforming(to: [m1NodeDragType])
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: NSEvent.modifierFlags.contains(.option) ? .copy : .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard validateDrop(info: info) else { return false }
+        let operation: M1NodeDragOperation = NSEvent.modifierFlags.contains(.option) ? .copy : .move
+        model.moveSelection(to: destination, operation: operation)
+        return true
     }
 }

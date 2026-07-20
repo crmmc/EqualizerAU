@@ -22,7 +22,8 @@ typed Preamp 与真实 buffer/channel 布局快照、确定性 Builder、正式 
 M1.1 已完成版本化规范 JSON、`4 MiB` 预算、主文件与 previous 轮换、Recovery、Repair、
 结果不确定和同代次 Retry 的持久化基础。M1.2 已接入单选 Preamp 编辑、显式 Save、
 Start/Stop、独立即时音效总开关、布局构建、Runtime 发布、基础状态诊断和有序 Quit 清理。
-下一阶段 M1.3 将补齐多选、剪贴板、Undo/Redo 和完整退出确认。
+M1.3 已完成多选与键盘选择、typed 剪贴板、组移动与 Option-copy、预算化 Undo/Redo、
+分代诊断和完整退出确认。下一阶段 M1.4 负责加固、真实音频验收与 M1 收口。
 M0 的源码、测试和构建产物只作参考，不被 M1 复用。BlackHole 只作为未启用的后备路线，
 不是当前依赖，也无需安装。
 

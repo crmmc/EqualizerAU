@@ -316,6 +316,99 @@ final class M1ProductControllerTests: XCTestCase {
         XCTAssertNotNil(promoted.activeDiagnostics)
     }
 
+    func testNewActivePublicationInvalidatesOlderPendingPromotion() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        let oldGate = ProductTestGate()
+        await fixture.audio.setPublication(disposition: .pending, gate: oldGate)
+        try await fixture.controller.setGainDB(id: fixture.nodeID, gainDB: 2)
+        try await fixture.controller.save()
+
+        await fixture.audio.setPublication(disposition: .active, gate: nil)
+        try await fixture.controller.setGainDB(id: fixture.nodeID, gainDB: 4)
+        try await fixture.controller.save()
+        await oldGate.open()
+        await Task.yield()
+
+        let snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(snapshot.activeConfigurationGeneration, 2)
+        XCTAssertNil(snapshot.expectedConfigurationGeneration)
+        XCTAssertEqual(snapshot.draft.nodes[0].gainDB, 4)
+    }
+
+    func testNewWaitingOutputSaveInvalidatesOlderPendingPromotion() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        let oldGate = ProductTestGate()
+        await fixture.audio.setPublication(disposition: .pending, gate: oldGate)
+        try await fixture.controller.setGainDB(id: fixture.nodeID, gainDB: 2)
+        try await fixture.controller.save()
+
+        await fixture.audio.setOutputAvailable(false)
+        try await fixture.controller.setGainDB(id: fixture.nodeID, gainDB: 4)
+        try await fixture.controller.save()
+        await oldGate.open()
+        await Task.yield()
+
+        let snapshot = await fixture.controller.snapshot()
+        let calls = await fixture.audio.calls
+        XCTAssertEqual(snapshot.persistence, .waitingForOutput)
+        XCTAssertNotEqual(snapshot.activeConfigurationGeneration, 1)
+        XCTAssertNil(snapshot.expectedConfigurationGeneration)
+        XCTAssertTrue(calls.contains("discardPending"))
+    }
+
+    func testNewUncertainSaveInvalidatesOlderPendingPromotionUntilRetry() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        let oldGate = ProductTestGate()
+        await fixture.audio.setPublication(disposition: .pending, gate: oldGate)
+        try await fixture.controller.setGainDB(id: fixture.nodeID, gainDB: 2)
+        try await fixture.controller.save()
+
+        try await fixture.controller.setGainDB(id: fixture.nodeID, gainDB: 4)
+        let candidate = await fixture.controller.snapshot().draft
+        await fixture.store.setNextResult(.uncertain(
+            generation: 2,
+            snapshot: candidate,
+            bootstrapOrigin: nil
+        ))
+        try await fixture.controller.save()
+        await oldGate.open()
+        await Task.yield()
+
+        let snapshot = await fixture.controller.snapshot()
+        let calls = await fixture.audio.calls
+        XCTAssertEqual(snapshot.persistence, .uncertain(generation: 2))
+        XCTAssertNotEqual(snapshot.activeConfigurationGeneration, 1)
+        XCTAssertNil(snapshot.expectedConfigurationGeneration)
+        XCTAssertTrue(calls.contains("discardPending"))
+    }
+
+    func testRapidEffectsToggleKeepsLatestIntentWhileFirstRuntimeUpdateIsBlocked() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        let gate = ProductTestGate()
+        await fixture.audio.setEffectsGate(gate)
+
+        let disableTask = Task { try await fixture.controller.setEffectsEnabled(false) }
+        await waitUntil { await fixture.audio.calls.contains("effects:false") }
+        try await fixture.controller.setEffectsEnabled(true)
+        await gate.open()
+        try await disableTask.value
+
+        let snapshot = await fixture.controller.snapshot()
+        let calls = await fixture.audio.calls
+        XCTAssertTrue(snapshot.draft.effectsEnabled)
+        XCTAssertEqual(calls.filter { $0.hasPrefix("effects:") }, ["effects:false", "effects:true"])
+        let commits = await fixture.store.commits
+        XCTAssertEqual(commits.last?.snapshot.effectsEnabled, true)
+    }
+
     func testStopDuringPendingPublicationBecomesSavedPendingStart() async throws {
         let fixture = makeFixture()
         await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
@@ -526,6 +619,187 @@ final class M1ProductControllerTests: XCTestCase {
         XCTAssertTrue(snapshot.canStart)
         XCTAssertNil(snapshot.activeDiagnostics)
     }
+
+    func testCopyIsPureAndFailedCutPreservesDraftAndHistory() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        await fixture.controller.selectNode(fixture.nodeID)
+        let pasteboard = ProductPasteboardFake(writeSucceeds: false)
+        let before = await fixture.controller.snapshot()
+
+        await XCTAssertThrowsErrorAsync {
+            try await fixture.controller.cutSelection(to: pasteboard)
+        }
+
+        let afterFailedCut = await fixture.controller.snapshot()
+        XCTAssertEqual(afterFailedCut.draft, before.draft)
+        XCTAssertFalse(afterFailedCut.canUndo)
+        await pasteboard.setWriteSucceeds(true)
+        try await fixture.controller.copySelection(to: pasteboard)
+        let afterCopy = await fixture.controller.snapshot()
+        XCTAssertEqual(afterCopy.draft, before.draft)
+        XCTAssertFalse(afterCopy.canUndo)
+        let written = await pasteboard.data
+        XCTAssertEqual(try M1NodeEnvelopeCodec.decode(XCTUnwrap(written)).nodes.map(\.id), [fixture.nodeID])
+    }
+
+    func testPasteUsesTypedEnvelopeAndCreatesNewSelectedIdentity() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        let sourceID = UUID(uuidString: "20000000-0000-0000-0000-000000000001")!
+        let encoded = try M1NodeEnvelopeCodec.encode([
+            M1PreampNode(id: sourceID, isEnabled: false, gainDB: -6, channels: .all)
+        ])
+        let pasteboard = ProductPasteboardFake(data: encoded.data)
+
+        try await fixture.controller.paste(from: pasteboard)
+
+        let snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(snapshot.draft.nodes.count, 2)
+        XCTAssertEqual(snapshot.draft.nodes.last?.gainDB, -6)
+        XCTAssertNotEqual(snapshot.draft.nodes.last?.id, sourceID)
+        XCTAssertEqual(snapshot.selectedNodeIDs, Set([snapshot.draft.nodes.last!.id]))
+        XCTAssertTrue(snapshot.canUndo)
+    }
+
+    func testUnsupportedClipboardVersionIsPasteNoOp() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        let pasteboard = ProductPasteboardFake(
+            data: Data("{\"nodes\":[],\"schemaVersion\":2}\n".utf8)
+        )
+        let before = await fixture.controller.snapshot()
+
+        try await fixture.controller.paste(from: pasteboard)
+
+        let after = await fixture.controller.snapshot()
+        XCTAssertEqual(after.draft, before.draft)
+        XCTAssertEqual(after.selectedNodeIDs, before.selectedNodeIDs)
+        XCTAssertFalse(after.canUndo)
+        XCTAssertNil(after.visibleError)
+    }
+
+    func testSuccessfulCutWritesBeforeDeletingAndIsOneUndoStep() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        await fixture.controller.selectNode(fixture.nodeID)
+        let pasteboard = ProductPasteboardFake()
+
+        try await fixture.controller.cutSelection(to: pasteboard)
+
+        let afterCut = await fixture.controller.snapshot()
+        XCTAssertTrue(afterCut.draft.nodes.isEmpty)
+        XCTAssertTrue(afterCut.canUndo)
+        let pasteboardData = await pasteboard.data
+        let written = try XCTUnwrap(pasteboardData)
+        XCTAssertEqual(try M1NodeEnvelopeCodec.decode(written).nodes.map(\.id), [fixture.nodeID])
+        try await fixture.controller.undo()
+        let afterUndo = await fixture.controller.snapshot()
+        XCTAssertEqual(afterUndo.draft.nodes.map(\.id), [fixture.nodeID])
+    }
+
+    func testTerminationClassifiesNodeEffectsCombinedAndUncertainStates() async throws {
+        let nodeFixture = makeFixture()
+        await nodeFixture.controller.bootstrap(initialNodeID: nodeFixture.nodeID)
+        try await nodeFixture.controller.setGainDB(id: nodeFixture.nodeID, gainDB: 2)
+        let nodeTermination = await nodeFixture.controller.requestTermination()
+        XCTAssertEqual(nodeTermination, .prompt(.unsavedNodes))
+
+        let effectsFixture = makeFixture()
+        await effectsFixture.controller.bootstrap(initialNodeID: effectsFixture.nodeID)
+        await effectsFixture.store.setNextResult(.failed(generation: 1, reason: .replaceMain))
+        try await effectsFixture.controller.setEffectsEnabled(false)
+        let effectsTermination = await effectsFixture.controller.requestTermination()
+        XCTAssertEqual(effectsTermination, .prompt(.unsavedEffects))
+
+        try await effectsFixture.controller.setGainDB(id: effectsFixture.nodeID, gainDB: 3)
+        let combinedTermination = await effectsFixture.controller.requestTermination()
+        XCTAssertEqual(combinedTermination, .prompt(.unsavedNodesAndEffects))
+
+        let uncertainFixture = makeFixture()
+        await uncertainFixture.controller.bootstrap(initialNodeID: uncertainFixture.nodeID)
+        try await uncertainFixture.controller.setGainDB(id: uncertainFixture.nodeID, gainDB: 4)
+        let candidate = await uncertainFixture.controller.snapshot().draft
+        await uncertainFixture.store.setNextResult(.uncertain(
+            generation: 1,
+            snapshot: candidate,
+            bootstrapOrigin: nil
+        ))
+        try await uncertainFixture.controller.save()
+        let uncertainTermination = await uncertainFixture.controller.requestTermination()
+        XCTAssertEqual(uncertainTermination, .prompt(.uncertainPersistence(generation: 1)))
+    }
+
+    func testTerminationCancelReturnsStayOpenWithoutReopeningPrompt() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.setGainDB(id: fixture.nodeID, gainDB: 2)
+        let initial = await fixture.controller.requestTermination()
+        XCTAssertEqual(initial, .prompt(.unsavedNodes))
+
+        let cancelled = await fixture.controller.resolveTermination(.cancel)
+
+        guard case .stayOpen = cancelled else { return XCTFail("Expected cancellation") }
+        let snapshot = await fixture.controller.snapshot()
+        XCTAssertTrue(snapshot.hasUnsavedNodes)
+        let calls = await fixture.audio.calls
+        XCTAssertFalse(calls.contains("stop"))
+    }
+
+    func testSaveAndExitPersistsDraftThenPerformsOrderedShutdown() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        try await fixture.controller.setGainDB(id: fixture.nodeID, gainDB: 5)
+        let termination = await fixture.controller.requestTermination()
+        XCTAssertEqual(termination, .prompt(.unsavedNodes))
+
+        let decision = await fixture.controller.resolveTermination(.saveAndExit)
+
+        let commits = await fixture.store.commits
+        let calls = await fixture.audio.calls
+        XCTAssertEqual(decision, .terminate)
+        XCTAssertEqual(commits.last?.snapshot.nodes.first?.gainDB, 5)
+        XCTAssertEqual(calls.last, "stop")
+    }
+
+    func testEffectsRetryFailureKeepsApplicationOpen() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        await fixture.store.setNextResult(.failed(generation: 1, reason: .replaceMain))
+        try await fixture.controller.setEffectsEnabled(false)
+        await fixture.store.setNextResult(.failed(generation: 2, reason: .replaceMain))
+
+        let decision = await fixture.controller.resolveTermination(.retry)
+
+        guard case .stayOpen = decision else { return XCTFail("Expected termination denial") }
+        let calls = await fixture.audio.calls
+        XCTAssertFalse(calls.contains("stop"))
+    }
+
+    func testTerminationWaitsForInFlightFailureAndDoesNotShutdown() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.setGainDB(id: fixture.nodeID, gainDB: 2)
+        let gate = ProductTestGate()
+        await fixture.store.setCommitGate(gate)
+        await fixture.store.setNextResult(.failed(generation: 1, reason: .replaceMain))
+        let saveTask = Task { try await fixture.controller.save() }
+        await waitUntil { await fixture.store.commits.count == 1 }
+
+        let terminationTask = Task { await fixture.controller.requestTermination() }
+        await Task.yield()
+        let callsBeforeCommit = await fixture.audio.calls
+        XCTAssertFalse(callsBeforeCommit.contains("stop"))
+        await gate.open()
+        try await saveTask.value
+
+        guard case .stayOpen = await terminationTask.value else {
+            return XCTFail("Expected failed in-flight Save to deny termination")
+        }
+        let callsAfterFailure = await fixture.audio.calls
+        XCTAssertFalse(callsAfterFailure.contains("stop"))
+    }
 }
 
 private struct ProductFixture {
@@ -605,8 +879,10 @@ private actor ProductAudioFake: M1ProductAudioControlling {
     private var publicationDisposition: M1PreparedPublicationDisposition = .active
     private var publicationGate: ProductTestGate?
     private var publishGate: ProductTestGate?
+    private var effectsGate: ProductTestGate?
     private var outputAvailable = true
     private var preparationFails = false
+    private var discardedPublicationGenerations: Set<UInt64> = []
     private let layout = M1OutputLayoutSnapshot(
         sampleRate: 48_000,
         maximumFrameCount: 256,
@@ -673,13 +949,22 @@ private actor ProductAudioFake: M1ProductAudioControlling {
         )
     }
 
-    func setEffectsEnabled(_ enabled: Bool) {
+    func setEffectsEnabled(_ enabled: Bool) async {
         calls.append("effects:\(enabled)")
+        await effectsGate?.wait()
     }
 
     func waitForPublication(configurationGeneration: UInt64) async -> Bool {
         await publicationGate?.wait()
         return publishedGenerations.contains(configurationGeneration)
+            && !discardedPublicationGenerations.contains(configurationGeneration)
+    }
+
+    func discardPendingPublication() {
+        calls.append("discardPending")
+        if let generation = publishedGenerations.last {
+            discardedPublicationGenerations.insert(generation)
+        }
     }
 
     func setStartGate(_ gate: ProductTestGate?) { startGate = gate }
@@ -691,6 +976,7 @@ private actor ProductAudioFake: M1ProductAudioControlling {
         publicationGate = gate
     }
     func setPublishGate(_ gate: ProductTestGate?) { publishGate = gate }
+    func setEffectsGate(_ gate: ProductTestGate?) { effectsGate = gate }
 }
 
 private enum ProductAudioFakeError: Error {
@@ -713,6 +999,26 @@ private actor ProductTestGate {
         continuations.removeAll()
         waiting.forEach { $0.resume() }
     }
+}
+
+private actor ProductPasteboardFake: M1PasteboardAccess {
+    var data: Data?
+    private var writeSucceeds: Bool
+
+    init(data: Data? = nil, writeSucceeds: Bool = true) {
+        self.data = data
+        self.writeSucceeds = writeSucceeds
+    }
+
+    func readNodes() -> Data? { data }
+
+    func writeNodes(_ data: Data) -> Bool {
+        guard writeSucceeds else { return false }
+        self.data = data
+        return true
+    }
+
+    func setWriteSucceeds(_ succeeds: Bool) { writeSucceeds = succeeds }
 }
 
 private func waitUntil(

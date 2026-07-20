@@ -135,6 +135,37 @@ final class M1RetirementMaintenanceCoordinatorTests: XCTestCase {
         XCTAssertEqual(discards, [12])
     }
 
+    func testDiscardPendingKeepsRetirementMaintenanceRunning() async {
+        let gate = TestSleepGate()
+        let access = TestMaintenanceAccess(steps: [])
+        let timing = M1RetirementMaintenanceTiming(
+            nowNanoseconds: { 0 },
+            sleep: { _ in
+                await gate.markEntered()
+                try await Task<Never, Never>.sleep(nanoseconds: 60_000_000_000)
+            }
+        )
+        let coordinator = M1RetirementMaintenanceCoordinator(
+            access: access,
+            timing: timing
+        )
+
+        let started = await coordinator.start(ticket: 21, bridgeGeneration: 13)
+        XCTAssertTrue(started)
+        await gate.waitUntilEntered()
+        let discarded = await coordinator.discardPending(bridgeGeneration: 13)
+        let duplicateStarted = await coordinator.start(ticket: 22, bridgeGeneration: 13)
+        let firstDiscards = await access.discardGenerations()
+        XCTAssertTrue(discarded)
+        XCTAssertFalse(duplicateStarted)
+        XCTAssertEqual(firstDiscards, [13])
+
+        let stopped = await coordinator.stop(bridgeGeneration: 13)
+        let finalDiscards = await access.discardGenerations()
+        XCTAssertTrue(stopped)
+        XCTAssertEqual(finalDiscards, [13, 13])
+    }
+
     func testStopBlocksRestartAndIgnoresMaintenanceResultAfterCancellation() async {
         let enteredGate = TestSleepGate()
         let cancellationGate = TestSleepGate()

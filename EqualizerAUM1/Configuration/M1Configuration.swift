@@ -119,7 +119,7 @@ private struct M1ConfigurationWire: Codable {
     }
 }
 
-private struct M1PreampNodeWire: Codable {
+struct M1PreampNodeWire: Codable {
     let id: UUID
     let type: String
     let isEnabled: Bool
@@ -147,7 +147,7 @@ private struct M1PreampNodeWire: Codable {
     }
 }
 
-private enum M1ChannelSelectionWire: Codable {
+enum M1ChannelSelectionWire: Codable {
     case all
     case identifiers([String])
 

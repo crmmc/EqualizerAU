@@ -24,6 +24,7 @@ protocol M1ProductAudioControlling: Sendable {
         configurationGeneration: UInt64
     ) async throws -> M1PreparedPublication?
     func waitForPublication(configurationGeneration: UInt64) async -> Bool
+    func discardPendingPublication() async
     func setEffectsEnabled(_ enabled: Bool) async throws
 }
 
@@ -51,18 +52,47 @@ enum M1ProductAudioState: Equatable, Sendable {
 
 struct M1ProductSnapshot: Equatable, Sendable {
     let draft: M1ConfigurationSnapshot
-    let selectedNodeID: UUID?
+    let selectedNodeIDs: Set<UUID>
+    let focusedNodeID: UUID?
     let persistence: M1ProductPersistenceState
     let audio: M1ProductAudioState
     let outputLayout: M1OutputLayoutSnapshot?
     let activeDiagnostics: M1ProcessingBuildDiagnostics?
     let expectedDiagnostics: M1ProcessingBuildDiagnostics?
+    let activeConfigurationGeneration: UInt64?
+    let expectedConfigurationGeneration: UInt64?
     let canEdit: Bool
     let canSetEffects: Bool
     let canSave: Bool
     let canStart: Bool
     let canStop: Bool
+    let canUndo: Bool
+    let canRedo: Bool
+    let canUseSelection: Bool
+    let hasUnsavedNodes: Bool
+    let hasUnsavedEffects: Bool
     let visibleError: String?
+}
+
+enum M1TerminationPrompt: Equatable, Sendable {
+    case unsavedNodes
+    case unsavedEffects
+    case unsavedNodesAndEffects
+    case uncertainPersistence(generation: UInt64)
+}
+
+enum M1TerminationDecision: Equatable, Sendable {
+    case terminate
+    case prompt(M1TerminationPrompt)
+    case stayOpen(String)
+}
+
+enum M1TerminationAction: Sendable {
+    case saveAndExit
+    case discardAndExit
+    case retry
+    case exit
+    case cancel
 }
 
 enum M1ProductControllerError: Error, Equatable, Sendable {
@@ -84,12 +114,14 @@ actor M1ProductController {
     private var draft = M1ConfigurationSnapshot.transparentRecovery
     private var saved = M1ConfigurationSnapshot.transparentRecovery
     private var runtimeBaseline = M1ConfigurationSnapshot.transparentRecovery
-    private var selectedNodeID: UUID?
+    private var editingSession = M1EditingSession(nodes: [])
     private var persistence: M1ProductPersistenceState = .recovery
     private var audioState: M1ProductAudioState = .stopped
     private var layout: M1OutputLayoutSnapshot?
     private var activeDiagnostics: M1ProcessingBuildDiagnostics?
     private var expectedDiagnostics: M1ProcessingBuildDiagnostics?
+    private var activeConfigurationGeneration: UInt64?
+    private var expectedConfigurationGeneration: UInt64?
     private var visibleError: String?
     private var commitGeneration: UInt64 = 0
     private var draftRevision: UInt64 = 0
@@ -144,7 +176,7 @@ actor M1ProductController {
             commitGeneration = generation
             persistence = .uncertain(generation: generation)
         }
-        selectedNodeID = draft.nodes.first?.id
+        editingSession = M1EditingSession(nodes: draft.nodes)
         bootstrapped = true
     }
 
@@ -157,12 +189,15 @@ actor M1ProductController {
         if case .waitingForOutput = persistence { waitingForOutput = true } else { waitingForOutput = false }
         return M1ProductSnapshot(
             draft: draft,
-            selectedNodeID: selectedNodeID,
+            selectedNodeIDs: editingSession.selectedNodeIDs,
+            focusedNodeID: editingSession.focusedNodeID,
             persistence: persistence,
             audio: audioState,
             outputLayout: layout,
             activeDiagnostics: activeDiagnostics,
             expectedDiagnostics: expectedDiagnostics,
+            activeConfigurationGeneration: activeConfigurationGeneration,
+            expectedConfigurationGeneration: expectedConfigurationGeneration,
             canEdit: bootstrapped && !uncertain && !terminating,
             canSetEffects: bootstrapped && !uncertain && !recovery && !terminating
                 && (audioState == .stopped || audioState == .running),
@@ -172,58 +207,155 @@ actor M1ProductController {
             canStart: bootstrapped && !uncertain && !persistenceInFlight && !effectsUpdateInFlight
                 && !terminating && audioState == .stopped,
             canStop: audioState != .stopped,
+            canUndo: bootstrapped && !uncertain && !terminating && editingSession.canUndo,
+            canRedo: bootstrapped && !uncertain && !terminating && editingSession.canRedo,
+            canUseSelection: bootstrapped && !uncertain && !terminating
+                && !editingSession.selectedNodeIDs.isEmpty,
+            hasUnsavedNodes: requiresRepair || draft.nodes != saved.nodes,
+            hasUnsavedEffects: draft.effectsEnabled != saved.effectsEnabled,
             visibleError: visibleError
         )
     }
 
-    func selectNode(_ id: UUID?) {
-        guard id == nil || draft.nodes.contains(where: { $0.id == id }) else { return }
-        selectedNodeID = id
+    func selectNode(_ id: UUID?, mode: M1SelectionMode = .replacing) {
+        guard snapshot().canEdit else { return }
+        editingSession.select(id, mode: mode)
     }
 
-    func addPreamp(before id: UUID? = nil, nodeID: UUID = UUID()) throws {
-        try edit { nodes in
-            let node = M1PreampNode(id: nodeID, isEnabled: true, gainDB: 0, channels: .all)
-            if let id, let index = nodes.firstIndex(where: { $0.id == id }) {
-                nodes.insert(node, at: index)
-            } else {
-                nodes.append(node)
-            }
+    func selectAllNodes() {
+        guard snapshot().canEdit else { return }
+        editingSession.selectAll()
+    }
+
+    func replaceSelection(_ ids: Set<UUID>) {
+        guard snapshot().canEdit else { return }
+        editingSession.replaceSelection(ids)
+    }
+
+    func moveSelectionFocus(by offset: Int, extending: Bool) {
+        guard snapshot().canEdit else { return }
+        editingSession.moveFocus(by: offset, extending: extending)
+    }
+
+    func beginEditGesture(_ id: UUID) {
+        editingSession.beginGesture(id)
+    }
+
+    func endEditGesture(_ id: UUID) {
+        editingSession.endGesture(id)
+    }
+
+    func addPreamp(before id: UUID? = nil, nodeID: UUID = UUID()) async throws {
+        try await updateEditingSession { session, effectsEnabled in
+            try session.addPreamp(before: id, nodeID: nodeID, effectsEnabled: effectsEnabled)
         }
     }
 
-    func deletePreamp(id: UUID) throws {
-        try edit { nodes in
-            guard let index = nodes.firstIndex(where: { $0.id == id }) else {
-                throw M1ProductControllerError.nodeNotFound
-            }
-            nodes.remove(at: index)
-            if selectedNodeID == id {
-                selectedNodeID = nodes.indices.contains(index) ? nodes[index].id : nodes.last?.id
-            }
+    func deletePreamp(id: UUID) async throws {
+        try await updateEditingSession { session, effectsEnabled in
+            try session.deleteNode(id: id, effectsEnabled: effectsEnabled)
         }
     }
 
-    func movePreamp(id: UUID, to destination: Int) throws {
-        try edit { nodes in
-            guard let source = nodes.firstIndex(where: { $0.id == id }) else {
-                throw M1ProductControllerError.nodeNotFound
-            }
-            let node = nodes.remove(at: source)
-            nodes.insert(node, at: min(max(destination, 0), nodes.count))
+    func deleteSelectedPreamps() async throws {
+        try await updateEditingSession { session, effectsEnabled in
+            try session.deleteSelection(effectsEnabled: effectsEnabled)
         }
     }
 
-    func setNodeEnabled(id: UUID, enabled: Bool) throws {
-        try updateNode(id: id) { $0.isEnabled = enabled }
+    func movePreamp(id: UUID, to destination: Int) async throws {
+        try await updateEditingSession { session, effectsEnabled in
+            try session.moveNode(id: id, to: destination, effectsEnabled: effectsEnabled)
+        }
     }
 
-    func setGainDB(id: UUID, gainDB: Double) throws {
-        try updateNode(id: id) { $0.gainDB = gainDB }
+    func moveSelectedPreamps(to destination: Int, operation: M1NodeDragOperation) async throws {
+        let copyCount = operation == .copy ? editingSession.selectedNodeIDs.count : 0
+        let ids = (0..<copyCount).map { _ in UUID() }
+        try await updateEditingSession { session, effectsEnabled in
+            try session.moveSelection(
+                to: destination,
+                operation: operation,
+                copiedIDs: ids,
+                effectsEnabled: effectsEnabled
+            )
+        }
     }
 
-    func setChannels(id: UUID, channels: M1ChannelSelection) throws {
-        try updateNode(id: id) { $0.channels = channels }
+    func setNodeEnabled(id: UUID, enabled: Bool) async throws {
+        try await updateEditingSession { session, effectsEnabled in
+            try session.setNodeEnabled(id: id, enabled: enabled, effectsEnabled: effectsEnabled)
+        }
+    }
+
+    func setGainDB(id: UUID, gainDB: Double) async throws {
+        try await updateEditingSession { session, effectsEnabled in
+            try session.setGainDB(id: id, gainDB: gainDB, effectsEnabled: effectsEnabled)
+        }
+    }
+
+    func setChannels(id: UUID, channels: M1ChannelSelection) async throws {
+        try await updateEditingSession { session, effectsEnabled in
+            try session.setChannels(id: id, channels: channels, effectsEnabled: effectsEnabled)
+        }
+    }
+
+    func undo() async throws {
+        try await updateEditingSession { session, effectsEnabled in
+            try session.undo(effectsEnabled: effectsEnabled)
+        }
+    }
+
+    func redo() async throws {
+        try await updateEditingSession { session, effectsEnabled in
+            try session.redo(effectsEnabled: effectsEnabled)
+        }
+    }
+
+    func copySelection(to pasteboard: any M1PasteboardAccess) async throws {
+        guard snapshot().canUseSelection else { throw M1ProductControllerError.commandUnavailable }
+        let session = editingSession
+        let encoded = try await Task.detached { try session.encodedSelection() }.value
+        guard let encoded else { return }
+        guard await pasteboard.writeNodes(encoded.data) else {
+            throw M1ProductControllerError.commandUnavailable
+        }
+    }
+
+    func cutSelection(to pasteboard: any M1PasteboardAccess) async throws {
+        guard snapshot().canUseSelection else { throw M1ProductControllerError.commandUnavailable }
+        let capturedRevision = draftRevision
+        let capturedSelection = editingSession.selectedNodeIDs
+        let session = editingSession
+        let encoded = try await Task.detached { try session.encodedSelection() }.value
+        guard let encoded else { return }
+        guard await pasteboard.writeNodes(encoded.data) else {
+            throw M1ProductControllerError.commandUnavailable
+        }
+        guard capturedRevision == draftRevision,
+              capturedSelection == editingSession.selectedNodeIDs else {
+            throw M1ProductControllerError.commandUnavailable
+        }
+        try await deleteSelectedPreamps()
+    }
+
+    func paste(from pasteboard: any M1PasteboardAccess) async throws {
+        guard snapshot().canEdit else { throw M1ProductControllerError.commandUnavailable }
+        guard let data = await pasteboard.readNodes() else { return }
+        let decoded: M1EncodedNodeEnvelope
+        do {
+            decoded = try await Task.detached { try M1NodeEnvelopeCodec.decode(data) }.value
+        } catch M1EditingSessionError.unsupportedClipboardSchema {
+            return
+        }
+        let ids = decoded.nodes.map { _ in UUID() }
+        try await updateEditingSession { session, effectsEnabled in
+            try session.paste(decoded.nodes, newIDs: ids, effectsEnabled: effectsEnabled)
+        }
+    }
+
+    func reportCommandError(_ message: String) {
+        visibleError = message
     }
 
     func save() async throws {
@@ -252,13 +384,13 @@ actor M1ProductController {
         else {
             throw M1ProductControllerError.commandUnavailable
         }
-        guard draft.effectsEnabled != enabled else { return }
+        if !effectsUpdateInFlight, pendingEffectsIntent == nil, draft.effectsEnabled == enabled {
+            return
+        }
+        pendingEffectsIntent = enabled
+        guard !effectsUpdateInFlight else { return }
         acceptedOperations += 1
         defer { acceptedOperations -= 1 }
-        draft.effectsEnabled = enabled
-        try advanceDraftRevision()
-        refreshDirtyState()
-        pendingEffectsIntent = enabled
         try await drainEffectsUpdates()
         if !persistenceInFlight, pendingEffectsEnabled != nil {
             persistenceInFlight = true
@@ -292,7 +424,9 @@ actor M1ProductController {
                     nodes: startupConfiguration.nodes,
                     layout: layout
                 ).diagnostics
+                activeConfigurationGeneration = commitGeneration
             }
+            expectedConfigurationGeneration = nil
             persistence = draft == saved ? .clean : .modified
         } catch {
             audioState = Self.productAudioState(await audio.state())
@@ -311,6 +445,8 @@ actor M1ProductController {
             layout = nil
             activeDiagnostics = nil
             expectedDiagnostics = nil
+            activeConfigurationGeneration = nil
+            expectedConfigurationGeneration = nil
             pendingApplication = nil
             publicationTask?.cancel()
             publicationTask = nil
@@ -342,6 +478,8 @@ actor M1ProductController {
         layout = nil
         activeDiagnostics = nil
         expectedDiagnostics = nil
+        activeConfigurationGeneration = nil
+        expectedConfigurationGeneration = nil
         if currentState == .stopped {
             persistence = draft == saved ? .savedPendingStart : .modified
         }
@@ -365,6 +503,7 @@ actor M1ProductController {
         applyPersistenceResult(result)
         if case .succeeded = result, let application = uncertainApplication {
             uncertainApplication = nil
+            await invalidatePendingApplication()
             try await publishIfRunning(application)
         }
         if case .uncertain = result { return }
@@ -408,6 +547,66 @@ actor M1ProductController {
         }
     }
 
+    func requestTermination() async -> M1TerminationDecision {
+        let waitedForAcceptedWork = acceptedOperations > 0 || persistenceInFlight || effectsUpdateInFlight
+        while acceptedOperations > 0 || persistenceInFlight || effectsUpdateInFlight {
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        if waitedForAcceptedWork, case let .failed(reason) = persistence {
+            return .stayOpen(reason)
+        }
+        return await currentTerminationDecision()
+    }
+
+    func resolveTermination(_ action: M1TerminationAction) async -> M1TerminationDecision {
+        switch action {
+        case .cancel:
+            return .stayOpen("Termination cancelled")
+        case .discardAndExit, .exit:
+            pendingEffectsIntent = nil
+            pendingEffectsEnabled = nil
+            do {
+                try await shutdown()
+                return .terminate
+            } catch {
+                visibleError = String(describing: error)
+                return .stayOpen(String(describing: error))
+            }
+        case .saveAndExit:
+            do {
+                try await save()
+            } catch {
+                visibleError = String(describing: error)
+                return .stayOpen(String(describing: error))
+            }
+        case .retry:
+            do {
+                if case .uncertain = persistence {
+                    try await retryUncertainPersistence()
+                } else {
+                    try await retryEffectsPersistence()
+                }
+            } catch {
+                visibleError = String(describing: error)
+                return .stayOpen(String(describing: error))
+            }
+        }
+
+        if case let .failed(reason) = persistence { return .stayOpen(reason) }
+        if case .recovery = persistence {
+            return .stayOpen(visibleError ?? "Configuration repair failed")
+        }
+        let decision = await currentTerminationDecision()
+        guard decision == .terminate else { return decision }
+        do {
+            try await shutdown()
+            return .terminate
+        } catch {
+            visibleError = String(describing: error)
+            return .stayOpen(String(describing: error))
+        }
+    }
+
     func waitForPendingApplication() async {
         await publicationTask?.value
     }
@@ -435,6 +634,14 @@ actor M1ProductController {
             snapshot: captured,
             preparation: preparation ?? .waitingForOutput
         )
+        if publishChain {
+            switch result {
+            case .succeeded, .uncertain:
+                await invalidatePendingApplication()
+            case .failed:
+                break
+            }
+        }
         if case .uncertain = result, publishChain {
             uncertainApplication = application
         } else if case .succeeded = result, publishChain {
@@ -462,16 +669,57 @@ actor M1ProductController {
         }
     }
 
+    private func retryEffectsPersistence() async throws {
+        guard !terminating, !persistenceInFlight, !effectsUpdateInFlight, !requiresRepair else {
+            throw M1ProductControllerError.commandUnavailable
+        }
+        if case .uncertain = persistence { throw M1ProductControllerError.commandUnavailable }
+        acceptedOperations += 1
+        persistenceInFlight = true
+        defer {
+            persistenceInFlight = false
+            acceptedOperations -= 1
+        }
+        let candidate = M1ConfigurationSnapshot(
+            effectsEnabled: draft.effectsEnabled,
+            nodes: saved.nodes
+        )
+        try await persist(candidate, publishChain: false, mode: .save)
+    }
+
+    private func currentTerminationDecision() async -> M1TerminationDecision {
+        if case let .uncertain(generation) = persistence {
+            return .prompt(.uncertainPersistence(generation: generation))
+        }
+        let nodesDirty = requiresRepair || draft.nodes != saved.nodes
+        let effectsDirty = draft.effectsEnabled != saved.effectsEnabled
+        if nodesDirty && effectsDirty { return .prompt(.unsavedNodesAndEffects) }
+        if nodesDirty { return .prompt(.unsavedNodes) }
+        if effectsDirty { return .prompt(.unsavedEffects) }
+        do {
+            try await shutdown()
+            return .terminate
+        } catch {
+            visibleError = String(describing: error)
+            return .stayOpen(String(describing: error))
+        }
+    }
+
     private func persistPendingEffects() async throws {
         if case .uncertain = persistence { return }
         guard let enabled = pendingEffectsEnabled else { return }
         pendingEffectsEnabled = nil
         let candidate = M1ConfigurationSnapshot(effectsEnabled: enabled, nodes: saved.nodes)
-        try await persist(
-            candidate,
-            publishChain: false,
-            mode: requiresRepair ? .repair : .save
-        )
+        do {
+            try await persist(
+                candidate,
+                publishChain: false,
+                mode: requiresRepair ? .repair : .save
+            )
+        } catch {
+            if pendingEffectsEnabled == nil { pendingEffectsEnabled = enabled }
+            throw error
+        }
     }
 
     private func drainEffectsUpdates() async throws {
@@ -481,6 +729,25 @@ actor M1ProductController {
         var lastError: (any Error)?
         while let enabled = pendingEffectsIntent {
             pendingEffectsIntent = nil
+            while true {
+                let capturedRevision = draftRevision
+                let candidate = M1ConfigurationSnapshot(
+                    effectsEnabled: enabled,
+                    nodes: draft.nodes
+                )
+                _ = try await Task.detached {
+                    try M1ConfigurationCodec.encode(candidate)
+                }.value
+                if pendingEffectsIntent != nil { break }
+                if capturedRevision != draftRevision { continue }
+                if draft != candidate {
+                    draft = candidate
+                    try advanceDraftRevision()
+                    refreshDirtyState()
+                }
+                break
+            }
+            if pendingEffectsIntent != nil { continue }
             do {
                 if audioState == .running {
                     try await audio.setEffectsEnabled(enabled)
@@ -497,15 +764,29 @@ actor M1ProductController {
         if let lastError { throw lastError }
     }
 
+    private func invalidatePendingApplication() async {
+        let hadPendingApplication = pendingApplication != nil
+        publicationTask?.cancel()
+        publicationTask = nil
+        pendingApplication = nil
+        expectedDiagnostics = nil
+        expectedConfigurationGeneration = nil
+        if hadPendingApplication {
+            await audio.discardPendingPublication()
+        }
+    }
+
     private func publishIfRunning(_ application: PendingApplication) async throws {
         guard application.preparation.layout != nil else {
             persistence = .waitingForOutput
             expectedDiagnostics = nil
+            expectedConfigurationGeneration = nil
             return
         }
         guard audioState == .running else {
             persistence = draft == saved ? .savedPendingStart : .modified
             expectedDiagnostics = application.preparation.compiled?.diagnostics
+            expectedConfigurationGeneration = application.generation
             return
         }
         do {
@@ -515,17 +796,25 @@ actor M1ProductController {
             )
             guard audioState == .running else {
                 persistence = draft == saved ? .savedPendingStart : .modified
+                expectedConfigurationGeneration = application.generation
                 return
             }
             guard let publication else {
                 persistence = .savedPendingStart
                 expectedDiagnostics = application.preparation.compiled?.diagnostics
+                expectedConfigurationGeneration = application.generation
                 return
             }
             expectedDiagnostics = publication.diagnostics
+            expectedConfigurationGeneration = application.generation
             if publication.disposition == .active {
+                publicationTask?.cancel()
+                publicationTask = nil
+                pendingApplication = nil
                 activeDiagnostics = publication.diagnostics
                 expectedDiagnostics = nil
+                activeConfigurationGeneration = application.generation
+                expectedConfigurationGeneration = nil
                 runtimeBaseline = application.snapshot
                 persistence = draft == saved ? .clean : .modified
                 return
@@ -567,29 +856,35 @@ actor M1ProductController {
         }
         activeDiagnostics = application.preparation.compiled?.diagnostics
         expectedDiagnostics = nil
+        activeConfigurationGeneration = application.generation
+        expectedConfigurationGeneration = nil
         runtimeBaseline = application.snapshot
         persistence = draft == saved ? .clean : .modified
     }
 
-    private func edit(_ mutation: (inout [M1PreampNode]) throws -> Void) throws {
+    private func updateEditingSession(
+        _ mutation: @escaping @Sendable (inout M1EditingSession, Bool) throws -> Void
+    ) async throws {
         guard snapshot().canEdit else { throw M1ProductControllerError.commandUnavailable }
-        var candidate = draft.nodes
-        try mutation(&candidate)
-        var snapshot = draft
-        snapshot.nodes = candidate
-        _ = try M1ConfigurationCodec.encode(snapshot)
-        draft = snapshot
+        acceptedOperations += 1
+        defer { acceptedOperations -= 1 }
+        let capturedRevision = draftRevision
+        let current = editingSession
+        let effectsEnabled = draft.effectsEnabled
+        let updated = try await Task.detached {
+            var session = current
+            try mutation(&session, effectsEnabled)
+            return session
+        }.value
+        guard capturedRevision == draftRevision else {
+            throw M1ProductControllerError.commandUnavailable
+        }
+        let nodesChanged = updated.nodes != editingSession.nodes
+        editingSession = updated
+        guard nodesChanged else { return }
+        draft.nodes = updated.nodes
         try advanceDraftRevision()
         refreshDirtyState()
-    }
-
-    private func updateNode(id: UUID, mutation: (inout M1PreampNode) -> Void) throws {
-        try edit { nodes in
-            guard let index = nodes.firstIndex(where: { $0.id == id }) else {
-                throw M1ProductControllerError.nodeNotFound
-            }
-            mutation(&nodes[index])
-        }
     }
 
     private func requireReadyForPersistence() throws {

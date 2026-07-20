@@ -4,7 +4,7 @@
 [`adr/`](./adr/)，M0 证据见 [`milestones/M0-native-route.md`](./milestones/M0-native-route.md)。
 当前实现整体属于 M0 产物；M1 按 <PII type="CASE_ID" id="678"/> 独立编码，不导入、调用或改造本文所列
 M0 类型和桥接。M0 仍是默认产品入口；独立的 M1 target 已实现运行时、原生音频宿主、
-可靠配置和基础产品界面，但尚未经过 M1.4 的真实音频验收与正式产品身份切换。
+可靠配置和桌面编辑界面，但尚未经过 M1.4 的真实音频验收与正式产品身份切换。
 
 ### M1 独立实现边界
 
@@ -21,17 +21,24 @@ slash 并以 LF 结尾，最终 UTF-8 数据上限为 `4 MiB`。设备无关校�
 代次 `0`，不确定结果继续携带首次建立或 previous 恢复来源，且只允许对同代次执行目录同步
 Retry。应用进程只装配一个 production store，不提供多实例或跨进程写盘仲裁。
 
-`M1ProductController` actor 是 M1.2 的产品控制边界。它分别维护草稿修订、配置提交代次和
+`M1ProductController` actor 是 M1 的产品控制边界。它分别维护草稿修订、配置提交代次和
 音频桥接代次；编辑只改变会话草稿，Save 先针对一次发现得到的真实布局在 actor 外构建，
 再持久化不可变候选，最后才向仍匹配的运行桥发布 Prepared 状态。没有输出时仍保存并进入
 等待输出，显式 Retry、Start 或下一次 Save 各只执行一次发现。Stop 可越过 Start 和发布，
 不会取消已接纳提交；过期发布收敛为已保存待启动。
 
+`M1EditingSession` 保存有序节点、多选、焦点和锚点，并提供批量删除、组移动、Option-copy、
+typed 剪贴板和 Undo/Redo。剪贴板沿用规范 JSON 和 `4 MiB` 限制；Undo 与 Redo 合计最多
+30 条、规范载荷合计最多 `64 MiB`，按跨栈单调序号淘汰最旧记录。连续增益手势只合并同一
+节点的更新，其他编辑形成独立历史步骤。草稿与独立已保存基线按语义比较，历史淘汰不改变
+未保存判断。
+
 音效总开关通过独立 Runtime 通道立即更新，随后以最近一次成功保存的节点链提交完整快照；
 Save 期间的多次切换只保留最新成功应用的意图。退休维护把 pending 配置代次提升为 active，
 产品层在提升前分别保留活动与期望诊断。明确 Quit 关闭新命令接纳，等待 bootstrap、Save、
-Retry 和音效后继提交到达终态，再按依赖顺序停止路线；关闭最后一个窗口本身不终止进程。
-M1.3 仍负责多选、剪贴板、Undo/Redo 和完整的退出确认分支。
+Retry、音效后继提交和已接纳编辑到达终态，再按节点、音效、组合或持久化不确定状态进入
+对应的 Save、Discard、Retry、Exit 或 Cancel 分支；只有批准退出后才按依赖顺序停止路线。
+关闭最后一个窗口本身不终止进程，退出取消或失败会恢复编辑窗口。
 
 ## 1. 系统边界
 
@@ -268,13 +275,13 @@ flowchart LR
 - 输出绑定后的身份读回只校验临时 `AudioObjectID`，尚未再次校验持久设备 UID。
 - Tap 或 Aggregate 若在控制器之外失效并发生临时 ID 复用，销毁前尚无持久 UID 复核；
   该边界随设备变化和 `coreaudiod` 恢复在 M4 处理。
-- DSP 仍是固定验证增益和限幅；用户可调处理链边界见已接受但尚未实现的
-  [`ADR-0003`](./adr/0003-prepared-dsp-chain-publication.md)。
+- 默认 M0 产品的 DSP 仍是固定验证增益和限幅；独立 M1 target 已实现用户可调 Preamp
+  处理链，但正式产品入口切换和真实音频验收仍属于 M1.4。
 - 当前 `ContentView` 仍是 M0 实验界面，非 DEBUG 主流程仍暴露 BlackHole 虚拟路线证明和
   安装检查；这不改变已选择的原生路线。产品入口迁移计划见
   [`M1 处理链基础`](./milestones/M1-processing-chain-foundation.md)。
-- 当前应用入口没有显式窗口关闭、Quit 和 `shutdown()` 终止协调钩子；终止协调计划见
-  [`M1 处理链基础`](./milestones/M1-processing-chain-foundation.md)。
+- M1 的窗口、编辑命令、拖拽修饰键和 AppKit 退出提示已完成静态构建及 hostless 状态机验证，
+  但尚未执行 GUI 或 hosted 自动化验收。
 - 应用退出后处理停止。
 - BlackHole 未被选择和安装，因此没有真实设备证据。
 

@@ -103,6 +103,15 @@ actor M1RetirementMaintenanceCoordinator {
         await task?.value
     }
 
+    @discardableResult
+    func discardPending(bridgeGeneration: UInt64) async -> Bool {
+        guard activeBridgeGeneration == bridgeGeneration, !isStopping else {
+            return false
+        }
+        await access.discardPendingPrepared(bridgeGeneration: bridgeGeneration)
+        return true
+    }
+
     /// Stop cancels and joins maintenance before handing pending-candidate
     /// disposal to the same generation-checked serialized access boundary.
     /// Calls for an older generation do not affect the current run.

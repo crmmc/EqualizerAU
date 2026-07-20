@@ -298,6 +298,17 @@ actor M1NativeAudioRouteCoordinator {
         return generations?.active == configurationGeneration
     }
 
+    func discardPendingPublication() async {
+        guard let current, current.phase == .running else { return }
+        let bridgeGeneration = current.bridgeGeneration
+        let maintenanceOwnsGeneration = await retirementMaintenance.discardPending(
+            bridgeGeneration: bridgeGeneration
+        )
+        if !maintenanceOwnsGeneration {
+            await runtimeAccess.discardPendingPrepared(bridgeGeneration: bridgeGeneration)
+        }
+    }
+
     func stop() async throws {
         if startInProgress {
             startCancellationRequested = true
