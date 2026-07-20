@@ -3,7 +3,24 @@
 本文只描述当前真实实现。产品范围见 [`prd.md`](./prd.md)，决策理由见
 [`adr/`](./adr/)，M0 证据见 [`milestones/M0-native-route.md`](./milestones/M0-native-route.md)。
 当前实现整体属于 M0 产物；M1 按 <PII type="CASE_ID" id="678"/> 独立编码，不导入、调用或改造本文所列
-M0 类型和桥接。本文只能作为当前事实参考，直到 M1 产品切换后再整体更新。
+M0 类型和桥接。M0 仍是当前产品入口；独立的 M1 target 已实现运行时、原生音频宿主和
+配置基础，但尚未接管产品界面。
+
+### M1 独立实现边界
+
+`EqualizerAUM1Runtime` 提供正式 C ABI、有限值 Preamp DSP、10 ms 平滑、Prepared 发布和
+退休回收；`EqualizerAUM1` 独立拥有原生 Tap、Aggregate、捕获、输出和代次生命周期。
+配置层使用 typed Preamp 快照以及版本化规范 JSON：编码结果按键排序、可读格式、保留
+slash 并以 LF 结尾，最终 UTF-8 数据上限为 `4 MiB`。设备无关校验不依赖输出布局。
+
+`M1ConfigurationStore` actor 串行化完整快照提交。它通过同目录临时文件、文件同步、原子
+替换和目录同步维护 `config.json` 与上一版完整 `config.previous.json`；首次创建和 Repair
+先建立 previous，再建立主文件。首次创建配置目录时同步其父目录，bootstrap 尝试清理本 store
+命名空间内的遗留临时文件，并区分主文件损坏、缺失和 I/O 失败；从 previous 成功恢复会
+保留显式恢复来源。主文件替换后的最终目录同步失败会保留唯一候选和代次，bootstrap 使用
+代次 `0`，不确定结果继续携带首次建立或 previous 恢复来源，且只允许对同代次执行目录同步
+Retry。配置启动恢复、Save 界面、生命周期和 Runtime 发布之间的产品编排尚未接入，属于
+M1.2；该编排必须在单应用进程内只拥有一个 production store，不提供多实例写盘仲裁。
 
 ## 1. 系统边界
 
@@ -259,4 +276,8 @@ flowchart LR
 | `EqualizerAU/Audio/AudioIOBridge.*` | Objective-C++ 实时桥接和 DSP 边界 |
 | `EqualizerAUTests/` | 单元测试和确定性失败/竞态测试 |
 | `EqualizerAUIntegrationTests/` | 不启动音频的真实 HAL 测试 |
+| `EqualizerAUM1Runtime/` | M1 独立实时库与正式 C ABI |
+| `EqualizerAUM1/Audio/` | M1 独立原生音频宿主、路线与生命周期 |
+| `EqualizerAUM1/Configuration/` | M1 typed 配置、Builder、规范 JSON 与可恢复持久化 |
+| `EqualizerAUM1RuntimeTests/` | 不加载应用宿主的 M1 Runtime、配置和故障注入测试 |
 | `docs/` | 需求、架构、ADR 和里程碑 |

@@ -148,7 +148,7 @@ enum M1ProcessingBuilder {
         )
     }
 
-    private static func validate(nodes: [M1PreampNode]) throws {
+    static func validate(nodes: [M1PreampNode]) throws {
         var nodeIDs = Set<UUID>()
         for node in nodes {
             guard nodeIDs.insert(node.id).inserted else {

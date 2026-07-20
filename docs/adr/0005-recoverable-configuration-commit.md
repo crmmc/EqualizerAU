@@ -2,7 +2,7 @@
 
 | 属性 | 内容 |
 |---|---|
-| 状态 | M1 已接受，待实现 |
+| 状态 | M1 已接受；M1.1 持久化基础已实现，产品编排待 M1.2 |
 | 日期 | 2026-07-19 |
 | 范围 | M1 配置写盘、恢复、Repair 和提交并发 |
 | 配置模型 | [`0004-versioned-native-configuration-and-explicit-save.md`](0004-versioned-native-configuration-and-explicit-save.md) |

@@ -19,8 +19,9 @@ flowchart LR
 当前验证 DSP 为固定 `-12 dB` 增益和限幅。M1 已开始分阶段实施；M1.0 已完成独立工程边界、
 typed Preamp 与真实 buffer/channel 布局快照、确定性 Builder、正式 Runtime ABI、10 ms 平滑、
 完整代次发布与安全回收，以及 M1 自有的原生 Process Tap、tap-only Aggregate、捕获和输出宿主。
-后续从 M1.1 开始实现配置持久化和界面，交付可排序且节点可独立启用或停用的前置放大
-（Preamp）处理链及独立即时音效总开关。
+M1.1 已完成版本化规范 JSON、`4 MiB` 预算、主文件与 previous 轮换、Recovery、Repair、
+结果不确定和同代次 Retry 的持久化基础。下一阶段 M1.2 将接入 Save 界面、生命周期与
+Runtime 发布，交付基础 Preamp 产品闭环和独立即时音效总开关。
 M0 的源码、测试和构建产物只作参考，不被 M1 复用。BlackHole 只作为未启用的后备路线，
 不是当前依赖，也无需安装。
 

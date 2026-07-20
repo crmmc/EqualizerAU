@@ -85,6 +85,12 @@
 		D10000000000000000000026 /* M1AudioIOControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000020 /* M1AudioIOControllerTests.swift */; };
 		D10000000000000000000027 /* M1CoreAudioDataParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000021 /* M1CoreAudioDataParserTests.swift */; };
 		D10000000000000000000028 /* M1SystemCoreAudioHAL.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000015 /* M1SystemCoreAudioHAL.swift */; };
+		D10000000000000000000029 /* M1Configuration.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000022 /* M1Configuration.swift */; };
+		D1000000000000000000002A /* M1Configuration.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000022 /* M1Configuration.swift */; };
+		D1000000000000000000002B /* M1ConfigurationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000023 /* M1ConfigurationStore.swift */; };
+		D1000000000000000000002C /* M1ConfigurationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000023 /* M1ConfigurationStore.swift */; };
+		D1000000000000000000002D /* M1ConfigurationCodecTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000024 /* M1ConfigurationCodecTests.swift */; };
+		D1000000000000000000002E /* M1ConfigurationStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000025 /* M1ConfigurationStoreTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -209,6 +215,10 @@
 		D2000000000000000000001F /* M1AudioRouteResourceControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1AudioRouteResourceControllerTests.swift; sourceTree = "<group>"; };
 		D20000000000000000000020 /* M1AudioIOControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1AudioIOControllerTests.swift; sourceTree = "<group>"; };
 		D20000000000000000000021 /* M1CoreAudioDataParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1CoreAudioDataParserTests.swift; sourceTree = "<group>"; };
+		D20000000000000000000022 /* M1Configuration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1Configuration.swift; sourceTree = "<group>"; };
+		D20000000000000000000023 /* M1ConfigurationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1ConfigurationStore.swift; sourceTree = "<group>"; };
+		D20000000000000000000024 /* M1ConfigurationCodecTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1ConfigurationCodecTests.swift; sourceTree = "<group>"; };
+		D20000000000000000000025 /* M1ConfigurationStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1ConfigurationStoreTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -441,6 +451,8 @@
 			children = (
 				D2000000000000000000000E /* M1ProcessingModel.swift */,
 				D20000000000000000000010 /* M1ProcessingBuilder.swift */,
+				D20000000000000000000022 /* M1Configuration.swift */,
+				D20000000000000000000023 /* M1ConfigurationStore.swift */,
 			);
 			path = Configuration;
 			sourceTree = "<group>";
@@ -504,6 +516,8 @@
 				D2000000000000000000001F /* M1AudioRouteResourceControllerTests.swift */,
 				D20000000000000000000020 /* M1AudioIOControllerTests.swift */,
 				D20000000000000000000021 /* M1CoreAudioDataParserTests.swift */,
+				D20000000000000000000024 /* M1ConfigurationCodecTests.swift */,
+				D20000000000000000000025 /* M1ConfigurationStoreTests.swift */,
 			);
 			path = EqualizerAUM1RuntimeTests;
 			sourceTree = "<group>";
@@ -858,6 +872,8 @@
 				D10000000000000000000003 /* EqualizerAUM1App.swift in Sources */,
 				D1000000000000000000000B /* M1ProcessingModel.swift in Sources */,
 				D1000000000000000000000E /* M1ProcessingBuilder.swift in Sources */,
+				D10000000000000000000029 /* M1Configuration.swift in Sources */,
+				D1000000000000000000002B /* M1ConfigurationStore.swift in Sources */,
 				D10000000000000000000011 /* M1RetirementMaintenanceCoordinator.swift in Sources */,
 				D10000000000000000000014 /* M1AudioRouteModel.swift in Sources */,
 				D10000000000000000000016 /* M1SystemCoreAudioHAL.swift in Sources */,
@@ -878,6 +894,10 @@
 				D1000000000000000000000D /* M1ProcessingModelTests.swift in Sources */,
 				D1000000000000000000000F /* M1ProcessingBuilder.swift in Sources */,
 				D10000000000000000000010 /* M1ProcessingBuilderTests.swift in Sources */,
+				D1000000000000000000002A /* M1Configuration.swift in Sources */,
+				D1000000000000000000002C /* M1ConfigurationStore.swift in Sources */,
+				D1000000000000000000002D /* M1ConfigurationCodecTests.swift in Sources */,
+				D1000000000000000000002E /* M1ConfigurationStoreTests.swift in Sources */,
 				D10000000000000000000012 /* M1RetirementMaintenanceCoordinator.swift in Sources */,
 				D10000000000000000000013 /* M1RetirementMaintenanceCoordinatorTests.swift in Sources */,
 				D10000000000000000000015 /* M1AudioRouteModel.swift in Sources */,
