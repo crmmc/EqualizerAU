@@ -197,12 +197,15 @@ struct M1SystemAudioIOOperations: M1AudioIOOperations, @unchecked Sendable {
 struct M1SystemRuntimeFactory: M1RuntimeCreating, @unchecked Sendable {
     func createRuntime(
         bridgeGeneration: UInt64,
-        channelCount: Int,
+        initialState: M1RuntimeInitialState,
         maximumFrameCount: Int,
         sampleRate: Double
     ) throws -> M1RuntimeHandleLease {
+        let channelCount = initialState.linearGainsByChannel.count
         guard let channels = UInt32(exactly: channelCount), channels > 0,
               let maximumFrames = UInt32(exactly: maximumFrameCount), maximumFrames > 0,
+              !initialState.bufferChannelCounts.isEmpty,
+              initialState.bufferChannelCounts.reduce(0, +) == channelCount,
               sampleRate.isFinite, sampleRate > 0
         else {
             throw M1AudioIOError.invalidConfiguration("invalid Runtime dimensions")
@@ -217,7 +220,7 @@ struct M1SystemRuntimeFactory: M1RuntimeCreating, @unchecked Sendable {
             throw M1AudioIOError.invalidConfiguration("required Runtime atomics are not lock-free")
         }
 
-        let gains = [Float](repeating: 1, count: channelCount)
+        let gains = initialState.linearGainsByChannel
         var prepared: OpaquePointer?
         let preparedStatus = gains.withUnsafeBufferPointer { values in
             EAUM1PreparedStateCreate(values.baseAddress, channels, &prepared)
@@ -226,14 +229,19 @@ struct M1SystemRuntimeFactory: M1RuntimeCreating, @unchecked Sendable {
             throw M1AudioIOError.invalidConfiguration("initial Prepared creation failed")
         }
         var runtime: OpaquePointer?
-        var channelCounts = [channels]
+        var channelCounts = try initialState.bufferChannelCounts.map { count -> UInt32 in
+            guard let value = UInt32(exactly: count), value > 0 else {
+                throw M1AudioIOError.invalidConfiguration("invalid Runtime buffer topology")
+            }
+            return value
+        }
         let createStatus = channelCounts.withUnsafeBufferPointer { counts in
             var description = EAUM1RuntimeDescription(
                 sampleRate: sampleRate,
                 maximumFrameCount: maximumFrames,
-                bufferCount: 1,
+                bufferCount: UInt32(channelCounts.count),
                 channelCounts: counts.baseAddress,
-                effectsEnabled: 1
+                effectsEnabled: initialState.effectsEnabled ? 1 : 0
             )
             return EAUM1RuntimeCreate(&description, &prepared, &runtime)
         }

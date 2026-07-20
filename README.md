@@ -20,8 +20,9 @@ flowchart LR
 typed Preamp 与真实 buffer/channel 布局快照、确定性 Builder、正式 Runtime ABI、10 ms 平滑、
 完整代次发布与安全回收，以及 M1 自有的原生 Process Tap、tap-only Aggregate、捕获和输出宿主。
 M1.1 已完成版本化规范 JSON、`4 MiB` 预算、主文件与 previous 轮换、Recovery、Repair、
-结果不确定和同代次 Retry 的持久化基础。下一阶段 M1.2 将接入 Save 界面、生命周期与
-Runtime 发布，交付基础 Preamp 产品闭环和独立即时音效总开关。
+结果不确定和同代次 Retry 的持久化基础。M1.2 已接入单选 Preamp 编辑、显式 Save、
+Start/Stop、独立即时音效总开关、布局构建、Runtime 发布、基础状态诊断和有序 Quit 清理。
+下一阶段 M1.3 将补齐多选、剪贴板、Undo/Redo 和完整退出确认。
 M0 的源码、测试和构建产物只作参考，不被 M1 复用。BlackHole 只作为未启用的后备路线，
 不是当前依赖，也无需安装。
 

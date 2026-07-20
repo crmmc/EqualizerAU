@@ -91,6 +91,9 @@
 		D1000000000000000000002C /* M1ConfigurationStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000023 /* M1ConfigurationStore.swift */; };
 		D1000000000000000000002D /* M1ConfigurationCodecTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000024 /* M1ConfigurationCodecTests.swift */; };
 		D1000000000000000000002E /* M1ConfigurationStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000025 /* M1ConfigurationStoreTests.swift */; };
+		D1000000000000000000002F /* M1ProductController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000026 /* M1ProductController.swift */; };
+		D10000000000000000000030 /* M1ProductController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000026 /* M1ProductController.swift */; };
+		D10000000000000000000031 /* M1ProductControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000027 /* M1ProductControllerTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -219,6 +222,8 @@
 		D20000000000000000000023 /* M1ConfigurationStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1ConfigurationStore.swift; sourceTree = "<group>"; };
 		D20000000000000000000024 /* M1ConfigurationCodecTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1ConfigurationCodecTests.swift; sourceTree = "<group>"; };
 		D20000000000000000000025 /* M1ConfigurationStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1ConfigurationStoreTests.swift; sourceTree = "<group>"; };
+		D20000000000000000000026 /* M1ProductController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1ProductController.swift; sourceTree = "<group>"; };
+		D20000000000000000000027 /* M1ProductControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1ProductControllerTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -462,6 +467,7 @@
 			children = (
 				D20000000000000000000012 /* M1RetirementMaintenanceCoordinator.swift */,
 				D2000000000000000000001A /* M1RuntimeLeaseAccess.swift */,
+				D20000000000000000000026 /* M1ProductController.swift */,
 			);
 			path = Control;
 			sourceTree = "<group>";
@@ -518,6 +524,7 @@
 				D20000000000000000000021 /* M1CoreAudioDataParserTests.swift */,
 				D20000000000000000000024 /* M1ConfigurationCodecTests.swift */,
 				D20000000000000000000025 /* M1ConfigurationStoreTests.swift */,
+				D20000000000000000000027 /* M1ProductControllerTests.swift */,
 			);
 			path = EqualizerAUM1RuntimeTests;
 			sourceTree = "<group>";
@@ -882,6 +889,7 @@
 				D1000000000000000000001B /* M1SystemAudioIO.swift in Sources */,
 				D1000000000000000000001C /* M1RuntimeLeaseAccess.swift in Sources */,
 				D1000000000000000000001E /* M1NativeAudioRouteCoordinator.swift in Sources */,
+				D1000000000000000000002F /* M1ProductController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -906,10 +914,12 @@
 				D1000000000000000000001A /* M1AudioIOController.swift in Sources */,
 				D1000000000000000000001D /* M1RuntimeLeaseAccess.swift in Sources */,
 				D1000000000000000000001F /* M1NativeAudioRouteCoordinator.swift in Sources */,
+				D10000000000000000000030 /* M1ProductController.swift in Sources */,
 				D10000000000000000000024 /* EAUM1AudioIOHostTests.mm in Sources */,
 				D10000000000000000000025 /* M1AudioRouteResourceControllerTests.swift in Sources */,
 				D10000000000000000000026 /* M1AudioIOControllerTests.swift in Sources */,
 				D10000000000000000000027 /* M1CoreAudioDataParserTests.swift in Sources */,
+				D10000000000000000000031 /* M1ProductControllerTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

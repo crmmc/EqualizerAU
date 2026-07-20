@@ -272,7 +272,7 @@ private final class TestRuntimeFactory: M1RuntimeCreating, @unchecked Sendable {
 
     func createRuntime(
         bridgeGeneration: UInt64,
-        channelCount: Int,
+        initialState: M1RuntimeInitialState,
         maximumFrameCount: Int,
         sampleRate: Double
     ) throws -> M1RuntimeHandleLease {
