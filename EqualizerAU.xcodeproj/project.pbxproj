@@ -1,0 +1,1348 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 60;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		100000000000000000000001 /* EqualizerAUApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000001 /* EqualizerAUApp.swift */; };
+		100000000000000000000002 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000002 /* AppModel.swift */; };
+		100000000000000000000003 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000003 /* ContentView.swift */; };
+		100000000000000000000004 /* AppModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000006 /* AppModelTests.swift */; };
+		100000000000000000000005 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 200000000000000000000008 /* XCTest.framework */; };
+		100000000000000000000006 /* AppHostIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000007 /* AppHostIntegrationTests.swift */; };
+		100000000000000000000007 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 200000000000000000000008 /* XCTest.framework */; };
+		100000000000000000000008 /* ProcessTapProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000B /* ProcessTapProbe.swift */; };
+		100000000000000000000009 /* CoreAudioHAL.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000C /* CoreAudioHAL.swift */; };
+		10000000000000000000000A /* CoreAudioHALTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000D /* CoreAudioHALTests.swift */; };
+		10000000000000000000000B /* AudioDeviceSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000E /* AudioDeviceSnapshot.swift */; };
+		10000000000000000000000C /* AudioDeviceSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000F /* AudioDeviceSnapshotTests.swift */; };
+		10000000000000000000000D /* ProcessTapController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000010 /* ProcessTapController.swift */; };
+		10000000000000000000000E /* ProcessTapControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000011 /* ProcessTapControllerTests.swift */; };
+		10000000000000000000000F /* AggregateDeviceController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000012 /* AggregateDeviceController.swift */; };
+		100000000000000000000010 /* AggregateDeviceControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000013 /* AggregateDeviceControllerTests.swift */; };
+		100000000000000000000011 /* AudioIOBridge.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000014 /* AudioIOBridge.cpp */; };
+		100000000000000000000012 /* AudioIOController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000017 /* AudioIOController.swift */; };
+		100000000000000000000013 /* AudioIOControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000018 /* AudioIOControllerTests.swift */; };
+		100000000000000000000014 /* AudioLifecycleController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000019 /* AudioLifecycleController.swift */; };
+		100000000000000000000015 /* AudioLifecycleControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000020 /* AudioLifecycleControllerTests.swift */; };
+		100000000000000000000016 /* CoreAudioProcessDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000021 /* CoreAudioProcessDiscovery.swift */; };
+		100000000000000000000017 /* CoreAudioProcessDiscoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000022 /* CoreAudioProcessDiscoveryTests.swift */; };
+		100000000000000000000018 /* AudioDebugLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000023 /* AudioDebugLogger.swift */; };
+		100000000000000000000019 /* AudioDSPWAVTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000024 /* AudioDSPWAVTests.swift */; };
+		10000000000000000000001A /* AudioDebugLoggerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000025 /* AudioDebugLoggerTests.swift */; };
+		10000000000000000000001B /* AudioSignalAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000026 /* AudioSignalAnalyzer.swift */; };
+		10000000000000000000001C /* AudioSignalAnalyzerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000027 /* AudioSignalAnalyzerTests.swift */; };
+		10000000000000000000001D /* AudioOutputIsolationTest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000028 /* AudioOutputIsolationTest.swift */; };
+		10000000000000000000001E /* AudioOutputIsolationTestTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000029 /* AudioOutputIsolationTestTests.swift */; };
+		10000000000000000000001F /* BlackHoleDeviceDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002A /* BlackHoleDeviceDiscovery.swift */; };
+		100000000000000000000020 /* DefaultAudioRouteController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002B /* DefaultAudioRouteController.swift */; };
+		100000000000000000000021 /* BlackHoleDeviceDiscoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002C /* BlackHoleDeviceDiscoveryTests.swift */; };
+		100000000000000000000022 /* DefaultAudioRouteControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002D /* DefaultAudioRouteControllerTests.swift */; };
+		100000000000000000000023 /* BlackHoleAudioIOController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002E /* BlackHoleAudioIOController.swift */; };
+		100000000000000000000024 /* BlackHoleAudioIOControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000002F /* BlackHoleAudioIOControllerTests.swift */; };
+		100000000000000000000025 /* BlackHoleAudioPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000030 /* BlackHoleAudioPipeline.swift */; };
+		100000000000000000000026 /* BlackHoleAudioPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000031 /* BlackHoleAudioPipelineTests.swift */; };
+		D10000000000000000000001 /* EAUM1Runtime.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000002 /* EAUM1Runtime.cpp */; };
+		D10000000000000000000002 /* libEqualizerAUM1Runtime.a in Frameworks */ = {isa = PBXBuildFile; fileRef = D20000000000000000000009 /* libEqualizerAUM1Runtime.a */; };
+		D10000000000000000000003 /* EqualizerAUM1App.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000003 /* EqualizerAUM1App.swift */; };
+		D10000000000000000000004 /* EAUM1RuntimeSmokeTests.mm in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000006 /* EAUM1RuntimeSmokeTests.mm */; };
+		D10000000000000000000005 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 200000000000000000000008 /* XCTest.framework */; };
+		D10000000000000000000006 /* libEqualizerAUM1Runtime.a in Frameworks */ = {isa = PBXBuildFile; fileRef = D20000000000000000000009 /* libEqualizerAUM1Runtime.a */; };
+		D10000000000000000000007 /* M1RuntimeBootstrapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000007 /* M1RuntimeBootstrapTests.swift */; };
+		D10000000000000000000008 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 200000000000000000000008 /* XCTest.framework */; };
+		D10000000000000000000009 /* M1AppHostIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000008 /* M1AppHostIntegrationTests.swift */; };
+		D1000000000000000000000A /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 200000000000000000000008 /* XCTest.framework */; };
+		D1000000000000000000000B /* M1ProcessingModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000000E /* M1ProcessingModel.swift */; };
+		D1000000000000000000000C /* M1ProcessingModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000000E /* M1ProcessingModel.swift */; };
+		D1000000000000000000000D /* M1ProcessingModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000000F /* M1ProcessingModelTests.swift */; };
+		D1000000000000000000000E /* M1ProcessingBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000010 /* M1ProcessingBuilder.swift */; };
+		D1000000000000000000000F /* M1ProcessingBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000010 /* M1ProcessingBuilder.swift */; };
+		D10000000000000000000010 /* M1ProcessingBuilderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000011 /* M1ProcessingBuilderTests.swift */; };
+		D10000000000000000000011 /* M1RetirementMaintenanceCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000012 /* M1RetirementMaintenanceCoordinator.swift */; };
+		D10000000000000000000012 /* M1RetirementMaintenanceCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000012 /* M1RetirementMaintenanceCoordinator.swift */; };
+		D10000000000000000000013 /* M1RetirementMaintenanceCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000013 /* M1RetirementMaintenanceCoordinatorTests.swift */; };
+		D10000000000000000000014 /* M1AudioRouteModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000014 /* M1AudioRouteModel.swift */; };
+		D10000000000000000000015 /* M1AudioRouteModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000014 /* M1AudioRouteModel.swift */; };
+		D10000000000000000000016 /* M1SystemCoreAudioHAL.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000015 /* M1SystemCoreAudioHAL.swift */; };
+		D10000000000000000000017 /* EAUM1AudioIOHost.mm in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000017 /* EAUM1AudioIOHost.mm */; };
+		D10000000000000000000018 /* EAUM1AudioIOHost.mm in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000017 /* EAUM1AudioIOHost.mm */; };
+		D10000000000000000000019 /* M1AudioIOController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000018 /* M1AudioIOController.swift */; };
+		D1000000000000000000001A /* M1AudioIOController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000018 /* M1AudioIOController.swift */; };
+		D1000000000000000000001B /* M1SystemAudioIO.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000019 /* M1SystemAudioIO.swift */; };
+		D1000000000000000000001C /* M1RuntimeLeaseAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000001A /* M1RuntimeLeaseAccess.swift */; };
+		D1000000000000000000001D /* M1RuntimeLeaseAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000001A /* M1RuntimeLeaseAccess.swift */; };
+		D1000000000000000000001E /* M1NativeAudioRouteCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000001B /* M1NativeAudioRouteCoordinator.swift */; };
+		D1000000000000000000001F /* M1NativeAudioRouteCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000001B /* M1NativeAudioRouteCoordinator.swift */; };
+		D10000000000000000000020 /* CoreAudio.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2000000000000000000001C /* CoreAudio.framework */; };
+		D10000000000000000000021 /* AudioToolbox.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2000000000000000000001D /* AudioToolbox.framework */; };
+		D10000000000000000000022 /* CoreAudio.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2000000000000000000001C /* CoreAudio.framework */; };
+		D10000000000000000000023 /* AudioToolbox.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2000000000000000000001D /* AudioToolbox.framework */; };
+		D10000000000000000000024 /* EAUM1AudioIOHostTests.mm in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000001E /* EAUM1AudioIOHostTests.mm */; };
+		D10000000000000000000025 /* M1AudioRouteResourceControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000001F /* M1AudioRouteResourceControllerTests.swift */; };
+		D10000000000000000000026 /* M1AudioIOControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000020 /* M1AudioIOControllerTests.swift */; };
+		D10000000000000000000027 /* M1CoreAudioDataParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000021 /* M1CoreAudioDataParserTests.swift */; };
+		D10000000000000000000028 /* M1SystemCoreAudioHAL.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000015 /* M1SystemCoreAudioHAL.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		300000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 400000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 500000000000000000000001;
+			remoteInfo = EqualizerAU;
+		};
+		300000000000000000000002 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 400000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 500000000000000000000001;
+			remoteInfo = EqualizerAU;
+		};
+		D30000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 400000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D50000000000000000000001;
+			remoteInfo = EqualizerAUM1Runtime;
+		};
+		D30000000000000000000002 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 400000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D50000000000000000000001;
+			remoteInfo = EqualizerAUM1Runtime;
+		};
+		D30000000000000000000003 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 400000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D50000000000000000000002;
+			remoteInfo = EqualizerAUM1;
+		};
+		D30000000000000000000004 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 400000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D50000000000000000000002;
+			remoteInfo = EqualizerAUM1;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		200000000000000000000001 /* EqualizerAUApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EqualizerAUApp.swift; sourceTree = "<group>"; };
+		200000000000000000000002 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		200000000000000000000003 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		200000000000000000000004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		200000000000000000000005 /* EqualizerAU.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EqualizerAU.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		200000000000000000000006 /* AppModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelTests.swift; sourceTree = "<group>"; };
+		200000000000000000000007 /* AppHostIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppHostIntegrationTests.swift; sourceTree = "<group>"; };
+		200000000000000000000008 /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = System/Library/Frameworks/XCTest.framework; sourceTree = SDKROOT; };
+		200000000000000000000009 /* EqualizerAUTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = EqualizerAUTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		20000000000000000000000A /* EqualizerAUIntegrationTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = EqualizerAUIntegrationTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		20000000000000000000000B /* ProcessTapProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessTapProbe.swift; sourceTree = "<group>"; };
+		20000000000000000000000C /* CoreAudioHAL.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreAudioHAL.swift; sourceTree = "<group>"; };
+		20000000000000000000000D /* CoreAudioHALTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreAudioHALTests.swift; sourceTree = "<group>"; };
+		20000000000000000000000E /* AudioDeviceSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioDeviceSnapshot.swift; sourceTree = "<group>"; };
+		20000000000000000000000F /* AudioDeviceSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioDeviceSnapshotTests.swift; sourceTree = "<group>"; };
+		200000000000000000000010 /* ProcessTapController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessTapController.swift; sourceTree = "<group>"; };
+		200000000000000000000011 /* ProcessTapControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProcessTapControllerTests.swift; sourceTree = "<group>"; };
+		200000000000000000000012 /* AggregateDeviceController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AggregateDeviceController.swift; sourceTree = "<group>"; };
+		200000000000000000000013 /* AggregateDeviceControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AggregateDeviceControllerTests.swift; sourceTree = "<group>"; };
+		200000000000000000000014 /* AudioIOBridge.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = AudioIOBridge.cpp; sourceTree = "<group>"; };
+		200000000000000000000015 /* AudioIOBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AudioIOBridge.h; sourceTree = "<group>"; };
+		200000000000000000000016 /* EqualizerAU-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "EqualizerAU-Bridging-Header.h"; sourceTree = "<group>"; };
+		200000000000000000000017 /* AudioIOController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioIOController.swift; sourceTree = "<group>"; };
+		200000000000000000000018 /* AudioIOControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioIOControllerTests.swift; sourceTree = "<group>"; };
+		200000000000000000000019 /* AudioLifecycleController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioLifecycleController.swift; sourceTree = "<group>"; };
+		200000000000000000000020 /* AudioLifecycleControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioLifecycleControllerTests.swift; sourceTree = "<group>"; };
+		200000000000000000000021 /* CoreAudioProcessDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreAudioProcessDiscovery.swift; sourceTree = "<group>"; };
+		200000000000000000000022 /* CoreAudioProcessDiscoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreAudioProcessDiscoveryTests.swift; sourceTree = "<group>"; };
+		200000000000000000000023 /* AudioDebugLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioDebugLogger.swift; sourceTree = "<group>"; };
+		200000000000000000000024 /* AudioDSPWAVTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioDSPWAVTests.swift; sourceTree = "<group>"; };
+		200000000000000000000025 /* AudioDebugLoggerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioDebugLoggerTests.swift; sourceTree = "<group>"; };
+		200000000000000000000026 /* AudioSignalAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSignalAnalyzer.swift; sourceTree = "<group>"; };
+		200000000000000000000027 /* AudioSignalAnalyzerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSignalAnalyzerTests.swift; sourceTree = "<group>"; };
+		200000000000000000000028 /* AudioOutputIsolationTest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioOutputIsolationTest.swift; sourceTree = "<group>"; };
+		200000000000000000000029 /* AudioOutputIsolationTestTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioOutputIsolationTestTests.swift; sourceTree = "<group>"; };
+		20000000000000000000002A /* BlackHoleDeviceDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlackHoleDeviceDiscovery.swift; sourceTree = "<group>"; };
+		20000000000000000000002B /* DefaultAudioRouteController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DefaultAudioRouteController.swift; sourceTree = "<group>"; };
+		20000000000000000000002C /* BlackHoleDeviceDiscoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlackHoleDeviceDiscoveryTests.swift; sourceTree = "<group>"; };
+		20000000000000000000002D /* DefaultAudioRouteControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DefaultAudioRouteControllerTests.swift; sourceTree = "<group>"; };
+		20000000000000000000002E /* BlackHoleAudioIOController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlackHoleAudioIOController.swift; sourceTree = "<group>"; };
+		20000000000000000000002F /* BlackHoleAudioIOControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlackHoleAudioIOControllerTests.swift; sourceTree = "<group>"; };
+		200000000000000000000030 /* BlackHoleAudioPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlackHoleAudioPipeline.swift; sourceTree = "<group>"; };
+		200000000000000000000031 /* BlackHoleAudioPipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlackHoleAudioPipelineTests.swift; sourceTree = "<group>"; };
+		D20000000000000000000001 /* EAUM1Runtime.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = EAUM1Runtime.h; sourceTree = "<group>"; };
+		D20000000000000000000002 /* EAUM1Runtime.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = EAUM1Runtime.cpp; sourceTree = "<group>"; };
+		D20000000000000000000003 /* EqualizerAUM1App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EqualizerAUM1App.swift; sourceTree = "<group>"; };
+		D20000000000000000000004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		D20000000000000000000005 /* EqualizerAUM1-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "EqualizerAUM1-Bridging-Header.h"; sourceTree = "<group>"; };
+		D20000000000000000000006 /* EAUM1RuntimeSmokeTests.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = EAUM1RuntimeSmokeTests.mm; sourceTree = "<group>"; };
+		D20000000000000000000007 /* M1RuntimeBootstrapTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1RuntimeBootstrapTests.swift; sourceTree = "<group>"; };
+		D20000000000000000000008 /* M1AppHostIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1AppHostIntegrationTests.swift; sourceTree = "<group>"; };
+		D20000000000000000000009 /* libEqualizerAUM1Runtime.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libEqualizerAUM1Runtime.a; sourceTree = BUILT_PRODUCTS_DIR; };
+		D2000000000000000000000A /* EqualizerAUM1.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EqualizerAUM1.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D2000000000000000000000B /* EqualizerAUM1RuntimeTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = EqualizerAUM1RuntimeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		D2000000000000000000000C /* EqualizerAUM1Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = EqualizerAUM1Tests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		D2000000000000000000000D /* EqualizerAUM1IntegrationTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = EqualizerAUM1IntegrationTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		D2000000000000000000000E /* M1ProcessingModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1ProcessingModel.swift; sourceTree = "<group>"; };
+		D2000000000000000000000F /* M1ProcessingModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1ProcessingModelTests.swift; sourceTree = "<group>"; };
+		D20000000000000000000010 /* M1ProcessingBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1ProcessingBuilder.swift; sourceTree = "<group>"; };
+		D20000000000000000000011 /* M1ProcessingBuilderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1ProcessingBuilderTests.swift; sourceTree = "<group>"; };
+		D20000000000000000000012 /* M1RetirementMaintenanceCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1RetirementMaintenanceCoordinator.swift; sourceTree = "<group>"; };
+		D20000000000000000000013 /* M1RetirementMaintenanceCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1RetirementMaintenanceCoordinatorTests.swift; sourceTree = "<group>"; };
+		D20000000000000000000014 /* M1AudioRouteModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1AudioRouteModel.swift; sourceTree = "<group>"; };
+		D20000000000000000000015 /* M1SystemCoreAudioHAL.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1SystemCoreAudioHAL.swift; sourceTree = "<group>"; };
+		D20000000000000000000016 /* EAUM1AudioIOHost.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = EAUM1AudioIOHost.h; sourceTree = "<group>"; };
+		D20000000000000000000017 /* EAUM1AudioIOHost.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = EAUM1AudioIOHost.mm; sourceTree = "<group>"; };
+		D20000000000000000000018 /* M1AudioIOController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1AudioIOController.swift; sourceTree = "<group>"; };
+		D20000000000000000000019 /* M1SystemAudioIO.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1SystemAudioIO.swift; sourceTree = "<group>"; };
+		D2000000000000000000001A /* M1RuntimeLeaseAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1RuntimeLeaseAccess.swift; sourceTree = "<group>"; };
+		D2000000000000000000001B /* M1NativeAudioRouteCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1NativeAudioRouteCoordinator.swift; sourceTree = "<group>"; };
+		D2000000000000000000001C /* CoreAudio.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreAudio.framework; path = System/Library/Frameworks/CoreAudio.framework; sourceTree = SDKROOT; };
+		D2000000000000000000001D /* AudioToolbox.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AudioToolbox.framework; path = System/Library/Frameworks/AudioToolbox.framework; sourceTree = SDKROOT; };
+		D2000000000000000000001E /* EAUM1AudioIOHostTests.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = EAUM1AudioIOHostTests.mm; sourceTree = "<group>"; };
+		D2000000000000000000001F /* M1AudioRouteResourceControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1AudioRouteResourceControllerTests.swift; sourceTree = "<group>"; };
+		D20000000000000000000020 /* M1AudioIOControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1AudioIOControllerTests.swift; sourceTree = "<group>"; };
+		D20000000000000000000021 /* M1CoreAudioDataParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1CoreAudioDataParserTests.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		600000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		600000000000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				100000000000000000000005 /* XCTest.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		600000000000000000000003 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				100000000000000000000007 /* XCTest.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D60000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D60000000000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D10000000000000000000002 /* libEqualizerAUM1Runtime.a in Frameworks */,
+				D10000000000000000000020 /* CoreAudio.framework in Frameworks */,
+				D10000000000000000000021 /* AudioToolbox.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D60000000000000000000003 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D10000000000000000000005 /* XCTest.framework in Frameworks */,
+				D10000000000000000000006 /* libEqualizerAUM1Runtime.a in Frameworks */,
+				D10000000000000000000022 /* CoreAudio.framework in Frameworks */,
+				D10000000000000000000023 /* AudioToolbox.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D60000000000000000000004 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D10000000000000000000008 /* XCTest.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D60000000000000000000005 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D1000000000000000000000A /* XCTest.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		700000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				700000000000000000000002 /* EqualizerAU */,
+				700000000000000000000005 /* EqualizerAUTests */,
+				700000000000000000000006 /* EqualizerAUIntegrationTests */,
+				D70000000000000000000001 /* EqualizerAUM1 */,
+				D70000000000000000000004 /* EqualizerAUM1Runtime */,
+				D70000000000000000000007 /* EqualizerAUM1RuntimeTests */,
+				D70000000000000000000008 /* EqualizerAUM1Tests */,
+				D70000000000000000000009 /* EqualizerAUM1IntegrationTests */,
+				700000000000000000000007 /* Frameworks */,
+				700000000000000000000008 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		700000000000000000000002 /* EqualizerAU */ = {
+			isa = PBXGroup;
+			children = (
+				700000000000000000000003 /* App */,
+				700000000000000000000009 /* Audio */,
+				700000000000000000000004 /* Resources */,
+				200000000000000000000016 /* EqualizerAU-Bridging-Header.h */,
+			);
+			path = EqualizerAU;
+			sourceTree = "<group>";
+		};
+		700000000000000000000003 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				200000000000000000000001 /* EqualizerAUApp.swift */,
+				200000000000000000000002 /* AppModel.swift */,
+				200000000000000000000003 /* ContentView.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		700000000000000000000004 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				200000000000000000000004 /* Info.plist */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		700000000000000000000005 /* EqualizerAUTests */ = {
+			isa = PBXGroup;
+			children = (
+				200000000000000000000006 /* AppModelTests.swift */,
+				20000000000000000000000D /* CoreAudioHALTests.swift */,
+				20000000000000000000000F /* AudioDeviceSnapshotTests.swift */,
+				200000000000000000000011 /* ProcessTapControllerTests.swift */,
+				200000000000000000000013 /* AggregateDeviceControllerTests.swift */,
+				200000000000000000000018 /* AudioIOControllerTests.swift */,
+				200000000000000000000020 /* AudioLifecycleControllerTests.swift */,
+				200000000000000000000022 /* CoreAudioProcessDiscoveryTests.swift */,
+				200000000000000000000024 /* AudioDSPWAVTests.swift */,
+				200000000000000000000025 /* AudioDebugLoggerTests.swift */,
+				200000000000000000000027 /* AudioSignalAnalyzerTests.swift */,
+				200000000000000000000029 /* AudioOutputIsolationTestTests.swift */,
+				20000000000000000000002C /* BlackHoleDeviceDiscoveryTests.swift */,
+				20000000000000000000002D /* DefaultAudioRouteControllerTests.swift */,
+				20000000000000000000002F /* BlackHoleAudioIOControllerTests.swift */,
+				200000000000000000000031 /* BlackHoleAudioPipelineTests.swift */,
+			);
+			path = EqualizerAUTests;
+			sourceTree = "<group>";
+		};
+		700000000000000000000006 /* EqualizerAUIntegrationTests */ = {
+			isa = PBXGroup;
+			children = (
+				200000000000000000000007 /* AppHostIntegrationTests.swift */,
+			);
+			path = EqualizerAUIntegrationTests;
+			sourceTree = "<group>";
+		};
+		700000000000000000000007 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				200000000000000000000008 /* XCTest.framework */,
+				D2000000000000000000001C /* CoreAudio.framework */,
+				D2000000000000000000001D /* AudioToolbox.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		700000000000000000000008 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				200000000000000000000005 /* EqualizerAU.app */,
+				200000000000000000000009 /* EqualizerAUTests.xctest */,
+				20000000000000000000000A /* EqualizerAUIntegrationTests.xctest */,
+				D20000000000000000000009 /* libEqualizerAUM1Runtime.a */,
+				D2000000000000000000000A /* EqualizerAUM1.app */,
+				D2000000000000000000000B /* EqualizerAUM1RuntimeTests.xctest */,
+				D2000000000000000000000C /* EqualizerAUM1Tests.xctest */,
+				D2000000000000000000000D /* EqualizerAUM1IntegrationTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		700000000000000000000009 /* Audio */ = {
+			isa = PBXGroup;
+			children = (
+				20000000000000000000000C /* CoreAudioHAL.swift */,
+				20000000000000000000000E /* AudioDeviceSnapshot.swift */,
+				200000000000000000000021 /* CoreAudioProcessDiscovery.swift */,
+				200000000000000000000023 /* AudioDebugLogger.swift */,
+				200000000000000000000026 /* AudioSignalAnalyzer.swift */,
+				200000000000000000000028 /* AudioOutputIsolationTest.swift */,
+				20000000000000000000002A /* BlackHoleDeviceDiscovery.swift */,
+				20000000000000000000002B /* DefaultAudioRouteController.swift */,
+				20000000000000000000002E /* BlackHoleAudioIOController.swift */,
+				200000000000000000000030 /* BlackHoleAudioPipeline.swift */,
+				200000000000000000000010 /* ProcessTapController.swift */,
+				200000000000000000000012 /* AggregateDeviceController.swift */,
+				200000000000000000000015 /* AudioIOBridge.h */,
+				200000000000000000000014 /* AudioIOBridge.cpp */,
+				200000000000000000000017 /* AudioIOController.swift */,
+				200000000000000000000019 /* AudioLifecycleController.swift */,
+				20000000000000000000000B /* ProcessTapProbe.swift */,
+			);
+			path = Audio;
+			sourceTree = "<group>";
+		};
+		D70000000000000000000001 /* EqualizerAUM1 */ = {
+			isa = PBXGroup;
+			children = (
+				D70000000000000000000002 /* App */,
+				D7000000000000000000000A /* Configuration */,
+				D7000000000000000000000B /* Control */,
+				D7000000000000000000000C /* Audio */,
+				D70000000000000000000003 /* Resources */,
+				D20000000000000000000005 /* EqualizerAUM1-Bridging-Header.h */,
+			);
+			path = EqualizerAUM1;
+			sourceTree = "<group>";
+		};
+		D70000000000000000000002 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				D20000000000000000000003 /* EqualizerAUM1App.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		D70000000000000000000003 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				D20000000000000000000004 /* Info.plist */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		D7000000000000000000000A /* Configuration */ = {
+			isa = PBXGroup;
+			children = (
+				D2000000000000000000000E /* M1ProcessingModel.swift */,
+				D20000000000000000000010 /* M1ProcessingBuilder.swift */,
+			);
+			path = Configuration;
+			sourceTree = "<group>";
+		};
+		D7000000000000000000000B /* Control */ = {
+			isa = PBXGroup;
+			children = (
+				D20000000000000000000012 /* M1RetirementMaintenanceCoordinator.swift */,
+				D2000000000000000000001A /* M1RuntimeLeaseAccess.swift */,
+			);
+			path = Control;
+			sourceTree = "<group>";
+		};
+		D7000000000000000000000C /* Audio */ = {
+			isa = PBXGroup;
+			children = (
+				D20000000000000000000014 /* M1AudioRouteModel.swift */,
+				D20000000000000000000015 /* M1SystemCoreAudioHAL.swift */,
+				D20000000000000000000016 /* EAUM1AudioIOHost.h */,
+				D20000000000000000000017 /* EAUM1AudioIOHost.mm */,
+				D20000000000000000000018 /* M1AudioIOController.swift */,
+				D20000000000000000000019 /* M1SystemAudioIO.swift */,
+				D2000000000000000000001B /* M1NativeAudioRouteCoordinator.swift */,
+			);
+			path = Audio;
+			sourceTree = "<group>";
+		};
+		D70000000000000000000004 /* EqualizerAUM1Runtime */ = {
+			isa = PBXGroup;
+			children = (
+				D70000000000000000000005 /* include */,
+				D70000000000000000000006 /* src */,
+			);
+			path = EqualizerAUM1Runtime;
+			sourceTree = "<group>";
+		};
+		D70000000000000000000005 /* include */ = {
+			isa = PBXGroup;
+			children = (
+				D20000000000000000000001 /* EAUM1Runtime.h */,
+			);
+			path = include;
+			sourceTree = "<group>";
+		};
+		D70000000000000000000006 /* src */ = {
+			isa = PBXGroup;
+			children = (
+				D20000000000000000000002 /* EAUM1Runtime.cpp */,
+			);
+			path = src;
+			sourceTree = "<group>";
+		};
+		D70000000000000000000007 /* EqualizerAUM1RuntimeTests */ = {
+			isa = PBXGroup;
+			children = (
+				D20000000000000000000006 /* EAUM1RuntimeSmokeTests.mm */,
+				D2000000000000000000000F /* M1ProcessingModelTests.swift */,
+				D20000000000000000000011 /* M1ProcessingBuilderTests.swift */,
+				D20000000000000000000013 /* M1RetirementMaintenanceCoordinatorTests.swift */,
+				D2000000000000000000001E /* EAUM1AudioIOHostTests.mm */,
+				D2000000000000000000001F /* M1AudioRouteResourceControllerTests.swift */,
+				D20000000000000000000020 /* M1AudioIOControllerTests.swift */,
+				D20000000000000000000021 /* M1CoreAudioDataParserTests.swift */,
+			);
+			path = EqualizerAUM1RuntimeTests;
+			sourceTree = "<group>";
+		};
+		D70000000000000000000008 /* EqualizerAUM1Tests */ = {
+			isa = PBXGroup;
+			children = (
+				D20000000000000000000007 /* M1RuntimeBootstrapTests.swift */,
+			);
+			path = EqualizerAUM1Tests;
+			sourceTree = "<group>";
+		};
+		D70000000000000000000009 /* EqualizerAUM1IntegrationTests */ = {
+			isa = PBXGroup;
+			children = (
+				D20000000000000000000008 /* M1AppHostIntegrationTests.swift */,
+			);
+			path = EqualizerAUM1IntegrationTests;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		500000000000000000000001 /* EqualizerAU */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A00000000000000000000001 /* Build configuration list for PBXNativeTarget "EqualizerAU" */;
+			buildPhases = (
+				800000000000000000000001 /* Sources */,
+				600000000000000000000001 /* Frameworks */,
+				900000000000000000000001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = EqualizerAU;
+			productName = EqualizerAU;
+			productReference = 200000000000000000000005 /* EqualizerAU.app */;
+			productType = "com.apple.product-type.application";
+		};
+		500000000000000000000002 /* EqualizerAUTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A00000000000000000000002 /* Build configuration list for PBXNativeTarget "EqualizerAUTests" */;
+			buildPhases = (
+				800000000000000000000002 /* Sources */,
+				600000000000000000000002 /* Frameworks */,
+				900000000000000000000002 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B00000000000000000000001 /* PBXTargetDependency */,
+			);
+			name = EqualizerAUTests;
+			productName = EqualizerAUTests;
+			productReference = 200000000000000000000009 /* EqualizerAUTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		500000000000000000000003 /* EqualizerAUIntegrationTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A00000000000000000000003 /* Build configuration list for PBXNativeTarget "EqualizerAUIntegrationTests" */;
+			buildPhases = (
+				800000000000000000000003 /* Sources */,
+				600000000000000000000003 /* Frameworks */,
+				900000000000000000000003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B00000000000000000000002 /* PBXTargetDependency */,
+			);
+			name = EqualizerAUIntegrationTests;
+			productName = EqualizerAUIntegrationTests;
+			productReference = 20000000000000000000000A /* EqualizerAUIntegrationTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		D50000000000000000000001 /* EqualizerAUM1Runtime */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DA0000000000000000000001 /* Build configuration list for PBXNativeTarget "EqualizerAUM1Runtime" */;
+			buildPhases = (
+				D80000000000000000000001 /* Sources */,
+				D60000000000000000000001 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = EqualizerAUM1Runtime;
+			productName = EqualizerAUM1Runtime;
+			productReference = D20000000000000000000009 /* libEqualizerAUM1Runtime.a */;
+			productType = "com.apple.product-type.library.static";
+		};
+		D50000000000000000000002 /* EqualizerAUM1 */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DA0000000000000000000002 /* Build configuration list for PBXNativeTarget "EqualizerAUM1" */;
+			buildPhases = (
+				D80000000000000000000002 /* Sources */,
+				D60000000000000000000002 /* Frameworks */,
+				D90000000000000000000001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				DB0000000000000000000001 /* PBXTargetDependency */,
+			);
+			name = EqualizerAUM1;
+			productName = EqualizerAUM1;
+			productReference = D2000000000000000000000A /* EqualizerAUM1.app */;
+			productType = "com.apple.product-type.application";
+		};
+		D50000000000000000000003 /* EqualizerAUM1RuntimeTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DA0000000000000000000003 /* Build configuration list for PBXNativeTarget "EqualizerAUM1RuntimeTests" */;
+			buildPhases = (
+				D80000000000000000000003 /* Sources */,
+				D60000000000000000000003 /* Frameworks */,
+				D90000000000000000000002 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				DB0000000000000000000002 /* PBXTargetDependency */,
+			);
+			name = EqualizerAUM1RuntimeTests;
+			productName = EqualizerAUM1RuntimeTests;
+			productReference = D2000000000000000000000B /* EqualizerAUM1RuntimeTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		D50000000000000000000004 /* EqualizerAUM1Tests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DA0000000000000000000004 /* Build configuration list for PBXNativeTarget "EqualizerAUM1Tests" */;
+			buildPhases = (
+				D80000000000000000000004 /* Sources */,
+				D60000000000000000000004 /* Frameworks */,
+				D90000000000000000000003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				DB0000000000000000000003 /* PBXTargetDependency */,
+			);
+			name = EqualizerAUM1Tests;
+			productName = EqualizerAUM1Tests;
+			productReference = D2000000000000000000000C /* EqualizerAUM1Tests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		D50000000000000000000005 /* EqualizerAUM1IntegrationTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DA0000000000000000000005 /* Build configuration list for PBXNativeTarget "EqualizerAUM1IntegrationTests" */;
+			buildPhases = (
+				D80000000000000000000005 /* Sources */,
+				D60000000000000000000005 /* Frameworks */,
+				D90000000000000000000004 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				DB0000000000000000000004 /* PBXTargetDependency */,
+			);
+			name = EqualizerAUM1IntegrationTests;
+			productName = EqualizerAUM1IntegrationTests;
+			productReference = D2000000000000000000000D /* EqualizerAUM1IntegrationTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		400000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2630;
+				LastUpgradeCheck = 2630;
+				TargetAttributes = {
+					500000000000000000000001 = {
+						CreatedOnToolsVersion = 26.3;
+					};
+					500000000000000000000002 = {
+						CreatedOnToolsVersion = 26.3;
+						TestTargetID = 500000000000000000000001;
+					};
+					500000000000000000000003 = {
+						CreatedOnToolsVersion = 26.3;
+						TestTargetID = 500000000000000000000001;
+					};
+					D50000000000000000000001 = {
+						CreatedOnToolsVersion = 26.3;
+					};
+					D50000000000000000000002 = {
+						CreatedOnToolsVersion = 26.3;
+					};
+					D50000000000000000000003 = {
+						CreatedOnToolsVersion = 26.3;
+					};
+					D50000000000000000000004 = {
+						CreatedOnToolsVersion = 26.3;
+						TestTargetID = D50000000000000000000002;
+					};
+					D50000000000000000000005 = {
+						CreatedOnToolsVersion = 26.3;
+						TestTargetID = D50000000000000000000002;
+					};
+				};
+			};
+			buildConfigurationList = A00000000000000000000000 /* Build configuration list for PBXProject "EqualizerAU" */;
+			compatibilityVersion = "Xcode 15.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 700000000000000000000001;
+			productRefGroup = 700000000000000000000008 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				500000000000000000000001 /* EqualizerAU */,
+				500000000000000000000002 /* EqualizerAUTests */,
+				500000000000000000000003 /* EqualizerAUIntegrationTests */,
+				D50000000000000000000001 /* EqualizerAUM1Runtime */,
+				D50000000000000000000002 /* EqualizerAUM1 */,
+				D50000000000000000000003 /* EqualizerAUM1RuntimeTests */,
+				D50000000000000000000004 /* EqualizerAUM1Tests */,
+				D50000000000000000000005 /* EqualizerAUM1IntegrationTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		900000000000000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		900000000000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		900000000000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D90000000000000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D90000000000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D90000000000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D90000000000000000000004 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		800000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				100000000000000000000001 /* EqualizerAUApp.swift in Sources */,
+				100000000000000000000002 /* AppModel.swift in Sources */,
+				100000000000000000000003 /* ContentView.swift in Sources */,
+				100000000000000000000008 /* ProcessTapProbe.swift in Sources */,
+				100000000000000000000009 /* CoreAudioHAL.swift in Sources */,
+				10000000000000000000000B /* AudioDeviceSnapshot.swift in Sources */,
+				10000000000000000000000D /* ProcessTapController.swift in Sources */,
+				10000000000000000000000F /* AggregateDeviceController.swift in Sources */,
+				100000000000000000000011 /* AudioIOBridge.cpp in Sources */,
+				100000000000000000000012 /* AudioIOController.swift in Sources */,
+				100000000000000000000014 /* AudioLifecycleController.swift in Sources */,
+				100000000000000000000016 /* CoreAudioProcessDiscovery.swift in Sources */,
+				100000000000000000000018 /* AudioDebugLogger.swift in Sources */,
+				10000000000000000000001B /* AudioSignalAnalyzer.swift in Sources */,
+				10000000000000000000001D /* AudioOutputIsolationTest.swift in Sources */,
+				10000000000000000000001F /* BlackHoleDeviceDiscovery.swift in Sources */,
+				100000000000000000000020 /* DefaultAudioRouteController.swift in Sources */,
+				100000000000000000000023 /* BlackHoleAudioIOController.swift in Sources */,
+				100000000000000000000025 /* BlackHoleAudioPipeline.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		800000000000000000000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				100000000000000000000004 /* AppModelTests.swift in Sources */,
+				10000000000000000000000A /* CoreAudioHALTests.swift in Sources */,
+				10000000000000000000000C /* AudioDeviceSnapshotTests.swift in Sources */,
+				10000000000000000000000E /* ProcessTapControllerTests.swift in Sources */,
+				100000000000000000000010 /* AggregateDeviceControllerTests.swift in Sources */,
+				100000000000000000000013 /* AudioIOControllerTests.swift in Sources */,
+				100000000000000000000015 /* AudioLifecycleControllerTests.swift in Sources */,
+				100000000000000000000017 /* CoreAudioProcessDiscoveryTests.swift in Sources */,
+				100000000000000000000019 /* AudioDSPWAVTests.swift in Sources */,
+				10000000000000000000001A /* AudioDebugLoggerTests.swift in Sources */,
+				10000000000000000000001C /* AudioSignalAnalyzerTests.swift in Sources */,
+				10000000000000000000001E /* AudioOutputIsolationTestTests.swift in Sources */,
+				100000000000000000000021 /* BlackHoleDeviceDiscoveryTests.swift in Sources */,
+				100000000000000000000022 /* DefaultAudioRouteControllerTests.swift in Sources */,
+				100000000000000000000024 /* BlackHoleAudioIOControllerTests.swift in Sources */,
+				100000000000000000000026 /* BlackHoleAudioPipelineTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		800000000000000000000003 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				100000000000000000000006 /* AppHostIntegrationTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D80000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D10000000000000000000001 /* EAUM1Runtime.cpp in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D80000000000000000000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D10000000000000000000003 /* EqualizerAUM1App.swift in Sources */,
+				D1000000000000000000000B /* M1ProcessingModel.swift in Sources */,
+				D1000000000000000000000E /* M1ProcessingBuilder.swift in Sources */,
+				D10000000000000000000011 /* M1RetirementMaintenanceCoordinator.swift in Sources */,
+				D10000000000000000000014 /* M1AudioRouteModel.swift in Sources */,
+				D10000000000000000000016 /* M1SystemCoreAudioHAL.swift in Sources */,
+				D10000000000000000000017 /* EAUM1AudioIOHost.mm in Sources */,
+				D10000000000000000000019 /* M1AudioIOController.swift in Sources */,
+				D1000000000000000000001B /* M1SystemAudioIO.swift in Sources */,
+				D1000000000000000000001C /* M1RuntimeLeaseAccess.swift in Sources */,
+				D1000000000000000000001E /* M1NativeAudioRouteCoordinator.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D80000000000000000000003 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D10000000000000000000004 /* EAUM1RuntimeSmokeTests.mm in Sources */,
+				D1000000000000000000000C /* M1ProcessingModel.swift in Sources */,
+				D1000000000000000000000D /* M1ProcessingModelTests.swift in Sources */,
+				D1000000000000000000000F /* M1ProcessingBuilder.swift in Sources */,
+				D10000000000000000000010 /* M1ProcessingBuilderTests.swift in Sources */,
+				D10000000000000000000012 /* M1RetirementMaintenanceCoordinator.swift in Sources */,
+				D10000000000000000000013 /* M1RetirementMaintenanceCoordinatorTests.swift in Sources */,
+				D10000000000000000000015 /* M1AudioRouteModel.swift in Sources */,
+				D10000000000000000000028 /* M1SystemCoreAudioHAL.swift in Sources */,
+				D10000000000000000000018 /* EAUM1AudioIOHost.mm in Sources */,
+				D1000000000000000000001A /* M1AudioIOController.swift in Sources */,
+				D1000000000000000000001D /* M1RuntimeLeaseAccess.swift in Sources */,
+				D1000000000000000000001F /* M1NativeAudioRouteCoordinator.swift in Sources */,
+				D10000000000000000000024 /* EAUM1AudioIOHostTests.mm in Sources */,
+				D10000000000000000000025 /* M1AudioRouteResourceControllerTests.swift in Sources */,
+				D10000000000000000000026 /* M1AudioIOControllerTests.swift in Sources */,
+				D10000000000000000000027 /* M1CoreAudioDataParserTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D80000000000000000000004 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D10000000000000000000007 /* M1RuntimeBootstrapTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D80000000000000000000005 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D10000000000000000000009 /* M1AppHostIntegrationTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		B00000000000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 500000000000000000000001 /* EqualizerAU */;
+			targetProxy = 300000000000000000000001 /* PBXContainerItemProxy */;
+		};
+		B00000000000000000000002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 500000000000000000000001 /* EqualizerAU */;
+			targetProxy = 300000000000000000000002 /* PBXContainerItemProxy */;
+		};
+		DB0000000000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D50000000000000000000001 /* EqualizerAUM1Runtime */;
+			targetProxy = D30000000000000000000001 /* PBXContainerItemProxy */;
+		};
+		DB0000000000000000000002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D50000000000000000000001 /* EqualizerAUM1Runtime */;
+			targetProxy = D30000000000000000000002 /* PBXContainerItemProxy */;
+		};
+		DB0000000000000000000003 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D50000000000000000000002 /* EqualizerAUM1 */;
+			targetProxy = D30000000000000000000003 /* PBXContainerItemProxy */;
+		};
+		DB0000000000000000000004 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D50000000000000000000002 /* EqualizerAUM1 */;
+			targetProxy = D30000000000000000000004 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		C00000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "c++20";
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				MACOSX_DEPLOYMENT_TARGET = 14.2;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		C00000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "c++20";
+				COPY_PHASE_STRIP = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				MACOSX_DEPLOYMENT_TARGET = 14.2;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+			};
+			name = Release;
+		};
+		C00000000000000000000003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 598JJTW3KA;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = EqualizerAU/Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ruimingchen.EqualizerAU;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "EqualizerAU/EqualizerAU-Bridging-Header.h";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		C00000000000000000000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 598JJTW3KA;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = EqualizerAU/Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ruimingchen.EqualizerAU;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "EqualizerAU/EqualizerAU-Bridging-Header.h";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		C00000000000000000000005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 598JJTW3KA;
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ruimingchen.EqualizerAU.Tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/EqualizerAU.app/Contents/MacOS/EqualizerAU";
+			};
+			name = Debug;
+		};
+		C00000000000000000000006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 598JJTW3KA;
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ruimingchen.EqualizerAU.Tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/EqualizerAU.app/Contents/MacOS/EqualizerAU";
+			};
+			name = Release;
+		};
+		C00000000000000000000007 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 598JJTW3KA;
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ruimingchen.EqualizerAU.IntegrationTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/EqualizerAU.app/Contents/MacOS/EqualizerAU";
+			};
+			name = Debug;
+		};
+		C00000000000000000000008 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 598JJTW3KA;
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ruimingchen.EqualizerAU.IntegrationTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/EqualizerAU.app/Contents/MacOS/EqualizerAU";
+			};
+			name = Release;
+		};
+		DC0000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/EqualizerAUM1Runtime/include";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+			};
+			name = Debug;
+		};
+		DC0000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/EqualizerAUM1Runtime/include";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+			};
+			name = Release;
+		};
+		DC0000000000000000000003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 598JJTW3KA;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/EqualizerAUM1Runtime/include",
+					"$(SRCROOT)/EqualizerAUM1/Audio",
+				);
+				INFOPLIST_FILE = EqualizerAUM1/Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
+				MARKETING_VERSION = 0.1.0;
+				OTHER_LDFLAGS = "$(inherited) -lc++";
+				PRODUCT_BUNDLE_IDENTIFIER = com.ruimingchen.EqualizerAU.m1;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "EqualizerAUM1/EqualizerAUM1-Bridging-Header.h";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		DC0000000000000000000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 598JJTW3KA;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/EqualizerAUM1Runtime/include",
+					"$(SRCROOT)/EqualizerAUM1/Audio",
+				);
+				INFOPLIST_FILE = EqualizerAUM1/Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
+				MARKETING_VERSION = 0.1.0;
+				OTHER_LDFLAGS = "$(inherited) -lc++";
+				PRODUCT_BUNDLE_IDENTIFIER = com.ruimingchen.EqualizerAU.m1;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "EqualizerAUM1/EqualizerAUM1-Bridging-Header.h";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		DC0000000000000000000005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 598JJTW3KA;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/EqualizerAUM1Runtime/include",
+					"$(SRCROOT)/EqualizerAUM1/Audio",
+				);
+				OTHER_LDFLAGS = "$(inherited) -lc++";
+				PRODUCT_BUNDLE_IDENTIFIER = com.ruimingchen.EqualizerAU.m1.RuntimeTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_OBJC_BRIDGING_HEADER = "EqualizerAUM1/EqualizerAUM1-Bridging-Header.h";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		DC0000000000000000000006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 598JJTW3KA;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/EqualizerAUM1Runtime/include",
+					"$(SRCROOT)/EqualizerAUM1/Audio",
+				);
+				OTHER_LDFLAGS = "$(inherited) -lc++";
+				PRODUCT_BUNDLE_IDENTIFIER = com.ruimingchen.EqualizerAU.m1.RuntimeTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_OBJC_BRIDGING_HEADER = "EqualizerAUM1/EqualizerAUM1-Bridging-Header.h";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		DC0000000000000000000007 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 598JJTW3KA;
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ruimingchen.EqualizerAU.m1.Tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/EqualizerAUM1.app/Contents/MacOS/EqualizerAUM1";
+			};
+			name = Debug;
+		};
+		DC0000000000000000000008 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 598JJTW3KA;
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ruimingchen.EqualizerAU.m1.Tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/EqualizerAUM1.app/Contents/MacOS/EqualizerAUM1";
+			};
+			name = Release;
+		};
+		DC0000000000000000000009 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 598JJTW3KA;
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ruimingchen.EqualizerAU.m1.IntegrationTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/EqualizerAUM1.app/Contents/MacOS/EqualizerAUM1";
+			};
+			name = Debug;
+		};
+		DC000000000000000000000A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 598JJTW3KA;
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ruimingchen.EqualizerAU.m1.IntegrationTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/EqualizerAUM1.app/Contents/MacOS/EqualizerAUM1";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A00000000000000000000000 /* Build configuration list for PBXProject "EqualizerAU" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C00000000000000000000001 /* Debug */,
+				C00000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A00000000000000000000001 /* Build configuration list for PBXNativeTarget "EqualizerAU" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C00000000000000000000003 /* Debug */,
+				C00000000000000000000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A00000000000000000000002 /* Build configuration list for PBXNativeTarget "EqualizerAUTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C00000000000000000000005 /* Debug */,
+				C00000000000000000000006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A00000000000000000000003 /* Build configuration list for PBXNativeTarget "EqualizerAUIntegrationTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C00000000000000000000007 /* Debug */,
+				C00000000000000000000008 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		DA0000000000000000000001 /* Build configuration list for PBXNativeTarget "EqualizerAUM1Runtime" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DC0000000000000000000001 /* Debug */,
+				DC0000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		DA0000000000000000000002 /* Build configuration list for PBXNativeTarget "EqualizerAUM1" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DC0000000000000000000003 /* Debug */,
+				DC0000000000000000000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		DA0000000000000000000003 /* Build configuration list for PBXNativeTarget "EqualizerAUM1RuntimeTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DC0000000000000000000005 /* Debug */,
+				DC0000000000000000000006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		DA0000000000000000000004 /* Build configuration list for PBXNativeTarget "EqualizerAUM1Tests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DC0000000000000000000007 /* Debug */,
+				DC0000000000000000000008 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		DA0000000000000000000005 /* Build configuration list for PBXNativeTarget "EqualizerAUM1IntegrationTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DC0000000000000000000009 /* Debug */,
+				DC000000000000000000000A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 400000000000000000000001 /* Project object */;
+}
