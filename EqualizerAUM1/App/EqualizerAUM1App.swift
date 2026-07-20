@@ -22,6 +22,7 @@ final class M1AppModel: ObservableObject {
         activeConfigurationGeneration: nil,
         expectedConfigurationGeneration: nil,
         realtimeDiagnostics: nil,
+        appliedEffectsEnabled: nil,
         canEdit: false,
         canSetEffects: false,
         canSave: false,
@@ -62,6 +63,10 @@ final class M1AppModel: ObservableObject {
         performEdit { try await self.controller.addPreamp(before: id) }
     }
 
+    func addChannels(before id: UUID?) {
+        performEdit { try await self.controller.addChannels(before: id) }
+    }
+
     func delete(_ id: UUID) {
         performEdit { try await self.controller.deletePreamp(id: id) }
     }
@@ -99,6 +104,14 @@ final class M1AppModel: ObservableObject {
         performEdit {
             try await self.controller.moveSelectedPreamps(to: index, operation: operation)
         }
+    }
+
+    func moveSelection(by offset: Int) {
+        let indexed = snapshot.draft.nodes.enumerated().filter {
+            snapshot.selectedNodeIDs.contains($0.element.id)
+        }
+        guard let first = indexed.first?.offset, let last = indexed.last?.offset else { return }
+        moveSelection(to: offset < 0 ? first - 1 : last + 2, operation: .move)
     }
 
     func beginDrag(_ id: UUID) -> NSItemProvider {
@@ -149,6 +162,45 @@ final class M1AppModel: ObservableObject {
     func retryOutput() { perform { try await self.controller.retryOutputDiscovery() } }
     func refreshDiagnostics() { perform { try await self.controller.refreshDiagnostics() } }
     func setEffects(_ enabled: Bool) { perform { try await self.controller.setEffectsEnabled(enabled) } }
+    func setProcessing(_ enabled: Bool) {
+        perform { try await self.controller.setProcessingEnabled(enabled) }
+    }
+
+    func presentDiagnostics() {
+        guard !terminationPending else { return }
+        commandSequence &+= 1
+        let predecessor = commandTask
+        commandTask = Task {
+            await predecessor?.value
+            do {
+                try await controller.refreshDiagnostics()
+                snapshot = await controller.snapshot()
+                let alert = NSAlert()
+                alert.messageText = "Realtime Diagnostics"
+                alert.informativeText = diagnosticsText(snapshot.realtimeDiagnostics)
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            } catch {
+                await controller.reportCommandError(String(describing: error))
+                snapshot = await controller.snapshot()
+            }
+        }
+    }
+
+    private func diagnosticsText(_ diagnostics: M1RealtimeDiagnostics?) -> String {
+        guard let diagnostics else { return "No running audio route is available." }
+        return """
+        Captured frames: \(diagnostics.io.capturedFrames)
+        Rendered frames: \(diagnostics.io.renderedFrames)
+        Overflow blocks: \(diagnostics.io.overflowedBlocks)
+        Underrun blocks: \(diagnostics.io.underrunBlocks)
+        Dropped backlog frames: \(diagnostics.io.droppedBacklogFrames)
+        Invalid callbacks/process calls: \(diagnostics.io.invalidCallbacks + diagnostics.runtime.invalidProcessCalls)
+        Overlapping callbacks: \(diagnostics.io.overlappingRenderCallbacks + diagnostics.runtime.overlappingCallbacks)
+        Non-finite input samples: \(diagnostics.runtime.nonFiniteInputSamples)
+        Saturated output samples: \(diagnostics.runtime.saturatedOutputSamples)
+        """
+    }
 
     func shutdown() async throws {
         try await controller.shutdown()
@@ -431,6 +483,22 @@ struct EqualizerAUM1App: App {
                 Button("Extend Selection Down") { model.moveFocus(by: 1, extending: true) }
                     .keyboardShortcut(.downArrow, modifiers: [.shift])
                     .disabled(!model.snapshot.canEdit)
+                Divider()
+                Button("Move Selection Up") { model.moveSelection(by: -1) }
+                    .keyboardShortcut(.upArrow, modifiers: [.command, .control])
+                    .disabled(!model.snapshot.canUseSelection)
+                Button("Move Selection Down") { model.moveSelection(by: 1) }
+                    .keyboardShortcut(.downArrow, modifiers: [.command, .control])
+                    .disabled(!model.snapshot.canUseSelection)
+            }
+            CommandMenu("Audio") {
+                Button("Start Engine") { model.start() }
+                    .disabled(!model.snapshot.canStart)
+                Button("Stop Engine") { model.stop() }
+                    .disabled(!model.snapshot.canStop)
+                Divider()
+                Button("Diagnostics Snapshot…") { model.presentDiagnostics() }
+                    .disabled(model.snapshot.audio != .running)
             }
         }
     }
@@ -452,27 +520,19 @@ private struct M1EditorView: View {
 
     private var toolbar: some View {
         HStack(spacing: 12) {
-            Button {
-                if model.snapshot.canStop {
-                    model.stop()
-                } else {
-                    model.start()
-                }
-            } label: {
-                Image(systemName: model.snapshot.canStop ? "stop.fill" : "play.fill")
-            }
-            .help(model.snapshot.canStop ? "Stop processing" : "Start processing")
-            .disabled(!model.snapshot.canStop && !model.snapshot.canStart)
+            Button { model.save() } label: { Image(systemName: "square.and.arrow.down") }
+                .help("Save configuration")
+                .disabled(!model.snapshot.canSave)
 
             Toggle(
-                "Effects",
+                "Processing",
                 isOn: Binding(
-                    get: { model.snapshot.draft.effectsEnabled },
-                    set: { model.setEffects($0) }
+                    get: { model.snapshot.processingEnabled },
+                    set: { model.setProcessing($0) }
                 )
             )
             .toggleStyle(.switch)
-            .disabled(!model.snapshot.canSetEffects)
+            .disabled(!model.snapshot.canSetProcessing)
 
             Spacer()
 
@@ -482,9 +542,13 @@ private struct M1EditorView: View {
             if case .waitingForOutput = model.snapshot.persistence {
                 Button("Retry Output") { model.retryOutput() }
             }
-            Button { model.save() } label: { Image(systemName: "square.and.arrow.down") }
-                .help("Save configuration")
-                .disabled(!model.snapshot.canSave)
+            if let layout = model.snapshot.outputLayout {
+                Text("\(layout.channels.count) ch  \(Int(layout.sampleRate)) Hz")
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("No active output")
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(12)
     }
@@ -492,86 +556,7 @@ private struct M1EditorView: View {
     private var chain: some View {
         List {
             ForEach(Array(model.snapshot.draft.nodes.enumerated()), id: \.element.id) { index, node in
-                HStack(spacing: 10) {
-                    Button { model.add(before: node.id) } label: {
-                        Image(systemName: "plus")
-                    }
-                    .help("Add Preamp before")
-
-                    Toggle("", isOn: Binding(
-                        get: { node.isEnabled },
-                        set: { model.setEnabled($0, id: node.id) }
-                    ))
-                    .labelsHidden()
-
-                    Text("Preamp")
-                        .frame(width: 70, alignment: .leading)
-
-                    Menu {
-                        Button("All") { model.setChannels(.all, id: node.id) }
-                        ForEach(channelIdentifiers(for: node), id: \.self) { identifier in
-                            Toggle(
-                                identifier.rawValue,
-                                isOn: Binding(
-                                    get: { selectedIdentifiers(node.channels).contains(identifier) },
-                                    set: { selected in
-                                        model.setChannels(
-                                            updatedChannels(node.channels, identifier: identifier, selected: selected),
-                                            id: node.id
-                                        )
-                                    }
-                                )
-                            )
-                        }
-                        Divider()
-                        Button("Add Custom Channel…") {
-                            addCustomChannel(to: node)
-                        }
-                    } label: {
-                        Text(channelSummary(node.channels))
-                    }
-                    .frame(width: 110, alignment: .leading)
-
-                     Slider(
-                        value: Binding(
-                            get: { node.gainDB },
-                            set: { model.setGain($0, id: node.id) }
-                        ),
-                        in: -20...20,
-                        step: 0.1,
-                        onEditingChanged: { editing in
-                            if editing { model.beginGesture(node.id) }
-                            else { model.endGesture(node.id) }
-                        }
-                    )
-                    TextField(
-                        "Gain",
-                        value: Binding(
-                            get: { node.gainDB },
-                            set: { model.setGain(min(max($0, -100), 100), id: node.id) }
-                        ),
-                        format: .number.precision(.fractionLength(1))
-                    )
-                        .textFieldStyle(.roundedBorder)
-                        .monospacedDigit()
-                        .frame(width: 58)
-                    Text("dB").foregroundStyle(.secondary)
-
-                    Button { model.move(node.id, to: index - 1) } label: {
-                        Image(systemName: "chevron.up")
-                    }
-                    .disabled(index == 0)
-                    .help("Move up")
-                    Button { model.move(node.id, to: index + 1) } label: {
-                        Image(systemName: "chevron.down")
-                    }
-                    .disabled(index == model.snapshot.draft.nodes.count - 1)
-                    .help("Move down")
-                    Button { model.delete(node.id) } label: {
-                        Image(systemName: "trash")
-                    }
-                    .help("Delete Preamp")
-                }
+                nodeRow(node, index: index)
                 .contentShape(Rectangle())
                 .onTapGesture {
                     model.select(node.id, mode: currentSelectionMode())
@@ -587,8 +572,11 @@ private struct M1EditorView: View {
         }
         .safeAreaInset(edge: .bottom) {
             HStack {
-                Button { model.add(before: nil) } label: {
-                    Label("Preamp", systemImage: "plus")
+                Menu {
+                    Button("Channels") { model.addChannels(before: nil) }
+                    Button("Preamp") { model.add(before: nil) }
+                } label: {
+                    Label("Add", systemImage: "plus")
                 }
                 .disabled(!model.snapshot.canEdit)
                 Spacer()
@@ -611,19 +599,6 @@ private struct M1EditorView: View {
                 Image(systemName: statusIcon)
                 Text(statusText)
                 Spacer()
-                if let layout = model.snapshot.outputLayout {
-                    Text("\(layout.channels.count) ch  \(Int(layout.sampleRate)) Hz")
-                        .foregroundStyle(.secondary)
-                }
-                Button { model.refreshDiagnostics() } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .buttonStyle(.plain)
-                .help("Refresh realtime diagnostics")
-                .disabled(model.snapshot.audio != .running)
-            }
-            if let diagnostics = model.snapshot.realtimeDiagnostics {
-                realtimeDiagnosticLine(diagnostics)
             }
             if let diagnostics = model.snapshot.activeDiagnostics,
                let generation = model.snapshot.activeConfigurationGeneration {
@@ -644,7 +619,23 @@ private struct M1EditorView: View {
 
     private var statusText: String {
         if let error = model.snapshot.visibleError { return error }
-        return "\(String(describing: model.snapshot.audio)) · \(String(describing: model.snapshot.persistence))"
+        switch model.snapshot.persistence {
+        case .clean:
+            if model.snapshot.audio == .running {
+                return model.snapshot.appliedEffectsEnabled == true
+                    ? "Processing active"
+                    : "Processing bypassed"
+            }
+            return "Ready"
+        case .modified: return "Unsaved changes"
+        case let .saving(generation): return "Saving generation \(generation)…"
+        case let .uncertain(generation): return "Generation \(generation) durability is uncertain"
+        case .recovery: return "Configuration repair required"
+        case .waitingForOutput: return "Saved; waiting for an output device"
+        case .savedPendingStart: return "Saved; applies on next engine start"
+        case let .pendingApplication(generation): return "Applying generation \(generation)…"
+        case let .failed(reason): return reason
+        }
     }
 
     @ViewBuilder
@@ -683,12 +674,133 @@ private struct M1EditorView: View {
         return details
     }
 
-    private func realtimeDiagnosticLine(_ diagnostics: M1RealtimeDiagnostics) -> some View {
-        Text(
-            "Realtime: overflow \(diagnostics.io.overflowedBlocks) · underrun \(diagnostics.io.underrunBlocks) · dropped \(diagnostics.io.droppedBacklogFrames) · invalid \(diagnostics.io.invalidCallbacks + diagnostics.runtime.invalidProcessCalls) · overlap \(diagnostics.io.overlappingRenderCallbacks + diagnostics.runtime.overlappingCallbacks) · non-finite \(diagnostics.runtime.nonFiniteInputSamples) · saturated \(diagnostics.runtime.saturatedOutputSamples)"
-        )
-        .foregroundStyle(.secondary)
-        .textSelection(.enabled)
+    @ViewBuilder
+    private func nodeRow(_ node: M1ProcessingNode, index: Int) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: "line.3.horizontal")
+                    .foregroundStyle(.tertiary)
+                Image(systemName: node.kind == .channels ? "speaker.wave.2" : "dial.medium")
+                Text(node.kind == .channels ? "Channels" : "Preamp")
+                    .fontWeight(.medium)
+                    .frame(width: 76, alignment: .leading)
+                if node.kind == .channels {
+                    Text(channelSummary(node.channels))
+                        .foregroundStyle(.secondary)
+                    if let warning = scopeDiagnosticSummary(node.id) {
+                        Text(warning)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                } else {
+                    if !node.isEnabled {
+                        Text("Disabled")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(channelSummary(effectiveSelections[node.id] ?? .all))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(node.gainDB.formatted(.number.precision(.fractionLength(1))))
+                        .monospacedDigit()
+                    Text("dB").foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button { model.delete(node.id) } label: { Image(systemName: "trash") }
+                    .buttonStyle(.plain)
+                    .help("Delete node")
+            }
+
+            if model.snapshot.focusedNodeID == node.id {
+                Divider()
+                if node.kind == .channels {
+                    channelEditor(node)
+                } else {
+                    preampEditor(node)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func scopeDiagnosticSummary(_ nodeID: UUID) -> String? {
+        let active = model.snapshot.activeDiagnostics?.unresolvedChannels
+            .first { $0.nodeID == nodeID }?.identifiers.map(\.rawValue)
+        let expected = model.snapshot.expectedDiagnostics?.unresolvedChannels
+            .first { $0.nodeID == nodeID }?.identifiers.map(\.rawValue)
+        var parts: [String] = []
+        if let active, !active.isEmpty {
+            parts.append("Active unresolved: \(active.joined(separator: ", "))")
+        }
+        if let expected, !expected.isEmpty {
+            parts.append("Expected unresolved: \(expected.joined(separator: ", "))")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private var effectiveSelections: [UUID: M1ChannelSelection] {
+        M1ProcessingScopeResolver.effectiveSelections(nodes: model.snapshot.draft.nodes)
+    }
+
+    private func preampEditor(_ node: M1ProcessingNode) -> some View {
+        HStack(spacing: 10) {
+            Toggle("Enabled", isOn: Binding(
+                get: { node.isEnabled },
+                set: { model.setEnabled($0, id: node.id) }
+            ))
+            Slider(
+                value: Binding(
+                    get: { node.gainDB },
+                    set: { model.setGain($0, id: node.id) }
+                ),
+                in: -20...20,
+                step: 0.1,
+                onEditingChanged: { editing in
+                    if editing { model.beginGesture(node.id) }
+                    else { model.endGesture(node.id) }
+                }
+            )
+            TextField(
+                "Gain",
+                value: Binding(
+                    get: { node.gainDB },
+                    set: { model.setGain(min(max($0, -100), 100), id: node.id) }
+                ),
+                format: .number.precision(.fractionLength(1))
+            )
+            .textFieldStyle(.roundedBorder)
+            .monospacedDigit()
+            .frame(width: 64)
+            Text("dB").foregroundStyle(.secondary)
+        }
+    }
+
+    private func channelEditor(_ node: M1ProcessingNode) -> some View {
+        HStack {
+            Text("Apply following effects to")
+                .foregroundStyle(.secondary)
+            Menu {
+                Button("All") { model.setChannels(.all, id: node.id) }
+                ForEach(channelIdentifiers(for: node), id: \.self) { identifier in
+                    Toggle(
+                        identifier.rawValue,
+                        isOn: Binding(
+                            get: { selectedIdentifiers(node.channels).contains(identifier) },
+                            set: { selected in
+                                model.setChannels(
+                                    updatedChannels(node.channels, identifier: identifier, selected: selected),
+                                    id: node.id
+                                )
+                            }
+                        )
+                    )
+                }
+                Divider()
+                Button("Add Custom Channel…") { addCustomChannel(to: node) }
+            } label: {
+                Text(channelSummary(node.channels))
+            }
+        }
     }
 
     private func rowBackground(for id: UUID) -> some View {
@@ -711,7 +823,7 @@ private struct M1EditorView: View {
         return .replacing
     }
 
-    private func addCustomChannel(to node: M1PreampNode) {
+    private func addCustomChannel(to node: M1ProcessingNode) {
         let alert = NSAlert()
         alert.messageText = "Add Custom Channel"
         alert.informativeText = "Enter a non-empty channel identifier. It will be normalized to uppercase."
@@ -739,7 +851,7 @@ private struct M1EditorView: View {
         return []
     }
 
-    private func channelIdentifiers(for node: M1PreampNode) -> [M1ChannelIdentifier] {
+    private func channelIdentifiers(for node: M1ProcessingNode) -> [M1ChannelIdentifier] {
         var result = selectedIdentifiers(node.channels)
         for channel in model.snapshot.outputLayout?.channels ?? []
         where !result.contains(channel.identifier) {

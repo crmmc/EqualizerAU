@@ -13,8 +13,12 @@ bundle ID 为 `com.ruimingchen.EqualizerAU`。M1 正常构建产物位于 config
 
 `EqualizerAUM1Runtime` 提供正式 C ABI、有限值 Preamp DSP、10 ms 平滑、Prepared 发布和
 退休回收；`EqualizerAUM1` 独立拥有原生 Tap、Aggregate、捕获、输出和代次生命周期。
-配置层使用 typed Preamp 快照以及版本化规范 JSON：编码结果按键排序、可读格式、保留
-slash 并以 LF 结尾，最终 UTF-8 数据上限为 `4 MiB`。设备无关校验不依赖输出布局。
+配置层使用有序的 typed processing-node 快照以及版本化规范 JSON。schema v2 当前包含
+非 DSP 的 Channels 作用域节点和 Preamp 效果节点：Channels 选择后续效果的目标声道，直到
+下一个 Channels 节点覆盖；Preamp 不在 v2 中重复保存声道字段。schema v1 读取时按有效作用域
+变化确定性插入 Channels 节点，保留原 Preamp UUID/顺序，并以确定性加盐避开任何已有 UUID；
+下一次 Save 写出 v2。编码结果按键排序、可读格式、保留 slash 并以 LF 结尾，最终 UTF-8
+数据上限为 `4 MiB`。设备无关校验不依赖输出布局。
 
 `M1ConfigurationStore` actor 串行化完整快照提交。它通过同目录临时文件、文件同步、原子
 替换和目录同步维护 `config.json` 与上一版完整 `config.previous.json`；首次创建和 Repair
@@ -30,13 +34,17 @@ Retry。应用进程只装配一个 production store，不提供多实例或跨�
 等待输出，显式 Retry、Start 或下一次 Save 各只执行一次发现。Stop 可越过 Start 和发布，
 不会取消已接纳提交；过期发布收敛为已保存待启动。
 
-`M1EditingSession` 保存有序节点、多选、焦点和锚点，并提供批量删除、组移动、Option-copy、
+`M1EditingSession` 保存异构有序节点、多选、焦点和锚点，并提供批量删除、组移动、Option-copy、
 typed 剪贴板和 Undo/Redo。剪贴板沿用规范 JSON 和 `4 MiB` 限制；Undo 与 Redo 合计最多
 30 条、规范载荷合计最多 `64 MiB`，按跨栈单调序号淘汰最旧记录。连续增益手势只合并同一
 节点的更新，其他编辑形成独立历史步骤。草稿与独立已保存基线按语义比较，历史淘汰不改变
 未保存判断。
 
-音效总开关通过独立 Runtime 通道立即更新，随后以最近一次成功保存的节点链提交完整快照；
+主窗口只暴露一个 Processing 控件。停止状态下开启会使用已保存配置启动路线；运行中关闭
+只通过独立 Runtime 通道旁路效果而不销毁路线，再次开启恢复效果。真正的 Start/Stop 位于
+高级 Audio 命令，用于生命周期和恢复。Runtime 已应用的效果状态独立于草稿记录，失败的
+持久化或 Runtime 切换不会让 Processing 控件冒充成功。效果切换随后以最近一次成功保存的
+节点链提交完整快照；
 Save 期间的多次切换只保留最新成功应用的意图。退休维护把 pending 配置代次提升为 active，
 产品层在提升前分别保留活动与期望诊断。明确 Quit 关闭新命令接纳，等待 bootstrap、Save、
 Retry、音效后继提交和已接纳编辑到达终态，再按节点、音效、组合或持久化不确定状态进入
@@ -114,7 +122,7 @@ flowchart TD
 
 | 模块 | 当前职责 |
 |---|---|
-| `EqualizerAUApp`、`ContentView` | 展示紧凑操作界面、状态和 DEBUG 诊断入口，不直接拥有 Core Audio 对象 |
+| `EqualizerAUApp`、`ContentView` | 展示 Save、Processing、通用可展开节点行、上下文状态和高级诊断入口，不直接拥有 Core Audio 对象 |
 | `AppModel` | 把用户命令转换为生命周期操作，发布状态和错误，阻止互相冲突的操作 |
 | `CoreAudioHAL` 与发现类型 | 集中读写 HAL 属性，区分持久 UID 与临时 `AudioObjectID`，解析有界格式 |
 | `ProcessTapController` | 翻译本进程身份，创建并校验设备绑定的自排除 Tap，管理所有权令牌和回滚 |

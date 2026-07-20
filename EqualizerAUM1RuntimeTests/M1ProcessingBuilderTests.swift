@@ -339,6 +339,32 @@ final class M1ProcessingBuilderTests: XCTestCase {
         XCTAssertEqual(configuredNode.channels, .identifiers([left]))
     }
 
+    func testChannelsNodesScopeFollowingEffectsAndAttachUnresolvedDiagnosticsToScope() throws {
+        let leftScopeID = UUID()
+        let missingScopeID = UUID()
+        let left = identifier("L")
+        let missing = identifier("CUSTOM")
+        let result = try M1ProcessingBuilder.build(
+            nodes: [
+                .channels(id: leftScopeID, selection: .identifiers([left])),
+                node(gainDB: -6, channels: .all),
+                .channels(id: missingScopeID, selection: .identifiers([missing])),
+                node(gainDB: 12, channels: .all),
+                node(gainDB: -4, channels: .all),
+                .channels(selection: .all),
+                node(gainDB: 3, channels: .all),
+            ],
+            layout: stereoLayout()
+        )
+
+        XCTAssertEqual(result.linearGainsByChannel[0], Float(pow(10, -3.0 / 20)), accuracy: 1e-6)
+        XCTAssertEqual(result.linearGainsByChannel[1], Float(pow(10, 3.0 / 20)), accuracy: 1e-6)
+        XCTAssertEqual(
+            result.diagnostics.unresolvedChannels,
+            [M1UnresolvedChannelDiagnostic(nodeID: missingScopeID, identifiers: [missing])]
+        )
+    }
+
     private func stereoLayout() -> M1OutputLayoutSnapshot {
         M1OutputLayoutSnapshot(
             sampleRate: 48_000,

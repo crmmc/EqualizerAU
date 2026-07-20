@@ -63,6 +63,7 @@ struct M1ProductSnapshot: Equatable, Sendable {
     let activeConfigurationGeneration: UInt64?
     let expectedConfigurationGeneration: UInt64?
     let realtimeDiagnostics: M1RealtimeDiagnostics?
+    let appliedEffectsEnabled: Bool?
     let canEdit: Bool
     let canSetEffects: Bool
     let canSave: Bool
@@ -74,6 +75,15 @@ struct M1ProductSnapshot: Equatable, Sendable {
     let hasUnsavedNodes: Bool
     let hasUnsavedEffects: Bool
     let visibleError: String?
+
+    var processingEnabled: Bool {
+        audio == .running && appliedEffectsEnabled == true
+    }
+
+    var canSetProcessing: Bool {
+        if audio == .running { return canSetEffects }
+        return audio == .stopped && canStart
+    }
 }
 
 enum M1TerminationPrompt: Equatable, Sendable {
@@ -125,6 +135,7 @@ actor M1ProductController {
     private var activeConfigurationGeneration: UInt64?
     private var expectedConfigurationGeneration: UInt64?
     private var realtimeDiagnostics: M1RealtimeDiagnostics?
+    private var appliedEffectsEnabled: Bool?
     private var visibleError: String?
     private var commitGeneration: UInt64 = 0
     private var draftRevision: UInt64 = 0
@@ -202,6 +213,7 @@ actor M1ProductController {
             activeConfigurationGeneration: activeConfigurationGeneration,
             expectedConfigurationGeneration: expectedConfigurationGeneration,
             realtimeDiagnostics: realtimeDiagnostics,
+            appliedEffectsEnabled: appliedEffectsEnabled,
             canEdit: bootstrapped && !uncertain && !terminating,
             canSetEffects: bootstrapped && !uncertain && !recovery && !terminating
                 && (audioState == .stopped || audioState == .running),
@@ -252,6 +264,21 @@ actor M1ProductController {
     func addPreamp(before id: UUID? = nil, nodeID: UUID = UUID()) async throws {
         try await updateEditingSession { session, effectsEnabled in
             try session.addPreamp(before: id, nodeID: nodeID, effectsEnabled: effectsEnabled)
+        }
+    }
+
+    func addChannels(
+        before id: UUID? = nil,
+        nodeID: UUID = UUID(),
+        selection: M1ChannelSelection = .all
+    ) async throws {
+        try await updateEditingSession { session, effectsEnabled in
+            try session.addChannels(
+                before: id,
+                nodeID: nodeID,
+                selection: selection,
+                effectsEnabled: effectsEnabled
+            )
         }
     }
 
@@ -388,7 +415,9 @@ actor M1ProductController {
         else {
             throw M1ProductControllerError.commandUnavailable
         }
-        if !effectsUpdateInFlight, pendingEffectsIntent == nil, draft.effectsEnabled == enabled {
+        let alreadyApplied = audioState != .running || appliedEffectsEnabled == enabled
+        if !effectsUpdateInFlight, pendingEffectsIntent == nil,
+           draft.effectsEnabled == enabled, alreadyApplied {
             return
         }
         pendingEffectsIntent = enabled
@@ -400,6 +429,27 @@ actor M1ProductController {
             persistenceInFlight = true
             defer { persistenceInFlight = false }
             try await persistPendingEffects()
+        }
+    }
+
+    func setProcessingEnabled(_ enabled: Bool) async throws {
+        if enabled {
+            if audioState == .running {
+                if appliedEffectsEnabled != true { try await setEffectsEnabled(true) }
+                return
+            }
+            guard audioState == .stopped else {
+                throw M1ProductControllerError.commandUnavailable
+            }
+            if !draft.effectsEnabled { try await setEffectsEnabled(true) }
+            guard saved.effectsEnabled, snapshot().canStart else {
+                throw M1ProductControllerError.commandUnavailable
+            }
+            let configuration = try beginStart()
+            try await finishStart(configuration: configuration)
+        } else {
+            guard audioState == .running else { return }
+            if appliedEffectsEnabled == true { try await setEffectsEnabled(false) }
         }
     }
 
@@ -422,6 +472,7 @@ actor M1ProductController {
             try await audio.start(configuration: startupConfiguration)
             audioState = .running
             runtimeBaseline = startupConfiguration
+            appliedEffectsEnabled = startupConfiguration.effectsEnabled
             layout = await audio.outputLayout()
             if let layout {
                 activeDiagnostics = try M1ProcessingBuilder.build(
@@ -452,6 +503,7 @@ actor M1ProductController {
             activeConfigurationGeneration = nil
             expectedConfigurationGeneration = nil
             realtimeDiagnostics = nil
+            appliedEffectsEnabled = nil
             pendingApplication = nil
             publicationTask?.cancel()
             publicationTask = nil
@@ -486,6 +538,7 @@ actor M1ProductController {
         activeConfigurationGeneration = nil
         expectedConfigurationGeneration = nil
         realtimeDiagnostics = nil
+        appliedEffectsEnabled = nil
         if currentState == .stopped {
             persistence = draft == saved ? .savedPendingStart : .modified
         }
@@ -764,6 +817,7 @@ actor M1ProductController {
             do {
                 if audioState == .running {
                     try await audio.setEffectsEnabled(enabled)
+                    appliedEffectsEnabled = enabled
                 }
                 if pendingEffectsIntent == nil {
                     pendingEffectsEnabled = enabled

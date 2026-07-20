@@ -24,7 +24,9 @@ M1.1 已完成版本化规范 JSON、`4 MiB` 预算、主文件与 previous 轮�
 Start/Stop、独立即时音效总开关、布局构建、Runtime 发布、基础状态诊断和有序 Quit 清理。
 M1.3 已完成多选与键盘选择、typed 剪贴板、组移动与 Option-copy、预算化 Undo/Redo、
 分代诊断和完整退出确认。M1.4 已完成并发压力、Repair 故障注入、实时静态审计、运行计数器、
-正式 `EqualizerAU` 产品身份和用户明确执行的真实音频验收。M1 已关闭，下一阶段为 M2 Graphic EQ。
+正式 `EqualizerAU` 产品身份和用户明确执行的真实音频验收。M1 已关闭。M2 前置基础已把
+配置升级为有序的 Channels/Preamp schema v2，并把主界面统一为 Processing 控制和通用节点行；
+Graphic EQ DSP 尚未开始。
 M0 的源码、测试和构建产物只作参考，不被 M1 复用。BlackHole 只作为未启用的后备路线，
 不是当前依赖，也无需安装。
 
@@ -99,6 +101,7 @@ flowchart TD
 | [`docs/milestones/M0-native-route.md`](docs/milestones/M0-native-route.md) | M0 计划、实验、发现、证据和结论 |
 | [`docs/milestones/M1-processing-chain-foundation.md`](docs/milestones/M1-processing-chain-foundation.md) | M1 范围、工作包、验证计划和退出条件 |
 | [`docs/milestones/M1.0-runtime-kernel.md`](docs/milestones/M1.0-runtime-kernel.md) | M1.0 独立 target、运行时 ABI、所有权、实施顺序和阶段门槛 |
+| [`docs/milestones/M2-graphic-equalizer.md`](docs/milestones/M2-graphic-equalizer.md) | M2 Graphic EQ 范围、前置基础、验证计划和阶段证据 |
 | [`CONTEXT.md`](CONTEXT.md) | 产品与处理链的规范领域词汇 |
 | [`AGENTS.md`](AGENTS.md) | 编码 Agent 的仓库工作规范 |
 

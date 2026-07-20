@@ -13,6 +13,7 @@ enum M1NodeDragOperation: Equatable, Sendable {
 
 enum M1EditingSessionError: Error, Equatable, Sendable {
     case nodeNotFound
+    case invalidNodeKind
     case generationExhausted
     case invalidClipboard
     case unsupportedClipboardSchema(Int)
@@ -25,15 +26,16 @@ protocol M1PasteboardAccess: Sendable {
 }
 
 struct M1EncodedNodeEnvelope: Equatable, Sendable {
-    let nodes: [M1PreampNode]
+    let nodes: [M1ProcessingNode]
     let data: Data
 }
 
 enum M1NodeEnvelopeCodec {
-    static let schemaVersion = 1
+    static let schemaVersion = 2
     static let maximumDataSize = M1ConfigurationCodec.maximumDataSize
 
-    static func encode(_ nodes: [M1PreampNode]) throws -> M1EncodedNodeEnvelope {
+    static func encode(_ nodes: [M1ProcessingNode]) throws -> M1EncodedNodeEnvelope {
+        let nodes = M1ConfigurationMigration.normalizedV2Nodes(nodes)
         do {
             try M1ProcessingBuilder.validate(nodes: nodes)
         } catch let error as M1ProcessingBuildError {
@@ -59,17 +61,29 @@ enum M1NodeEnvelopeCodec {
                 maximum: maximumDataSize
             )
         }
-        let wire: M1NodeEnvelopeWire
+        let version: M1NodeEnvelopeVersionWire
         do {
-            wire = try JSONDecoder().decode(M1NodeEnvelopeWire.self, from: data)
+            version = try JSONDecoder().decode(M1NodeEnvelopeVersionWire.self, from: data)
         } catch {
             throw M1EditingSessionError.invalidClipboard
         }
-        guard wire.schemaVersion == schemaVersion else {
-            throw M1EditingSessionError.unsupportedClipboardSchema(wire.schemaVersion)
-        }
         do {
-            return try encode(wire.nodes.map { try $0.node() })
+            switch version.schemaVersion {
+            case 1:
+                try M1JSONShapeValidator.validateNodeEnvelope(data, schemaVersion: 1)
+                let wire = try JSONDecoder().decode(M1NodeEnvelopeV1Wire.self, from: data)
+                return try encode(
+                    M1ConfigurationMigration.migratedV1Nodes(
+                        try wire.nodes.map { try $0.node() }
+                    )
+                )
+            case schemaVersion:
+                try M1JSONShapeValidator.validateNodeEnvelope(data, schemaVersion: schemaVersion)
+                let wire = try JSONDecoder().decode(M1NodeEnvelopeWire.self, from: data)
+                return try encode(try wire.nodes.map { try $0.node() })
+            default:
+                throw M1EditingSessionError.unsupportedClipboardSchema(version.schemaVersion)
+            }
         } catch let error as M1EditingSessionError {
             throw error
         } catch {
@@ -78,14 +92,23 @@ enum M1NodeEnvelopeCodec {
     }
 }
 
+private struct M1NodeEnvelopeVersionWire: Decodable {
+    let schemaVersion: Int
+}
+
 private struct M1NodeEnvelopeWire: Codable {
     let schemaVersion: Int
-    let nodes: [M1PreampNodeWire]
+    let nodes: [M1ProcessingNodeWire]
 
-    init(nodes: [M1PreampNode]) {
+    init(nodes: [M1ProcessingNode]) {
         schemaVersion = M1NodeEnvelopeCodec.schemaVersion
-        self.nodes = nodes.map(M1PreampNodeWire.init)
+        self.nodes = nodes.map { M1ProcessingNodeWire($0) }
     }
+}
+
+private struct M1NodeEnvelopeV1Wire: Decodable {
+    let schemaVersion: Int
+    let nodes: [M1PreampNodeWire]
 }
 
 struct M1EditingHistoryMetrics: Equatable, Sendable {
@@ -99,12 +122,12 @@ struct M1EditingSession: Sendable {
     static let maximumHistoryDataSize = 64 * 1024 * 1024
 
     private struct HistoryRecord: Sendable {
-        let nodes: [M1PreampNode]
+        let nodes: [M1ProcessingNode]
         let dataSize: Int
         let sequence: UInt64
     }
 
-    private(set) var nodes: [M1PreampNode]
+    private(set) var nodes: [M1ProcessingNode]
     private(set) var selectedNodeIDs: Set<UUID> = []
     private(set) var focusedNodeID: UUID?
     private(set) var selectionAnchorNodeID: UUID?
@@ -117,7 +140,7 @@ struct M1EditingSession: Sendable {
     private let historyDataSizeLimit: Int
 
     init(
-        nodes: [M1PreampNode],
+        nodes: [M1ProcessingNode],
         historyCountLimit: Int = Self.maximumHistoryCount,
         historyDataSizeLimit: Int = Self.maximumHistoryDataSize
     ) {
@@ -227,6 +250,22 @@ struct M1EditingSession: Sendable {
         try replaceNodes(candidate, effectsEnabled: effectsEnabled)
     }
 
+    mutating func addChannels(
+        before id: UUID?,
+        nodeID: UUID,
+        selection: M1ChannelSelection,
+        effectsEnabled: Bool
+    ) throws {
+        var candidate = nodes
+        let node = M1ProcessingNode.channels(id: nodeID, selection: selection)
+        if let id, let index = candidate.firstIndex(where: { $0.id == id }) {
+            candidate.insert(node, at: index)
+        } else {
+            candidate.append(node)
+        }
+        try replaceNodes(candidate, effectsEnabled: effectsEnabled)
+    }
+
     mutating func deleteNode(id: UUID, effectsEnabled: Bool) throws {
         guard let index = nodes.firstIndex(where: { $0.id == id }) else {
             throw M1EditingSessionError.nodeNotFound
@@ -248,10 +287,16 @@ struct M1EditingSession: Sendable {
     }
 
     mutating func setNodeEnabled(id: UUID, enabled: Bool, effectsEnabled: Bool) throws {
+        guard nodes.first(where: { $0.id == id })?.kind == .preamp else {
+            throw M1EditingSessionError.invalidNodeKind
+        }
         try updateNode(id: id, effectsEnabled: effectsEnabled) { $0.isEnabled = enabled }
     }
 
     mutating func setGainDB(id: UUID, gainDB: Double, effectsEnabled: Bool) throws {
+        guard nodes.first(where: { $0.id == id })?.kind == .preamp else {
+            throw M1EditingSessionError.invalidNodeKind
+        }
         try updateNode(
             id: id,
             effectsEnabled: effectsEnabled,
@@ -264,6 +309,9 @@ struct M1EditingSession: Sendable {
         channels: M1ChannelSelection,
         effectsEnabled: Bool
     ) throws {
+        guard nodes.first(where: { $0.id == id })?.kind == .channels else {
+            throw M1EditingSessionError.invalidNodeKind
+        }
         try updateNode(id: id, effectsEnabled: effectsEnabled) { $0.channels = channels }
     }
 
@@ -276,7 +324,7 @@ struct M1EditingSession: Sendable {
         let selected = nodes.enumerated().filter { selectedNodeIDs.contains($0.element.id) }
         guard !selected.isEmpty else { return }
         let sourceNodes = selected.map(\.element)
-        let inserted: [M1PreampNode]
+        let inserted: [M1ProcessingNode]
         switch operation {
         case .move:
             inserted = sourceNodes
@@ -284,14 +332,7 @@ struct M1EditingSession: Sendable {
             guard copiedIDs.count == sourceNodes.count else {
                 throw M1EditingSessionError.invalidClipboard
             }
-            inserted = zip(sourceNodes, copiedIDs).map { node, id in
-                M1PreampNode(
-                    id: id,
-                    isEnabled: node.isEnabled,
-                    gainDB: node.gainDB,
-                    channels: node.channels
-                )
-            }
+            inserted = zip(sourceNodes, copiedIDs).map { node, id in node.copied(id: id) }
         }
 
         var candidate = nodes
@@ -323,7 +364,7 @@ struct M1EditingSession: Sendable {
     }
 
     mutating func paste(
-        _ pastedNodes: [M1PreampNode],
+        _ pastedNodes: [M1ProcessingNode],
         newIDs: [UUID],
         effectsEnabled: Bool
     ) throws {
@@ -331,14 +372,7 @@ struct M1EditingSession: Sendable {
         guard pastedNodes.count == newIDs.count else {
             throw M1EditingSessionError.invalidClipboard
         }
-        let inserted = zip(pastedNodes, newIDs).map { node, id in
-            M1PreampNode(
-                id: id,
-                isEnabled: node.isEnabled,
-                gainDB: node.gainDB,
-                channels: node.channels
-            )
-        }
+        let inserted = zip(pastedNodes, newIDs).map { node, id in node.copied(id: id) }
         let insertionIndex = nodes.firstIndex { selectedNodeIDs.contains($0.id) } ?? nodes.count
         var candidate = nodes
         candidate.insert(contentsOf: inserted, at: insertionIndex)
@@ -381,7 +415,7 @@ struct M1EditingSession: Sendable {
         id: UUID,
         effectsEnabled: Bool,
         coalescingGestureID: UUID? = nil,
-        mutation: (inout M1PreampNode) -> Void
+        mutation: (inout M1ProcessingNode) -> Void
     ) throws {
         guard let index = nodes.firstIndex(where: { $0.id == id }) else {
             throw M1EditingSessionError.nodeNotFound
@@ -396,13 +430,14 @@ struct M1EditingSession: Sendable {
     }
 
     private mutating func replaceNodes(
-        _ candidate: [M1PreampNode],
+        _ candidate: [M1ProcessingNode],
         effectsEnabled: Bool,
         coalescingGestureID: UUID? = nil
     ) throws {
         guard candidate != nodes else { return }
+        let normalized = M1ConfigurationMigration.normalizedV2Nodes(candidate)
         _ = try M1ConfigurationCodec.encode(
-            M1ConfigurationSnapshot(effectsEnabled: effectsEnabled, nodes: candidate)
+            M1ConfigurationSnapshot(effectsEnabled: effectsEnabled, nodes: normalized)
         )
         let coalesces = activeGestureID != nil && activeGestureID == coalescingGestureID
         if !coalesces {
@@ -414,11 +449,11 @@ struct M1EditingSession: Sendable {
             redoStack.removeAll()
             gestureRecordedHistory = coalesces
         }
-        nodes = candidate
+        nodes = normalized
         trimHistory()
     }
 
-    private mutating func makeRecord(_ nodes: [M1PreampNode]) throws -> HistoryRecord {
+    private mutating func makeRecord(_ nodes: [M1ProcessingNode]) throws -> HistoryRecord {
         guard nextSequence < UInt64.max else { throw M1EditingSessionError.generationExhausted }
         nextSequence += 1
         let encoded = try M1NodeEnvelopeCodec.encode(nodes)

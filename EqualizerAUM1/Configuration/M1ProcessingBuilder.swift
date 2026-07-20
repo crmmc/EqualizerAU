@@ -41,7 +41,7 @@ enum M1ProcessingBuilder {
     private static let minimumNormalGainDB = 20 * log10(Double(Float.leastNormalMagnitude))
 
     static func build(
-        nodes: [M1PreampNode],
+        nodes: [M1ProcessingNode],
         layout: M1OutputLayoutSnapshot
     ) throws -> M1CompiledPreampTargets {
         try validate(nodes: nodes)
@@ -51,10 +51,21 @@ enum M1ProcessingBuilder {
         )
         var gainsByChannel = Array(repeating: [Double](), count: layout.channels.count)
         var unresolvedDiagnostics: [M1UnresolvedChannelDiagnostic] = []
+        var reportedUnresolvedOwners: Set<UUID> = []
 
-        for node in nodes where node.isEnabled {
+        var currentScope: M1ChannelSelection = .all
+        var currentScopeNodeID: UUID?
+        for node in nodes {
+            if node.kind == .channels {
+                currentScope = node.channels
+                currentScopeNodeID = node.id
+                continue
+            }
+            guard node.isEnabled else { continue }
+            let effectiveScope = node.channels == .all ? currentScope : node.channels
+            let diagnosticNodeID = node.channels == .all ? currentScopeNodeID : node.id
             let selectedIndexes: [Int]
-            switch node.channels {
+            switch effectiveScope {
             case .all:
                 selectedIndexes = Array(layout.channels.indices)
             case let .identifiers(values):
@@ -69,10 +80,12 @@ enum M1ProcessingBuilder {
                         unresolvedIdentifiers.append(identifier)
                     }
                 }
-                if !unresolvedIdentifiers.isEmpty {
+                let ownerID = diagnosticNodeID ?? node.id
+                if !unresolvedIdentifiers.isEmpty,
+                   reportedUnresolvedOwners.insert(ownerID).inserted {
                     unresolvedDiagnostics.append(
                         M1UnresolvedChannelDiagnostic(
-                            nodeID: node.id,
+                            nodeID: ownerID,
                             identifiers: unresolvedIdentifiers
                         )
                     )
@@ -148,17 +161,19 @@ enum M1ProcessingBuilder {
         )
     }
 
-    static func validate(nodes: [M1PreampNode]) throws {
+    static func validate(nodes: [M1ProcessingNode]) throws {
         var nodeIDs = Set<UUID>()
         for node in nodes {
             guard nodeIDs.insert(node.id).inserted else {
                 throw M1ProcessingBuildError.duplicateNodeID(node.id)
             }
-            guard node.gainDB.isFinite else {
-                throw M1ProcessingBuildError.nonFiniteGain(nodeID: node.id)
-            }
-            guard node.gainDB >= minimumGainDB, node.gainDB <= maximumGainDB else {
-                throw M1ProcessingBuildError.gainOutOfRange(nodeID: node.id)
+            if node.kind == .preamp {
+                guard node.gainDB.isFinite else {
+                    throw M1ProcessingBuildError.nonFiniteGain(nodeID: node.id)
+                }
+                guard node.gainDB >= minimumGainDB, node.gainDB <= maximumGainDB else {
+                    throw M1ProcessingBuildError.gainOutOfRange(nodeID: node.id)
+                }
             }
 
             switch node.channels {

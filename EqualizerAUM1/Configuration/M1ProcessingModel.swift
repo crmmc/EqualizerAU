@@ -27,11 +27,87 @@ enum M1ChannelSelection: Equatable, Sendable {
     case identifiers([M1ChannelIdentifier])
 }
 
-struct M1PreampNode: Identifiable, Equatable, Sendable {
+enum M1ProcessingNodeKind: String, Sendable {
+    case channels
+    case preamp
+}
+
+struct M1ProcessingNode: Identifiable, Equatable, Sendable {
     let id: UUID
+    var kind: M1ProcessingNodeKind
     var isEnabled: Bool
     var gainDB: Double
     var channels: M1ChannelSelection
+
+    init(
+        id: UUID,
+        isEnabled: Bool,
+        gainDB: Double,
+        channels: M1ChannelSelection
+    ) {
+        self.id = id
+        kind = .preamp
+        self.isEnabled = isEnabled
+        self.gainDB = gainDB
+        self.channels = channels
+    }
+
+    static func channels(id: UUID = UUID(), selection: M1ChannelSelection) -> Self {
+        Self(
+            id: id,
+            kind: .channels,
+            isEnabled: true,
+            gainDB: 0,
+            channels: selection
+        )
+    }
+
+    private init(
+        id: UUID,
+        kind: M1ProcessingNodeKind,
+        isEnabled: Bool,
+        gainDB: Double,
+        channels: M1ChannelSelection
+    ) {
+        self.id = id
+        self.kind = kind
+        self.isEnabled = isEnabled
+        self.gainDB = gainDB
+        self.channels = channels
+    }
+
+    func copied(id: UUID) -> Self {
+        switch kind {
+        case .channels:
+            return .channels(id: id, selection: channels)
+        case .preamp:
+            return Self(
+                id: id,
+                isEnabled: isEnabled,
+                gainDB: gainDB,
+                channels: channels
+            )
+        }
+    }
+}
+
+typealias M1PreampNode = M1ProcessingNode
+
+enum M1ProcessingScopeResolver {
+    static func effectiveSelections(
+        nodes: [M1ProcessingNode]
+    ) -> [UUID: M1ChannelSelection] {
+        var result: [UUID: M1ChannelSelection] = [:]
+        var current: M1ChannelSelection = .all
+        for node in nodes {
+            if node.kind == .channels {
+                current = node.channels
+            } else {
+                result[node.id] = node.channels == .all ? current : node.channels
+            }
+        }
+        return result
+    }
 }
 
 enum M1SpeakerPosition: String, CaseIterable, Sendable {

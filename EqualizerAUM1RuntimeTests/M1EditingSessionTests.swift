@@ -170,15 +170,60 @@ final class M1EditingSessionTests: XCTestCase {
     }
 
     func testClipboardRejectsUnsupportedSchemaMalformedAndOversizedData() {
-        let unsupported = Data("{\"nodes\":[],\"schemaVersion\":2}\n".utf8)
+        let unsupported = Data("{\"nodes\":[],\"schemaVersion\":3}\n".utf8)
         XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(unsupported)) {
-            XCTAssertEqual($0 as? M1EditingSessionError, .unsupportedClipboardSchema(2))
+            XCTAssertEqual($0 as? M1EditingSessionError, .unsupportedClipboardSchema(3))
         }
         XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(Data("nope".utf8)))
         XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(Data(
             repeating: 0,
             count: M1NodeEnvelopeCodec.maximumDataSize + 1
         )))
+        XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(Data(
+            "{\"schemaVersion\":2,\"nodes\":[],\"future\":true}".utf8
+        )))
+        XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(Data(
+            "{\"schemaVersion\":2,\"schemaVersion\":2,\"nodes\":[]}".utf8
+        )))
+    }
+
+    func testChannelsNodeClipboardAndOptionCopyPreserveExplicitScope() throws {
+        let channels = M1ProcessingNode.channels(
+            id: ids[0],
+            selection: .identifiers([M1ChannelIdentifier("L")!])
+        )
+        let preamp = M1PreampNode(id: ids[1], isEnabled: true, gainDB: -3, channels: .all)
+        let envelope = try M1NodeEnvelopeCodec.encode([channels, preamp])
+        let decoded = try M1NodeEnvelopeCodec.decode(envelope.data)
+        XCTAssertEqual(decoded.nodes.map(\.kind), [.channels, .preamp])
+
+        var session = M1EditingSession(nodes: decoded.nodes)
+        session.selectAll()
+        try session.moveSelection(
+            to: 2,
+            operation: .copy,
+            copiedIDs: [ids[2], ids[3]],
+            effectsEnabled: true
+        )
+        XCTAssertEqual(session.nodes.map(\.kind), [.channels, .preamp, .channels, .preamp])
+        XCTAssertEqual(session.nodes[2].channels, channels.channels)
+    }
+
+    func testNodeKindSpecificEditsRejectWrongNodeKinds() throws {
+        let channels = M1ProcessingNode.channels(id: ids[0], selection: .all)
+        let preamp = M1PreampNode(id: ids[1], isEnabled: true, gainDB: 0, channels: .all)
+        var session = M1EditingSession(nodes: [channels, preamp])
+
+        XCTAssertThrowsError(try session.setGainDB(id: channels.id, gainDB: 2, effectsEnabled: true)) {
+            XCTAssertEqual($0 as? M1EditingSessionError, .invalidNodeKind)
+        }
+        XCTAssertThrowsError(try session.setNodeEnabled(id: channels.id, enabled: false, effectsEnabled: true)) {
+            XCTAssertEqual($0 as? M1EditingSessionError, .invalidNodeKind)
+        }
+        XCTAssertThrowsError(try session.setChannels(id: preamp.id, channels: .all, effectsEnabled: true)) {
+            XCTAssertEqual($0 as? M1EditingSessionError, .invalidNodeKind)
+        }
+        XCTAssertEqual(session.nodes, [channels, preamp])
     }
 
     private func nodes(_ count: Int) -> [M1PreampNode] {

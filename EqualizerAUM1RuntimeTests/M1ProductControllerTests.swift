@@ -100,6 +100,92 @@ final class M1ProductControllerTests: XCTestCase {
         XCTAssertEqual(commits.last?.snapshot.effectsEnabled, false)
     }
 
+    func testProcessingSwitchBypassesAndRestoresWithoutRestartingEngine() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+
+        try await fixture.controller.setProcessingEnabled(false)
+        var snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(snapshot.audio, .running)
+        XCTAssertFalse(snapshot.processingEnabled)
+
+        try await fixture.controller.setProcessingEnabled(true)
+        snapshot = await fixture.controller.snapshot()
+        let calls = await fixture.audio.calls
+        XCTAssertEqual(snapshot.audio, .running)
+        XCTAssertTrue(snapshot.processingEnabled)
+        XCTAssertEqual(calls.filter { $0 == "start" }.count, 1)
+        XCTAssertFalse(calls.contains("stop"))
+        XCTAssertTrue(calls.contains("effects:false"))
+        XCTAssertTrue(calls.contains("effects:true"))
+    }
+
+    func testProcessingSwitchStartsStoppedEngineAndChannelsEditIsDraftOnly() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        let channelsID = UUID()
+        try await fixture.controller.addChannels(
+            before: fixture.nodeID,
+            nodeID: channelsID,
+            selection: .identifiers([M1ChannelIdentifier("L")!])
+        )
+
+        var snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(snapshot.draft.nodes.map(\.kind), [.channels, .preamp])
+        XCTAssertEqual(snapshot.persistence, .modified)
+        let commitsBeforeSave = await fixture.store.commits
+        let callsBeforeSave = await fixture.audio.calls
+        XCTAssertTrue(commitsBeforeSave.isEmpty)
+        XCTAssertTrue(callsBeforeSave.isEmpty)
+
+        try await fixture.controller.save()
+        try await fixture.controller.setProcessingEnabled(true)
+        snapshot = await fixture.controller.snapshot()
+        let started = await fixture.audio.startedConfigurations
+        XCTAssertEqual(snapshot.audio, .running)
+        XCTAssertTrue(snapshot.processingEnabled)
+        XCTAssertEqual(started.last?.nodes.first?.id, channelsID)
+    }
+
+    func testProcessingEnableDoesNotStartWhenEffectsPersistenceFails() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.setEffectsEnabled(false)
+        await fixture.store.setNextResult(.failed(generation: 2, reason: .replaceMain))
+
+        await XCTAssertThrowsErrorAsync {
+            try await fixture.controller.setProcessingEnabled(true)
+        }
+
+        let snapshot = await fixture.controller.snapshot()
+        let calls = await fixture.audio.calls
+        XCTAssertEqual(snapshot.audio, .stopped)
+        XCTAssertFalse(snapshot.processingEnabled)
+        XCTAssertFalse(calls.contains("start"))
+    }
+
+    func testProcessingProjectionKeepsAppliedStateWhenRuntimeToggleFails() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        await fixture.audio.setEffectsFailure(true)
+
+        await XCTAssertThrowsErrorAsync {
+            try await fixture.controller.setProcessingEnabled(false)
+        }
+
+        let snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(snapshot.audio, .running)
+        XCTAssertTrue(snapshot.processingEnabled)
+        XCTAssertFalse(snapshot.draft.effectsEnabled)
+
+        await fixture.audio.setEffectsFailure(false)
+        try await fixture.controller.setProcessingEnabled(false)
+        let retried = await fixture.controller.snapshot()
+        XCTAssertFalse(retried.processingEnabled)
+    }
+
     func testUncertainCommitFreezesEditingUntilSameGenerationRetry() async throws {
         let fixture = makeFixture()
         await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
@@ -168,6 +254,7 @@ final class M1ProductControllerTests: XCTestCase {
         let snapshot = await fixture.controller.snapshot()
         XCTAssertEqual(snapshot.persistence, .clean)
         XCTAssertFalse(snapshot.draft.effectsEnabled)
+        XCTAssertFalse(snapshot.processingEnabled)
     }
 
     func testStopOvertakesBlockedStartAndLeavesStoppedProjection() async throws {
@@ -899,6 +986,7 @@ private actor ProductAudioFake: M1ProductAudioControlling {
     private var publicationGate: ProductTestGate?
     private var publishGate: ProductTestGate?
     private var effectsGate: ProductTestGate?
+    private var effectsFailure = false
     private var outputAvailable = true
     private var preparationFails = false
     private var discardedPublicationGenerations: Set<UInt64> = []
@@ -968,9 +1056,10 @@ private actor ProductAudioFake: M1ProductAudioControlling {
         )
     }
 
-    func setEffectsEnabled(_ enabled: Bool) async {
+    func setEffectsEnabled(_ enabled: Bool) async throws {
         calls.append("effects:\(enabled)")
         await effectsGate?.wait()
+        if effectsFailure { throw ProductAudioFakeError.effectsFailed }
     }
 
     func diagnostics() -> M1RealtimeDiagnostics? {
@@ -1017,11 +1106,13 @@ private actor ProductAudioFake: M1ProductAudioControlling {
     }
     func setPublishGate(_ gate: ProductTestGate?) { publishGate = gate }
     func setEffectsGate(_ gate: ProductTestGate?) { effectsGate = gate }
+    func setEffectsFailure(_ fails: Bool) { effectsFailure = fails }
 }
 
 private enum ProductAudioFakeError: Error {
     case startFailed
     case preparationFailed
+    case effectsFailed
 }
 
 private actor ProductTestGate {
