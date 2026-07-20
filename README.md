@@ -16,14 +16,15 @@ flowchart LR
     E --> F[选定的物理输出]
 ```
 
-当前验证 DSP 为固定 `-12 dB` 增益和限幅。M1 已开始分阶段实施；M1.0 已完成独立工程边界、
+M0 的验证 DSP 为固定 `-12 dB` 增益和限幅。M1 已分阶段实现；M1.0 已完成独立工程边界、
 typed Preamp 与真实 buffer/channel 布局快照、确定性 Builder、正式 Runtime ABI、10 ms 平滑、
 完整代次发布与安全回收，以及 M1 自有的原生 Process Tap、tap-only Aggregate、捕获和输出宿主。
 M1.1 已完成版本化规范 JSON、`4 MiB` 预算、主文件与 previous 轮换、Recovery、Repair、
 结果不确定和同代次 Retry 的持久化基础。M1.2 已接入单选 Preamp 编辑、显式 Save、
 Start/Stop、独立即时音效总开关、布局构建、Runtime 发布、基础状态诊断和有序 Quit 清理。
 M1.3 已完成多选与键盘选择、typed 剪贴板、组移动与 Option-copy、预算化 Undo/Redo、
-分代诊断和完整退出确认。下一阶段 M1.4 负责加固、真实音频验收与 M1 收口。
+分代诊断和完整退出确认。M1.4 已完成并发压力、Repair 故障注入、实时静态审计、运行计数器、
+正式 `EqualizerAU` 产品身份和用户明确执行的真实音频验收。M1 已关闭，下一阶段为 M2 Graphic EQ。
 M0 的源码、测试和构建产物只作参考，不被 M1 复用。BlackHole 只作为未启用的后备路线，
 不是当前依赖，也无需安装。
 
@@ -62,14 +63,16 @@ xcodebuild \
 M0 的自动化、真实 HAL 与人工音频证据统一记录在
 [`docs/milestones/M0-native-route.md`](docs/milestones/M0-native-route.md)。
 
-M1 使用独立构建目录；先运行隔离审计，再执行无音频构建：
+M1 的正常构建产物位于 configuration 目录下的 `M1/` 子目录，避免与保留的 M0
+`EqualizerAU.app` 相互覆盖；先运行隔离与实时审计，再执行无音频构建：
 
 ```bash
 ./scripts/verify-m1-isolation.sh
+./scripts/verify-m1-realtime.sh
 
 xcodebuild \
   -project EqualizerAU.xcodeproj \
-  -scheme EqualizerAUM1 \
+  -scheme EqualizerAU \
   -configuration Debug \
   -destination 'platform=macOS,arch=arm64' \
   -derivedDataPath .build/M1DerivedData \

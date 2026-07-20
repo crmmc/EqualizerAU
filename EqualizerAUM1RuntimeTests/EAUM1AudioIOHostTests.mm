@@ -96,6 +96,14 @@ AudioBufferList outputList(float *samples, uint32_t frames) {
 
 @implementation EAUM1AudioIOHostTests
 
+- (void)testRequiredHostAtomicsAreLockFree {
+    EAUM1AudioIOHostCapabilities capabilities = {};
+    XCTAssertEqual(EAUM1AudioIOHostGetCapabilities(&capabilities), EAUM1StatusOK);
+    XCTAssertEqual(capabilities.booleanAtomicsLockFree, 1u);
+    XCTAssertEqual(capabilities.counterAtomicsLockFree, 1u);
+    XCTAssertEqual(EAUM1AudioIOHostGetCapabilities(nullptr), EAUM1StatusInvalidArgument);
+}
+
 - (void)testHostRejectsUnsafeBacklogAndTopology {
     const float targets[] = {1.0f, 1.0f};
     EAUM1PreparedState *prepared = nullptr;
@@ -152,6 +160,10 @@ AudioBufferList outputList(float *samples, uint32_t frames) {
     const float expected[] = {1.0f, 10.0f, 2.0f, 20.0f};
     XCTAssertEqual(std::memcmp(output, expected, sizeof(expected)), 0);
     XCTAssertEqual(flags & kAudioUnitRenderAction_OutputIsSilence, 0u);
+    EAUM1AudioIOHostDiagnostics diagnostics = {};
+    XCTAssertEqual(EAUM1AudioIOHostCopyDiagnostics(fixture.host, &diagnostics), EAUM1StatusOK);
+    XCTAssertEqual(diagnostics.capturedFrameCount, 2u);
+    XCTAssertEqual(diagnostics.renderedFrameCount, 2u);
 }
 
 - (void)testOverflowAndUnderrunAreWholeBlockAndObservable {

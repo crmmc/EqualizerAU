@@ -296,6 +296,9 @@ private struct UnexpectedAudioIOOperations: M1AudioIOOperations {
     func requestFadeOut(_ host: M1AudioIOHostHandle, frameCount: Int) {}
     func isFadeComplete(_ host: M1AudioIOHostHandle) -> Bool { false }
     func isQuiescent(_ host: M1AudioIOHostHandle) -> Bool { false }
+    func hostDiagnostics(_ host: M1AudioIOHostHandle) throws -> M1AudioIOHostCounters {
+        throw TestFailure.injected
+    }
     func destroyHost(_ host: M1AudioIOHostHandle) {}
     func createCapture(
         aggregateDeviceID: UInt32,

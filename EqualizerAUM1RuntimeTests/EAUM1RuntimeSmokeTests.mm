@@ -3,10 +3,13 @@
 #include "EAUM1Runtime.h"
 
 #include <cmath>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <limits>
 #include <type_traits>
+#include <thread>
 
 static_assert(std::is_standard_layout_v<EAUM1RuntimeCapabilities>);
 static_assert(std::is_trivially_copyable_v<EAUM1RuntimeCapabilities>);
@@ -619,6 +622,113 @@ static EAUM1Runtime *createRuntime(float gain, double sampleRate = 1000.0) {
         EAUM1StatusOK
     );
     XCTAssertEqual(diagnostics.overlappingCallbackCount, 10000u);
+    EAUM1RuntimeDestroy(runtime);
+    XCTAssertEqual(EAUM1TestHooks::livePreparedCount(), liveBefore);
+}
+
+- (void)testTenThousandPublicationsRaceARealCallbackThreadWithoutLeaks {
+    const uint64_t liveBefore = EAUM1TestHooks::livePreparedCount();
+    const float initialTargets[] = {1.0f, 2.0f};
+    EAUM1PreparedState *initial = nullptr;
+    XCTAssertEqual(EAUM1PreparedStateCreate(initialTargets, 2, &initial), EAUM1StatusOK);
+    const uint32_t channelCounts[] = {1, 1};
+    const EAUM1RuntimeDescription description = {
+        .sampleRate = 48000.0,
+        .maximumFrameCount = 8,
+        .bufferCount = 2,
+        .channelCounts = channelCounts,
+        .effectsEnabled = 1,
+    };
+    EAUM1Runtime *runtime = nullptr;
+    XCTAssertEqual(EAUM1RuntimeCreate(&description, &initial, &runtime), EAUM1StatusOK);
+    XCTAssertEqual(initial, nullptr);
+    std::atomic<bool> stop{false};
+    std::atomic<bool> callbackStarted{false};
+    std::atomic<bool> callbackFailed{false};
+    std::atomic<uint64_t> processedBlocks{0};
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+
+    std::thread callback([&] {
+        float left[8];
+        float right[8];
+        EAUM1AudioBuffer buffers[] = {
+            {.samples = left, .channelCount = 1},
+            {.samples = right, .channelCount = 1},
+        };
+        while (!stop.load(std::memory_order_acquire)) {
+            std::fill(std::begin(left), std::end(left), 1.0f);
+            std::fill(std::begin(right), std::end(right), 1.0f);
+            if (EAUM1RuntimeProcess(runtime, buffers, 2, 8) != EAUM1StatusOK) {
+                callbackFailed.store(true, std::memory_order_release);
+                break;
+            }
+            for (size_t index = 0; index < 8; ++index) {
+                if (!std::isfinite(left[index]) || !std::isfinite(right[index])
+                    || left[index] < 1.0f || left[index] > 2.0f
+                    || std::abs(right[index] - (2.0f * left[index])) > 0.00001f) {
+                    callbackFailed.store(true, std::memory_order_release);
+                    break;
+                }
+            }
+            processedBlocks.fetch_add(1, std::memory_order_relaxed);
+            callbackStarted.store(true, std::memory_order_release);
+        }
+    });
+
+    while (!callbackStarted.load(std::memory_order_acquire)
+        && !callbackFailed.load(std::memory_order_acquire)
+        && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    bool timedOut = !callbackStarted.load(std::memory_order_acquire);
+    for (uint32_t iteration = 0; iteration < 10000 && !timedOut; ++iteration) {
+        const float base = (iteration & 1u) == 0 ? 2.0f : 1.0f;
+        const float targets[] = {base, 2.0f * base};
+        EAUM1PreparedState *candidate = nullptr;
+        XCTAssertEqual(EAUM1PreparedStateCreate(targets, 2, &candidate), EAUM1StatusOK);
+        EAUM1PublicationOutcome outcome = {};
+        XCTAssertEqual(EAUM1RuntimePublishPrepared(runtime, &candidate, &outcome), EAUM1StatusOK);
+        XCTAssertEqual(candidate, nullptr);
+        while ((outcome.flags & EAUM1PublicationMaintenanceRequired) != 0u
+            && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::yield();
+            EAUM1PublicationOutcome maintained = {};
+            XCTAssertEqual(
+                EAUM1RuntimePerformMaintenance(runtime, outcome.retirementTicket, &maintained),
+                EAUM1StatusOK
+            );
+            outcome = maintained;
+        }
+        if ((outcome.flags & EAUM1PublicationMaintenanceRequired) != 0u) {
+            timedOut = true;
+            break;
+        }
+        XCTAssertEqual(EAUM1TestHooks::livePreparedCount(), liveBefore + 1);
+        if ((iteration + 1) % 100 == 0) {
+            const uint64_t observed = processedBlocks.load(std::memory_order_acquire);
+            while (processedBlocks.load(std::memory_order_acquire) == observed
+                && !callbackFailed.load(std::memory_order_acquire)
+                && std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::yield();
+            }
+            if (processedBlocks.load(std::memory_order_acquire) == observed) {
+                timedOut = true;
+                break;
+            }
+            if (callbackFailed.load(std::memory_order_acquire)) {
+                break;
+            }
+        }
+    }
+
+    stop.store(true, std::memory_order_release);
+    callback.join();
+    XCTAssertFalse(timedOut);
+    XCTAssertTrue(callbackStarted.load(std::memory_order_acquire));
+    XCTAssertFalse(callbackFailed.load(std::memory_order_acquire));
+    XCTAssertGreaterThanOrEqual(processedBlocks.load(std::memory_order_relaxed), 101u);
+    XCTAssertEqual(EAUM1TestHooks::pendingPrepared(runtime), 0u);
+    XCTAssertEqual(EAUM1TestHooks::retiredPrepared(runtime), 0u);
     EAUM1RuntimeDestroy(runtime);
     XCTAssertEqual(EAUM1TestHooks::livePreparedCount(), liveBefore);
 }

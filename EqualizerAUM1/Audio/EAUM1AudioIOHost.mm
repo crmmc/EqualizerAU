@@ -449,6 +449,21 @@ EAUM1Status EAUM1AudioIOHostCopyDiagnostics(
     return EAUM1StatusOK;
 }
 
+EAUM1Status EAUM1AudioIOHostGetCapabilities(
+    EAUM1AudioIOHostCapabilities *capabilitiesOut
+) {
+    if (capabilitiesOut == nullptr) {
+        return EAUM1StatusInvalidArgument;
+    }
+    std::atomic<bool> booleanValue{false};
+    std::atomic<uint64_t> counterValue{0};
+    *capabilitiesOut = EAUM1AudioIOHostCapabilities{
+        static_cast<uint8_t>(booleanValue.is_lock_free()),
+        static_cast<uint8_t>(counterValue.is_lock_free()),
+    };
+    return EAUM1StatusOK;
+}
+
 OSStatus EAUM1CaptureRegistrationCreate(
     AudioObjectID aggregateDevice,
     EAUM1AudioIOHost *host,

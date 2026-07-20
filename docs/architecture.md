@@ -2,9 +2,12 @@
 
 本文只描述当前真实实现。产品范围见 [`prd.md`](./prd.md)，决策理由见
 [`adr/`](./adr/)，M0 证据见 [`milestones/M0-native-route.md`](./milestones/M0-native-route.md)。
-当前实现整体属于 M0 产物；M1 按 <PII type="CASE_ID" id="678"/> 独立编码，不导入、调用或改造本文所列
-M0 类型和桥接。M0 仍是默认产品入口；独立的 M1 target 已实现运行时、原生音频宿主、
-可靠配置和桌面编辑界面，但尚未经过 M1.4 的真实音频验收与正式产品身份切换。
+M1 按 <PII type="CASE_ID" id="678"/> 独立编码，不导入、调用或改造 M0 类型和桥接。默认
+`EqualizerAU` scheme 现已指向内部 target `EqualizerAUM1`，正式产物为 `EqualizerAU.app`、
+bundle ID 为 `com.ruimingchen.EqualizerAU`。M1 正常构建产物位于 configuration 目录的
+`M1/` 子目录，Swift 模块名仍为 `EqualizerAUM1`；M0 target 只保留为历史证据，同一构建根中
+两者不会覆盖产物。M1 已实现运行时、原生音频宿主、可靠配置和桌面编辑界面，并已通过
+用户明确执行和报告的 M1.4 真实音频验收；详细证据边界记录在 M1 里程碑文档中。
 
 ### M1 独立实现边界
 
@@ -40,6 +43,14 @@ Retry、音效后继提交和已接纳编辑到达终态，再按节点、音效
 对应的 Save、Discard、Retry、Exit 或 Cancel 分支；只有批准退出后才按依赖顺序停止路线。
 关闭最后一个窗口本身不终止进程，退出取消或失败会恢复编辑窗口。
 
+音频宿主和 Runtime 通过 lock-free 原子计数器记录捕获/渲染帧、欠载、溢出、积压丢帧、
+无效回调、重叠回调、非有限输入和有限值饱和。产品只在控制线程显式读取快照并展示当前值。
+`verify-m1-realtime.sh` 对 21 个明确列出的回调和实时 helper 做源码审计，并检查同两个实现
+文件中按裸函数名直接调用的本地 helper 是否也在审计集合中；审计拒绝常见分配入口、锁、
+等待、日志、文件/网络 I/O、dispatch、Objective-C 消息和异常。它是保守的源码回归门禁，
+不宣称解析 C++ 重载、头文件内联调用或提供编译器/二进制级证明；启动前能力检查同时要求
+宿主与 Runtime 使用的原子类型在当前平台 lock-free。
+
 ## 1. 系统边界
 
 ```mermaid
@@ -69,8 +80,8 @@ flowchart LR
     D[原始 AudioDevice IOProc 捕获]
     E[预分配固定容量 SPSC]
     F[有限值清理]
-    G[-12 dB 固定增益]
-    H[硬限幅]
+    G[已编译的每声道 Preamp 目标]
+    H[有限值饱和与 10 ms 平滑]
     I[绑定并校验临时设备 ID 与格式的<br/>DefaultOutput Audio Unit]
     J[扬声器或耳机]
 
@@ -246,8 +257,9 @@ stateDiagram-v2
 
 ## 9. 诊断
 
-桥接层通过原子计数器发布回调进度、帧数、非零样本、SPSC 填充、欠载、溢出、
-丢帧、预热、积压修正、静音块、在途回调、故障标志和淡出完成状态。
+M1 桥接层通过原子计数器发布捕获和渲染帧、欠载、溢出、积压丢帧、无效与重叠回调；
+Runtime 另行发布非有限输入、有限值饱和、无效处理调用和重叠处理计数。控制层读取前后均
+复核运行代次与所有权，停止后不沿用旧快照。
 
 DEBUG 版本可在控制层写入 JSONL 和有界 WAV/JSON 证据。cold nonce probe 是
 独立的来源归因工具，不参与正常处理；M0 成功后仅在出现隔离异常时使用。
@@ -275,13 +287,12 @@ flowchart LR
 - 输出绑定后的身份读回只校验临时 `AudioObjectID`，尚未再次校验持久设备 UID。
 - Tap 或 Aggregate 若在控制器之外失效并发生临时 ID 复用，销毁前尚无持久 UID 复核；
   该边界随设备变化和 `coreaudiod` 恢复在 M4 处理。
-- 默认 M0 产品的 DSP 仍是固定验证增益和限幅；独立 M1 target 已实现用户可调 Preamp
-  处理链，但正式产品入口切换和真实音频验收仍属于 M1.4。
-- 当前 `ContentView` 仍是 M0 实验界面，非 DEBUG 主流程仍暴露 BlackHole 虚拟路线证明和
-  安装检查；这不改变已选择的原生路线。产品入口迁移计划见
-  [`M1 处理链基础`](./milestones/M1-processing-chain-foundation.md)。
+- 正式产品入口已切换到独立 M1 target；M0 应用和测试 target 只保留为历史证据，不属于
+  默认 scheme，也不参与 M1 构建。
 - M1 的窗口、编辑命令、拖拽修饰键和 AppKit 退出提示已完成静态构建及 hostless 状态机验证，
-  但尚未执行 GUI 或 hosted 自动化验收。
+  但未执行 hosted 自动化验收。
+- 用户已按 M1.4 完整人工脚本报告真实音频、重复启停、持久恢复和 30 秒实时计数增量验收通过；
+  该报告是整体结论，未附设备型号或逐项原始计数。
 - 应用退出后处理停止。
 - BlackHole 未被选择和安装，因此没有真实设备证据。
 

@@ -36,6 +36,11 @@ typedef struct EAUM1AudioIOHostDiagnostics {
     uint64_t overlappingRenderCallbackCount;
 } EAUM1AudioIOHostDiagnostics;
 
+typedef struct EAUM1AudioIOHostCapabilities {
+    uint8_t booleanAtomicsLockFree;
+    uint8_t counterAtomicsLockFree;
+} EAUM1AudioIOHostCapabilities;
+
 typedef struct EAUM1OutputDiagnostics {
     AudioObjectID currentDevice;
     AudioStreamBasicDescription deviceFormat;
@@ -71,6 +76,10 @@ EAUM1Status EAUM1AudioIOHostRender(
 EAUM1Status EAUM1AudioIOHostCopyDiagnostics(
     const EAUM1AudioIOHost *host,
     EAUM1AudioIOHostDiagnostics *diagnosticsOut
+);
+
+EAUM1Status EAUM1AudioIOHostGetCapabilities(
+    EAUM1AudioIOHostCapabilities *capabilitiesOut
 );
 
 OSStatus EAUM1CaptureRegistrationCreate(

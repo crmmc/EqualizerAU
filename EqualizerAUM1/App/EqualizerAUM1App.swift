@@ -21,6 +21,7 @@ final class M1AppModel: ObservableObject {
         expectedDiagnostics: nil,
         activeConfigurationGeneration: nil,
         expectedConfigurationGeneration: nil,
+        realtimeDiagnostics: nil,
         canEdit: false,
         canSetEffects: false,
         canSave: false,
@@ -146,6 +147,7 @@ final class M1AppModel: ObservableObject {
     }
     func retryPersistence() { perform { try await self.controller.retryUncertainPersistence() } }
     func retryOutput() { perform { try await self.controller.retryOutputDiscovery() } }
+    func refreshDiagnostics() { perform { try await self.controller.refreshDiagnostics() } }
     func setEffects(_ enabled: Bool) { perform { try await self.controller.setEffectsEnabled(enabled) } }
 
     func shutdown() async throws {
@@ -613,6 +615,15 @@ private struct M1EditorView: View {
                     Text("\(layout.channels.count) ch  \(Int(layout.sampleRate)) Hz")
                         .foregroundStyle(.secondary)
                 }
+                Button { model.refreshDiagnostics() } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .help("Refresh realtime diagnostics")
+                .disabled(model.snapshot.audio != .running)
+            }
+            if let diagnostics = model.snapshot.realtimeDiagnostics {
+                realtimeDiagnosticLine(diagnostics)
             }
             if let diagnostics = model.snapshot.activeDiagnostics,
                let generation = model.snapshot.activeConfigurationGeneration {
@@ -670,6 +681,14 @@ private struct M1EditorView: View {
             details.append("Gain boundary: \(channels.joined(separator: ", "))")
         }
         return details
+    }
+
+    private func realtimeDiagnosticLine(_ diagnostics: M1RealtimeDiagnostics) -> some View {
+        Text(
+            "Realtime: overflow \(diagnostics.io.overflowedBlocks) · underrun \(diagnostics.io.underrunBlocks) · dropped \(diagnostics.io.droppedBacklogFrames) · invalid \(diagnostics.io.invalidCallbacks + diagnostics.runtime.invalidProcessCalls) · overlap \(diagnostics.io.overlappingRenderCallbacks + diagnostics.runtime.overlappingCallbacks) · non-finite \(diagnostics.runtime.nonFiniteInputSamples) · saturated \(diagnostics.runtime.saturatedOutputSamples)"
+        )
+        .foregroundStyle(.secondary)
+        .textSelection(.enabled)
     }
 
     private func rowBackground(for id: UUID) -> some View {

@@ -59,6 +59,16 @@ struct M1OutputHostDiagnostics: Equatable, Sendable {
     let isRunning: Bool
 }
 
+struct M1AudioIOHostCounters: Equatable, Sendable {
+    let capturedFrames: UInt64
+    let renderedFrames: UInt64
+    let overflowedBlocks: UInt64
+    let underrunBlocks: UInt64
+    let droppedBacklogFrames: UInt64
+    let invalidCallbacks: UInt64
+    let overlappingRenderCallbacks: UInt64
+}
+
 final class M1RetainedOutputCreationError: Error, @unchecked Sendable {
     let output: M1OutputHandle
     let underlying: any Error
@@ -86,6 +96,7 @@ protocol M1AudioIOOperations: Sendable {
     func requestFadeOut(_ host: M1AudioIOHostHandle, frameCount: Int)
     func isFadeComplete(_ host: M1AudioIOHostHandle) -> Bool
     func isQuiescent(_ host: M1AudioIOHostHandle) -> Bool
+    func hostDiagnostics(_ host: M1AudioIOHostHandle) throws -> M1AudioIOHostCounters
     func destroyHost(_ host: M1AudioIOHostHandle)
 
     func createCapture(aggregateDeviceID: UInt32, host: M1AudioIOHostHandle) throws -> M1CaptureHandle
@@ -294,6 +305,16 @@ actor M1AudioIOController {
                 throw cleanupError
             }
         }
+    }
+
+    func diagnostics(_ resource: M1AudioIOResource) throws -> M1AudioIOHostCounters {
+        guard let state = states[resource.ownershipToken],
+              state.resource.host === resource.host,
+              state.resource.runtime === resource.runtime
+        else {
+            throw M1AudioIOError.staleResource
+        }
+        return try operations.hostDiagnostics(resource.host)
     }
 
     func stop(_ resource: M1AudioIOResource) async throws {

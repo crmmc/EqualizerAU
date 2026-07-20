@@ -15,9 +15,9 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "500000000000000000000001"
+               BlueprintIdentifier = "D50000000000000000000002"
                BuildableName = "EqualizerAU.app"
-               BlueprintName = "EqualizerAU"
+               BlueprintName = "EqualizerAUM1"
                ReferencedContainer = "container:EqualizerAU.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -27,24 +27,32 @@
       buildConfiguration = "Debug"
       selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
-      shouldUseLaunchSchemeArgsEnv = "YES"
-      shouldAutocreateTestPlan = "YES">
+      shouldUseLaunchSchemeArgsEnv = "YES">
       <Testables>
+         <TestableReference skipped = "NO" parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "D50000000000000000000003"
+               BuildableName = "EqualizerAUM1RuntimeTests.xctest"
+               BlueprintName = "EqualizerAUM1RuntimeTests"
+               ReferencedContainer = "container:EqualizerAU.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
          <TestableReference skipped = "NO" parallelizable = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "500000000000000000000002"
-               BuildableName = "EqualizerAUTests.xctest"
-               BlueprintName = "EqualizerAUTests"
+               BlueprintIdentifier = "D50000000000000000000004"
+               BuildableName = "EqualizerAUM1Tests.xctest"
+               BlueprintName = "EqualizerAUM1Tests"
                ReferencedContainer = "container:EqualizerAU.xcodeproj">
             </BuildableReference>
          </TestableReference>
          <TestableReference skipped = "NO" parallelizable = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "500000000000000000000003"
-               BuildableName = "EqualizerAUIntegrationTests.xctest"
-               BlueprintName = "EqualizerAUIntegrationTests"
+               BlueprintIdentifier = "D50000000000000000000005"
+               BuildableName = "EqualizerAUM1IntegrationTests.xctest"
+               BlueprintName = "EqualizerAUM1IntegrationTests"
                ReferencedContainer = "container:EqualizerAU.xcodeproj">
             </BuildableReference>
          </TestableReference>
@@ -63,9 +71,9 @@
       <BuildableProductRunnable runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "500000000000000000000001"
+            BlueprintIdentifier = "D50000000000000000000002"
             BuildableName = "EqualizerAU.app"
-            BlueprintName = "EqualizerAU"
+            BlueprintName = "EqualizerAUM1"
             ReferencedContainer = "container:EqualizerAU.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -79,9 +87,9 @@
       <BuildableProductRunnable runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "500000000000000000000001"
+            BlueprintIdentifier = "D50000000000000000000002"
             BuildableName = "EqualizerAU.app"
-            BlueprintName = "EqualizerAU"
+            BlueprintName = "EqualizerAUM1"
             ReferencedContainer = "container:EqualizerAU.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>

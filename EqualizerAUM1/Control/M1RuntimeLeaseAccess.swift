@@ -5,6 +5,13 @@ struct M1RuntimeConfigurationGenerations: Equatable, Sendable {
     let pending: UInt64?
 }
 
+struct M1RuntimeCounters: Equatable, Sendable {
+    let nonFiniteInputSamples: UInt64
+    let saturatedOutputSamples: UInt64
+    let invalidProcessCalls: UInt64
+    let overlappingCallbacks: UInt64
+}
+
 actor M1RuntimeLeaseAccess: M1RetirementMaintenanceAccess {
     typealias StopHandler = @Sendable (M1RetirementStopReason, UInt64) async -> Void
 
@@ -94,6 +101,25 @@ actor M1RuntimeLeaseAccess: M1RetirementMaintenanceAccess {
         return M1RuntimeConfigurationGenerations(
             active: activeConfigurationGeneration,
             pending: pendingConfigurationGeneration
+        )
+    }
+
+    func diagnostics(bridgeGeneration: UInt64) throws -> M1RuntimeCounters {
+        guard let retained = lease, retained.bridgeGeneration == bridgeGeneration else {
+            throw M1AudioIOError.generationMismatch
+        }
+        var runtime = EAUM1RuntimeDiagnostics()
+        var concurrency = EAUM1ConcurrencyDiagnostics()
+        let runtimeStatus = EAUM1RuntimeCopyDiagnostics(retained.pointer, &runtime)
+        let concurrencyStatus = EAUM1RuntimeCopyConcurrencyDiagnostics(retained.pointer, &concurrency)
+        guard runtimeStatus == EAUM1StatusOK, concurrencyStatus == EAUM1StatusOK else {
+            throw M1AudioIOError.invalidState("Runtime diagnostics unavailable")
+        }
+        return M1RuntimeCounters(
+            nonFiniteInputSamples: runtime.nonFiniteInputSampleCount,
+            saturatedOutputSamples: runtime.saturatedOutputSampleCount,
+            invalidProcessCalls: runtime.invalidProcessCallCount,
+            overlappingCallbacks: concurrency.overlappingCallbackCount
         )
     }
 

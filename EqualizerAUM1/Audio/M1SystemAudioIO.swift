@@ -6,6 +6,13 @@ struct M1SystemAudioIOOperations: M1AudioIOOperations, @unchecked Sendable {
         configuration: M1AudioIOHostConfiguration,
         runtime: M1RuntimeHandleLease
     ) throws -> M1AudioIOHostHandle {
+        var capabilities = EAUM1AudioIOHostCapabilities()
+        guard EAUM1AudioIOHostGetCapabilities(&capabilities) == EAUM1StatusOK,
+              capabilities.booleanAtomicsLockFree != 0,
+              capabilities.counterAtomicsLockFree != 0
+        else {
+            throw M1AudioIOError.invalidConfiguration("required audio host atomics are not lock-free")
+        }
         let channelCounts = try configuration.inputChannelCounts.map { value -> UInt32 in
             guard let result = UInt32(exactly: value), result > 0 else {
                 throw M1AudioIOError.invalidConfiguration("invalid capture channel count")
@@ -56,6 +63,23 @@ struct M1SystemAudioIOOperations: M1AudioIOOperations, @unchecked Sendable {
 
     func isQuiescent(_ host: M1AudioIOHostHandle) -> Bool {
         EAUM1AudioIOHostIsQuiescent(host.pointer) != 0
+    }
+
+    func hostDiagnostics(_ host: M1AudioIOHostHandle) throws -> M1AudioIOHostCounters {
+        var value = EAUM1AudioIOHostDiagnostics()
+        let status = EAUM1AudioIOHostCopyDiagnostics(host.pointer, &value)
+        guard status == EAUM1StatusOK else {
+            throw M1AudioIOError.invalidState("audio host diagnostics failed: \(status)")
+        }
+        return M1AudioIOHostCounters(
+            capturedFrames: value.capturedFrameCount,
+            renderedFrames: value.renderedFrameCount,
+            overflowedBlocks: value.overflowedBlockCount,
+            underrunBlocks: value.underrunBlockCount,
+            droppedBacklogFrames: value.droppedBacklogFrameCount,
+            invalidCallbacks: value.invalidCallbackCount,
+            overlappingRenderCallbacks: value.overlappingRenderCallbackCount
+        )
     }
 
     func destroyHost(_ host: M1AudioIOHostHandle) {

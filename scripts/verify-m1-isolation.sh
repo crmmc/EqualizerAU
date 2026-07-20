@@ -77,7 +77,7 @@ contracts = {
   },
   "EqualizerAUM1" => {
     product_type: "com.apple.product-type.application",
-    product: "EqualizerAUM1.app",
+    product: "EqualizerAU.app",
     sources: [
       "EqualizerAUM1/App/EqualizerAUM1App.swift",
       "EqualizerAUM1/Configuration/M1ProcessingModel.swift",
@@ -145,7 +145,7 @@ contracts = {
     frameworks: ["System/Library/Frameworks/XCTest.framework"],
     dependencies: ["EqualizerAUM1"],
     bridging_header: nil,
-    test_host: "$(BUILT_PRODUCTS_DIR)/EqualizerAUM1.app/Contents/MacOS/EqualizerAUM1",
+    test_host: "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)/M1/EqualizerAU.app/Contents/MacOS/EqualizerAU",
   },
   "EqualizerAUM1IntegrationTests" => {
     product_type: "com.apple.product-type.bundle.unit-test",
@@ -155,7 +155,7 @@ contracts = {
     frameworks: ["System/Library/Frameworks/XCTest.framework"],
     dependencies: ["EqualizerAUM1"],
     bridging_header: nil,
-    test_host: "$(BUILT_PRODUCTS_DIR)/EqualizerAUM1.app/Contents/MacOS/EqualizerAUM1",
+    test_host: "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)/M1/EqualizerAU.app/Contents/MacOS/EqualizerAU",
   },
 }
 
@@ -165,7 +165,6 @@ forbidden_settings = [
   "EqualizerAU/Audio/",
   "EqualizerAUTests/",
   "EqualizerAUIntegrationTests/",
-  "EqualizerAU.app",
   ".build/DerivedData/",
 ]
 m0_root_patterns = [
@@ -229,6 +228,17 @@ contracts.each do |target_name, contract|
     unless settings["TEST_HOST"] == contract[:test_host]
       abort("wrong test host for #{target_name} #{configuration.fetch("name")}")
     end
+    if target_name == "EqualizerAUM1"
+      expected_directory = "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)/M1"
+      abort("wrong isolated product directory for #{configuration.fetch("name")}") unless settings["CONFIGURATION_BUILD_DIR"] == expected_directory
+      abort("wrong M1 Swift module name for #{configuration.fetch("name")}") unless settings["PRODUCT_MODULE_NAME"] == "EqualizerAUM1"
+      expected_library_path = "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)"
+      abort("wrong M1 Runtime library search path for #{configuration.fetch("name")}") unless settings["LIBRARY_SEARCH_PATHS"] == expected_library_path
+    end
+    if %w[EqualizerAUM1Tests EqualizerAUM1IntegrationTests].include?(target_name)
+      expected_module_path = "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)/M1"
+      abort("wrong M1 module search path for #{target_name} #{configuration.fetch("name")}") unless settings["SWIFT_INCLUDE_PATHS"] == expected_module_path
+    end
   end
 end
 
@@ -239,7 +249,9 @@ m1_roots = %w[
   EqualizerAUM1Tests/
   EqualizerAUM1IntegrationTests/
 ]
-m1_products = contracts.values.map { |contract| contract.fetch(:product) }
+# EqualizerAU.app is the formal product name for both implementations, but M1's
+# configuration build directory keeps their normal build artifacts disjoint.
+m1_products = contracts.values.map { |contract| contract.fetch(:product) }.reject { |product| product == "EqualizerAU.app" }
 m1_target_ids = contracts.keys.map { |name| targets_by_name.fetch(name).first }
 m1_root_patterns = m1_roots.map do |root|
   /#{Regexp.escape(root.delete_suffix("/"))}(?=\/|["\s]|\z)/
@@ -266,6 +278,9 @@ end
   configuration_list = objects.fetch(target.fetch("buildConfigurationList"))
   configuration_list.fetch("buildConfigurations").each do |configuration_id|
     configuration = objects.fetch(configuration_id)
+    if target_name == "EqualizerAU" && configuration.fetch("buildSettings")["CONFIGURATION_BUILD_DIR"] == "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)/M1"
+      abort("M0 target #{target_name} shares the isolated M1 product directory")
+    end
     serialized_settings = JSON.generate(configuration.fetch("buildSettings"))
     if m1_root_patterns.any? { |pattern| serialized_settings.match?(pattern) } ||
        m1_products.any? { |product| serialized_settings.include?(product) }
@@ -305,7 +320,6 @@ for target in "${required_targets[@]}"; do
           "EqualizerAU/Audio/",
           "EqualizerAUTests/",
           "EqualizerAUIntegrationTests/",
-          "EqualizerAU.app/Contents/MacOS/EqualizerAU",
           File.join(repo_root, "EqualizerAU") + "/",
         ]
 
@@ -342,7 +356,6 @@ for target in "${m0_targets[@]}"; do
           EqualizerAUM1IntegrationTests
         ]
         m1_products = %w[
-          EqualizerAUM1.app
           libEqualizerAUM1Runtime.a
           EqualizerAUM1RuntimeTests.xctest
           EqualizerAUM1Tests.xctest

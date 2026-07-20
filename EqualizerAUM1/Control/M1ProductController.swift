@@ -26,6 +26,7 @@ protocol M1ProductAudioControlling: Sendable {
     func waitForPublication(configurationGeneration: UInt64) async -> Bool
     func discardPendingPublication() async
     func setEffectsEnabled(_ enabled: Bool) async throws
+    func diagnostics() async throws -> M1RealtimeDiagnostics?
 }
 
 extension M1NativeAudioRouteCoordinator: M1ProductAudioControlling {}
@@ -61,6 +62,7 @@ struct M1ProductSnapshot: Equatable, Sendable {
     let expectedDiagnostics: M1ProcessingBuildDiagnostics?
     let activeConfigurationGeneration: UInt64?
     let expectedConfigurationGeneration: UInt64?
+    let realtimeDiagnostics: M1RealtimeDiagnostics?
     let canEdit: Bool
     let canSetEffects: Bool
     let canSave: Bool
@@ -122,6 +124,7 @@ actor M1ProductController {
     private var expectedDiagnostics: M1ProcessingBuildDiagnostics?
     private var activeConfigurationGeneration: UInt64?
     private var expectedConfigurationGeneration: UInt64?
+    private var realtimeDiagnostics: M1RealtimeDiagnostics?
     private var visibleError: String?
     private var commitGeneration: UInt64 = 0
     private var draftRevision: UInt64 = 0
@@ -198,6 +201,7 @@ actor M1ProductController {
             expectedDiagnostics: expectedDiagnostics,
             activeConfigurationGeneration: activeConfigurationGeneration,
             expectedConfigurationGeneration: expectedConfigurationGeneration,
+            realtimeDiagnostics: realtimeDiagnostics,
             canEdit: bootstrapped && !uncertain && !terminating,
             canSetEffects: bootstrapped && !uncertain && !recovery && !terminating
                 && (audioState == .stopped || audioState == .running),
@@ -447,6 +451,7 @@ actor M1ProductController {
             expectedDiagnostics = nil
             activeConfigurationGeneration = nil
             expectedConfigurationGeneration = nil
+            realtimeDiagnostics = nil
             pendingApplication = nil
             publicationTask?.cancel()
             publicationTask = nil
@@ -480,10 +485,18 @@ actor M1ProductController {
         expectedDiagnostics = nil
         activeConfigurationGeneration = nil
         expectedConfigurationGeneration = nil
+        realtimeDiagnostics = nil
         if currentState == .stopped {
             persistence = draft == saved ? .savedPendingStart : .modified
         }
         visibleError = "Audio stopped after retirement maintenance: \(reason)"
+    }
+
+    func refreshDiagnostics() async throws {
+        guard audioState == .running, !terminating else {
+            throw M1ProductControllerError.commandUnavailable
+        }
+        realtimeDiagnostics = try await audio.diagnostics()
     }
 
     func retryUncertainPersistence() async throws {

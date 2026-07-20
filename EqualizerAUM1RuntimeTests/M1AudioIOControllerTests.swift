@@ -2,6 +2,25 @@ import Foundation
 import XCTest
 
 final class M1AudioIOControllerTests: XCTestCase {
+    func testDiagnosticsPropagateHostCountersForOwnedResource() async throws {
+        let operations = TestAudioIOOperations()
+        let controller = M1AudioIOController(operations: operations, timing: testTiming())
+        let fixture = try await makeIOResource(controller: controller)
+
+        let counters = try await controller.diagnostics(fixture.resource)
+
+        XCTAssertEqual(counters, M1AudioIOHostCounters(
+            capturedFrames: 1,
+            renderedFrames: 2,
+            overflowedBlocks: 3,
+            underrunBlocks: 4,
+            droppedBacklogFrames: 5,
+            invalidCallbacks: 6,
+            overlappingRenderCallbacks: 7
+        ))
+        XCTAssertEqual(operations.calls.last, "hostDiagnostics")
+    }
+
     func testCaptureMustStartBeforeOutputAndStopOrderIsOutputFirst() async throws {
         let operations = TestAudioIOOperations()
         let controller = M1AudioIOController(operations: operations, timing: testTiming())
@@ -241,6 +260,18 @@ private final class TestAudioIOOperations: M1AudioIOOperations, @unchecked Senda
     func isQuiescent(_ host: M1AudioIOHostHandle) -> Bool {
         calls.append("isQuiescent")
         return quiescent
+    }
+    func hostDiagnostics(_ host: M1AudioIOHostHandle) throws -> M1AudioIOHostCounters {
+        calls.append("hostDiagnostics")
+        return M1AudioIOHostCounters(
+            capturedFrames: 1,
+            renderedFrames: 2,
+            overflowedBlocks: 3,
+            underrunBlocks: 4,
+            droppedBacklogFrames: 5,
+            invalidCallbacks: 6,
+            overlappingRenderCallbacks: 7
+        )
     }
     func destroyHost(_ host: M1AudioIOHostHandle) { calls.append("destroyHost") }
 

@@ -306,6 +306,39 @@ final class M1ConfigurationStoreTests: XCTestCase {
         XCTAssertEqual(fileSystem.files["config.json"], repair.data)
     }
 
+    func testRepairFinalSyncFailureIsUncertainAndRetriesWithoutRewriting() async throws {
+        let repair = try encoded(gainDB: -4)
+        let fileSystem = FakeM1ConfigurationFileSystem(
+            files: [
+                "config.json": Data("invalid-main".utf8),
+                "config.previous.json": Data("invalid-previous".utf8)
+            ]
+        )
+        fileSystem.failures = ["sync:2", "sync:3"]
+        let store = M1ConfigurationStore(fileSystem: fileSystem)
+
+        let result = await store.commit(repair, generation: 4, mode: .repair)
+        let writesBeforeRetry = fileSystem.events.filter { $0.hasPrefix("write:") }.count
+        let failedRetry = await store.retryUncertain(generation: 4)
+        let successfulRetry = await store.retryUncertain(generation: 4)
+
+        XCTAssertEqual(
+            result,
+            .uncertain(generation: 4, snapshot: repair.snapshot, bootstrapOrigin: nil)
+        )
+        XCTAssertEqual(
+            failedRetry,
+            .uncertain(generation: 4, snapshot: repair.snapshot, bootstrapOrigin: nil)
+        )
+        XCTAssertEqual(successfulRetry, .succeeded(generation: 4, snapshot: repair.snapshot))
+        XCTAssertEqual(fileSystem.files["config.previous.json"], repair.data)
+        XCTAssertEqual(fileSystem.files["config.json"], repair.data)
+        XCTAssertEqual(
+            fileSystem.events.filter { $0.hasPrefix("write:") }.count,
+            writesBeforeRetry
+        )
+    }
+
     func testOversizedMainFallsBackToPreviousWithoutAllocatingIt() async throws {
         let previous = try encoded(gainDB: -8)
         let fileSystem = FakeM1ConfigurationFileSystem(

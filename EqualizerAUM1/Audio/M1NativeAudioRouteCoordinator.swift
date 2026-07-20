@@ -43,6 +43,11 @@ struct M1AudioConfigurationPreparation: Equatable, Sendable {
     )
 }
 
+struct M1RealtimeDiagnostics: Equatable, Sendable {
+    let io: M1AudioIOHostCounters
+    let runtime: M1RuntimeCounters
+}
+
 enum M1NativeAudioRouteState: Equatable, Sendable {
     case stopped
     case starting(generation: M1AudioRouteGeneration)
@@ -208,6 +213,23 @@ actor M1NativeAudioRouteCoordinator {
     func outputLayout() -> M1OutputLayoutSnapshot? {
         guard current?.phase == .running else { return nil }
         return current?.output?.layout
+    }
+
+    func diagnostics() async throws -> M1RealtimeDiagnostics? {
+        guard let current, current.phase == .running, let io = current.io else { return nil }
+        let ioCounters: M1AudioIOHostCounters
+        let runtimeCounters: M1RuntimeCounters
+        do {
+            ioCounters = try await audioIO.diagnostics(io)
+            runtimeCounters = try await runtimeAccess.diagnostics(
+                bridgeGeneration: current.bridgeGeneration
+            )
+        } catch {
+            guard self.current === current, current.phase == .running else { return nil }
+            throw error
+        }
+        guard self.current === current, current.phase == .running else { return nil }
+        return M1RealtimeDiagnostics(io: ioCounters, runtime: runtimeCounters)
     }
 
     func prepare(configuration: M1ConfigurationSnapshot) async throws -> M1AudioConfigurationPreparation {

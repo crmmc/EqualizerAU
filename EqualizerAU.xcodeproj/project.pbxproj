@@ -197,7 +197,7 @@
 		D20000000000000000000007 /* M1RuntimeBootstrapTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1RuntimeBootstrapTests.swift; sourceTree = "<group>"; };
 		D20000000000000000000008 /* M1AppHostIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1AppHostIntegrationTests.swift; sourceTree = "<group>"; };
 		D20000000000000000000009 /* libEqualizerAUM1Runtime.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libEqualizerAUM1Runtime.a; sourceTree = BUILT_PRODUCTS_DIR; };
-		D2000000000000000000000A /* EqualizerAUM1.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EqualizerAUM1.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D2000000000000000000000A /* EqualizerAU.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EqualizerAU.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D2000000000000000000000B /* EqualizerAUM1RuntimeTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = EqualizerAUM1RuntimeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		D2000000000000000000000C /* EqualizerAUM1Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = EqualizerAUM1Tests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		D2000000000000000000000D /* EqualizerAUM1IntegrationTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = EqualizerAUM1IntegrationTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -395,7 +395,7 @@
 				200000000000000000000009 /* EqualizerAUTests.xctest */,
 				20000000000000000000000A /* EqualizerAUIntegrationTests.xctest */,
 				D20000000000000000000009 /* libEqualizerAUM1Runtime.a */,
-				D2000000000000000000000A /* EqualizerAUM1.app */,
+				D2000000000000000000000A /* EqualizerAU.app */,
 				D2000000000000000000000B /* EqualizerAUM1RuntimeTests.xctest */,
 				D2000000000000000000000C /* EqualizerAUM1Tests.xctest */,
 				D2000000000000000000000D /* EqualizerAUM1IntegrationTests.xctest */,
@@ -639,7 +639,7 @@
 			);
 			name = EqualizerAUM1;
 			productName = EqualizerAUM1;
-			productReference = D2000000000000000000000A /* EqualizerAUM1.app */;
+			productReference = D2000000000000000000000A /* EqualizerAU.app */;
 			productType = "com.apple.product-type.application";
 		};
 		D50000000000000000000003 /* EqualizerAUM1RuntimeTests */ = {
@@ -1151,6 +1151,7 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
+				CONFIGURATION_BUILD_DIR = "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)/M1";
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 598JJTW3KA;
 				ENABLE_APP_SANDBOX = NO;
@@ -1162,10 +1163,12 @@
 				);
 				INFOPLIST_FILE = EqualizerAUM1/Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
+				LIBRARY_SEARCH_PATHS = "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)";
 				MARKETING_VERSION = 0.1.0;
 				OTHER_LDFLAGS = "$(inherited) -lc++";
-				PRODUCT_BUNDLE_IDENTIFIER = com.ruimingchen.EqualizerAU.m1;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = com.ruimingchen.EqualizerAU;
+				PRODUCT_MODULE_NAME = EqualizerAUM1;
+				PRODUCT_NAME = EqualizerAU;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = "EqualizerAUM1/EqualizerAUM1-Bridging-Header.h";
 				SWIFT_STRICT_CONCURRENCY = complete;
@@ -1178,6 +1181,7 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
+				CONFIGURATION_BUILD_DIR = "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)/M1";
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 598JJTW3KA;
 				ENABLE_APP_SANDBOX = NO;
@@ -1189,10 +1193,12 @@
 				);
 				INFOPLIST_FILE = EqualizerAUM1/Resources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
+				LIBRARY_SEARCH_PATHS = "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)";
 				MARKETING_VERSION = 0.1.0;
 				OTHER_LDFLAGS = "$(inherited) -lc++";
-				PRODUCT_BUNDLE_IDENTIFIER = com.ruimingchen.EqualizerAU.m1;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = com.ruimingchen.EqualizerAU;
+				PRODUCT_MODULE_NAME = EqualizerAUM1;
+				PRODUCT_NAME = EqualizerAU;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = "EqualizerAUM1/EqualizerAUM1-Bridging-Header.h";
 				SWIFT_STRICT_CONCURRENCY = complete;
@@ -1247,9 +1253,10 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ruimingchen.EqualizerAU.m1.Tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_INCLUDE_PATHS = "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)/M1";
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 6.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/EqualizerAUM1.app/Contents/MacOS/EqualizerAUM1";
+				TEST_HOST = "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)/M1/EqualizerAU.app/Contents/MacOS/EqualizerAU";
 			};
 			name = Debug;
 		};
@@ -1262,9 +1269,10 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ruimingchen.EqualizerAU.m1.Tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_INCLUDE_PATHS = "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)/M1";
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 6.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/EqualizerAUM1.app/Contents/MacOS/EqualizerAUM1";
+				TEST_HOST = "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)/M1/EqualizerAU.app/Contents/MacOS/EqualizerAU";
 			};
 			name = Release;
 		};
@@ -1277,9 +1285,10 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ruimingchen.EqualizerAU.m1.IntegrationTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_INCLUDE_PATHS = "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)/M1";
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 6.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/EqualizerAUM1.app/Contents/MacOS/EqualizerAUM1";
+				TEST_HOST = "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)/M1/EqualizerAU.app/Contents/MacOS/EqualizerAU";
 			};
 			name = Debug;
 		};
@@ -1292,9 +1301,10 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ruimingchen.EqualizerAU.m1.IntegrationTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_INCLUDE_PATHS = "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)/M1";
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 6.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/EqualizerAUM1.app/Contents/MacOS/EqualizerAUM1";
+				TEST_HOST = "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)/M1/EqualizerAU.app/Contents/MacOS/EqualizerAU";
 			};
 			name = Release;
 		};

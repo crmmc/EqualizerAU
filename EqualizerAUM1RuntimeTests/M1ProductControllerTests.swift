@@ -51,6 +51,25 @@ final class M1ProductControllerTests: XCTestCase {
         XCTAssertEqual(snapshot.outputLayout?.channels.count, 2)
     }
 
+    func testRealtimeDiagnosticsRefreshAndStopClearsSnapshot() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+
+        try await fixture.controller.refreshDiagnostics()
+        let running = await fixture.controller.snapshot()
+        XCTAssertEqual(running.realtimeDiagnostics?.io.overflowedBlocks, 1)
+        XCTAssertEqual(running.realtimeDiagnostics?.io.underrunBlocks, 2)
+        XCTAssertEqual(running.realtimeDiagnostics?.io.droppedBacklogFrames, 3)
+        XCTAssertEqual(running.realtimeDiagnostics?.runtime.nonFiniteInputSamples, 6)
+        XCTAssertEqual(running.realtimeDiagnostics?.runtime.saturatedOutputSamples, 7)
+        XCTAssertEqual(running.realtimeDiagnostics?.runtime.invalidProcessCalls, 8)
+
+        try await fixture.controller.stop()
+        let stopped = await fixture.controller.snapshot()
+        XCTAssertNil(stopped.realtimeDiagnostics)
+    }
+
     func testRunningSavePersistsBeforePublishingCompiledCandidate() async throws {
         let fixture = makeFixture()
         await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
@@ -952,6 +971,27 @@ private actor ProductAudioFake: M1ProductAudioControlling {
     func setEffectsEnabled(_ enabled: Bool) async {
         calls.append("effects:\(enabled)")
         await effectsGate?.wait()
+    }
+
+    func diagnostics() -> M1RealtimeDiagnostics? {
+        guard running else { return nil }
+        return M1RealtimeDiagnostics(
+            io: M1AudioIOHostCounters(
+                capturedFrames: 10,
+                renderedFrames: 9,
+                overflowedBlocks: 1,
+                underrunBlocks: 2,
+                droppedBacklogFrames: 3,
+                invalidCallbacks: 4,
+                overlappingRenderCallbacks: 5
+            ),
+            runtime: M1RuntimeCounters(
+                nonFiniteInputSamples: 6,
+                saturatedOutputSamples: 7,
+                invalidProcessCalls: 8,
+                overlappingCallbacks: 9
+            )
+        )
     }
 
     func waitForPublication(configurationGeneration: UInt64) async -> Bool {
