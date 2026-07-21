@@ -100,6 +100,7 @@
 		D10000000000000000000035 /* M1ConvolutionIR.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002A /* M1ConvolutionIR.swift */; };
 		D10000000000000000000036 /* M1ConvolutionIR.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002A /* M1ConvolutionIR.swift */; };
 		D10000000000000000000037 /* M1ConvolutionIRTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002B /* M1ConvolutionIRTests.swift */; };
+		D10000000000000000000038 /* M1SystemAudioLifecycleMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002C /* M1SystemAudioLifecycleMonitor.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -233,6 +234,7 @@
 		D20000000000000000000028 /* M1EditingSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1EditingSession.swift; sourceTree = "<group>"; };
 		D20000000000000000000029 /* M1EditingSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1EditingSessionTests.swift; sourceTree = "<group>"; };
 		D2000000000000000000002A /* M1ConvolutionIR.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1ConvolutionIR.swift; sourceTree = "<group>"; };
+		D2000000000000000000002C /* M1SystemAudioLifecycleMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1SystemAudioLifecycleMonitor.swift; sourceTree = "<group>"; };
 		D2000000000000000000002B /* M1ConvolutionIRTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1ConvolutionIRTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -494,6 +496,7 @@
 				D20000000000000000000018 /* M1AudioIOController.swift */,
 				D20000000000000000000019 /* M1SystemAudioIO.swift */,
 				D2000000000000000000001B /* M1NativeAudioRouteCoordinator.swift */,
+				D2000000000000000000002C /* M1SystemAudioLifecycleMonitor.swift */,
 			);
 			path = Audio;
 			sourceTree = "<group>";
@@ -905,6 +908,7 @@
 				D1000000000000000000001C /* M1RuntimeLeaseAccess.swift in Sources */,
 				D1000000000000000000001E /* M1NativeAudioRouteCoordinator.swift in Sources */,
 				D1000000000000000000002F /* M1ProductController.swift in Sources */,
+				D10000000000000000000038 /* M1SystemAudioLifecycleMonitor.swift in Sources */,
 				D10000000000000000000032 /* M1EditingSession.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

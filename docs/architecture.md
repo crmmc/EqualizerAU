@@ -50,6 +50,13 @@ Retry。应用进程只装配一个 production store，不提供多实例或跨�
 等待输出，显式 Retry、Start 或下一次 Save 各只执行一次发现。Stop 可越过 Start 和发布，
 不会取消已接纳提交；过期发布收敛为已保存待启动。
 
+`M1SystemAudioLifecycleMonitor` 在独立串行队列监听默认输出、设备列表、当前默认设备的
+alive/sample-rate/stream-layout 属性以及系统 sleep/wake。默认设备监听以临时
+`AudioObjectID` 和持久 UID 联合标识，重绑定在新监听完整建立后才移除旧监听；失败按
+250 ms、1 s、1 s 最多重试三次，耗尽后向产品层发布明确的 monitoring failure。产品恢复
+保留显式 Start/Stop 与配置提交语义：只有先前运行意图存在时自动恢复，每批最多三次，
+恢复中事件合并为一次后继恢复，睡眠期间禁止启动，权限错误和预算耗尽会停止自动重试。
+
 `M1EditingSession` 保存异构有序节点、多选、焦点和锚点，并提供批量删除、组移动、Option-copy、
 typed 剪贴板和 Undo/Redo。剪贴板沿用规范 JSON 和 `4 MiB` 限制；Undo 与 Redo 合计最多
 30 条、规范载荷合计最多 `64 MiB`，按跨栈单调序号淘汰最旧记录。连续增益手势只合并同一
@@ -141,6 +148,7 @@ flowchart TD
 |---|---|
 | `EqualizerAUApp`、`ContentView` | 展示 Save、Processing、通用可展开节点行、上下文状态和高级诊断入口，不直接拥有 Core Audio 对象 |
 | `AppModel` | 把用户命令转换为生命周期操作，发布状态和错误，阻止互相冲突的操作 |
+| `M1SystemAudioLifecycleMonitor` | 监听系统设备、当前默认输出属性和 sleep/wake，以持久 UID 复核监听身份并执行有界重绑 |
 | `CoreAudioHAL` 与发现类型 | 集中读写 HAL 属性，区分持久 UID 与临时 `AudioObjectID`，解析有界格式 |
 | `ProcessTapController` | 翻译本进程身份，创建并校验设备绑定的自排除 Tap，管理所有权令牌和回滚 |
 | `AggregateDeviceController` | 创建仅含 Tap 的私有 Aggregate，设置漂移补偿，校验实际格式和帧容量 |
@@ -188,6 +196,14 @@ sequenceDiagram
 ```
 
 若上游资源清理失败，其依赖资源必须保留，供下一次停止操作重试。
+
+### 4.3 系统变化与恢复
+
+设备、默认输出、采样率、布局和 Core Audio 服务变化会先停止旧路线，再按最近一次运行基线
+重新发现和启动。一次恢复最多尝试三次；恢复中的重复事件只形成一次后继恢复。显式 Stop、
+Quit 或 sleep 通过 generation token 使在途 Start、output-layout 读取和退避失效，旧操作不得
+重新发布 running 投影。sleep 只停止，wake 才恢复；捕获权限被拒绝时不自动重试，并展示
+系统设置入口。
 
 ## 5. 实时数据面
 
@@ -262,8 +278,10 @@ stateDiagram-v2
 - Tap、Aggregate 和 IO 资源都携带控制器签发的所有权令牌。
 - 所有权令牌只保护同一控制器记录中的对象代次；当同一临时对象 ID 已由控制器登记为
   新代次时，旧令牌不能销毁新代次。
-- 当前销毁前不会从 HAL 重新读取对象持久 UID；若对象在控制器之外失效后被 HAL 复用
-  同一 ID，现有令牌记录不能独立证明它仍是原对象。
+- Tap 与 Aggregate 销毁前从 HAL 重新读取持久 UID；同一临时 ID 已被不同 UID 复用时只释放
+  旧代次的本地所有权记录，不销毁新对象。若 UID 无法读取则保留所有权并允许重试。
+- Tap 创建后若首次 UID 读取和立即回滚销毁同时失败，会保留 unknown-identity pending
+  ownership；后续不得仅凭临时 ID 销毁该对象。
 - 创建成功但校验失败时，控制器保留按令牌标识的待清理资源。
 - 每个 IO 资源使用操作状态阻止重入的创建、启动、停止和销毁。
 - 异步诊断返回前重新校验运行代次和所有权；停止期间的旧快照返回空值。
@@ -307,11 +325,12 @@ flowchart LR
 
 - 只有短时真实音频验证，没有长期稳定性结论。
 - 其他系统级处理器可能以不同进程身份重放本应用输出；当前没有运行期共存检测或隔离保证。
-- 尚未覆盖所有设备切换、采样率变化、睡眠或 `coreaudiod` 变化。
+- 设备切换、采样率/布局变化、sleep/wake 与 Core Audio 服务事件已有 hostless 状态机和故障
+  注入覆盖；真实硬件和 `coreaudiod` 交互仍待人工验收。
 - 不提供实时 SRC；格式不兼容时拒绝启动。
 - 输出绑定后的身份读回只校验临时 `AudioObjectID`，尚未再次校验持久设备 UID。
-- Tap 或 Aggregate 若在控制器之外失效并发生临时 ID 复用，销毁前尚无持久 UID 复核；
-  该边界随设备变化和 `coreaudiod` 恢复在 M4 处理。
+- 输出 Audio Unit 仍只读回临时设备 ID 与格式；Tap/Aggregate 销毁和生命周期 monitor 已使用
+  持久 UID 防止临时 ID 复用造成误销毁或错误监听。
 - 正式产品入口已切换到独立 M1 target；M0 应用和测试 target 只保留为历史证据，不属于
   默认 scheme，也不参与 M1 构建。
 - M1 的窗口、编辑命令、拖拽修饰键和 AppKit 退出提示已完成静态构建及 hostless 状态机验证，
@@ -320,6 +339,8 @@ flowchart LR
   音频验收。
 - M3 Convolution 已完成 hostless 文件、SRC、数值、容量、发布和产品层验证，但尚未执行 hosted
   文件选择器、GUI 或真实音频验收；sidecar 当前不执行自动垃圾回收。
+- M4 已完成设备/服务事件监听、有界恢复、sleep/wake、权限提示和持久 UID 所有权复核的
+  hostless 实现；签名发布、真实设备切换、权限、睡眠和服务重启验收尚未执行。
 - 用户已按 M1.4 完整人工脚本报告真实音频、重复启停、持久恢复和 30 秒实时计数增量验收通过；
   该报告是整体结论，未附设备型号或逐项原始计数。
 - 应用退出后处理停止。

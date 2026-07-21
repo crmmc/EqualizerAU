@@ -94,6 +94,7 @@ contracts = {
       "EqualizerAUM1/Control/M1RuntimeLeaseAccess.swift",
       "EqualizerAUM1/Audio/M1NativeAudioRouteCoordinator.swift",
       "EqualizerAUM1/Control/M1ProductController.swift",
+      "EqualizerAUM1/Audio/M1SystemAudioLifecycleMonitor.swift",
       "EqualizerAUM1/Control/M1EditingSession.swift",
     ],
     phase_types: %w[PBXSourcesBuildPhase PBXFrameworksBuildPhase PBXResourcesBuildPhase],

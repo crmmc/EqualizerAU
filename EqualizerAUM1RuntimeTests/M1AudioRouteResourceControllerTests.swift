@@ -56,6 +56,50 @@ final class M1AudioRouteResourceControllerTests: XCTestCase {
         XCTAssertEqual(hal.destroyedTapIDs, [101, 101])
     }
 
+    func testTapFormatReadFailureRollsBackUsingPreviouslyReadUID() async throws {
+        let hal = TestHALRouteOperations()
+        hal.tapDataReadFailure = true
+        let controller = M1AudioRouteResourceController(operations: hal)
+        let generation = M1AudioRouteGeneration(rawValue: 20)
+        let output = try await controller.discoverOutput(generation: generation)
+
+        do {
+            _ = try await controller.createTap(generation: generation, output: output)
+            XCTFail("tap format read failure must fail creation")
+        } catch TestFailure.injected {
+        }
+
+        XCTAssertEqual(hal.destroyedTapIDs, [101])
+        let pending = await controller.hasPendingResources()
+        XCTAssertFalse(pending)
+    }
+
+    func testTapUIDReadAndImmediateDestroyFailureRetainsUnknownIdentityOwnership() async throws {
+        let hal = TestHALRouteOperations()
+        hal.tapUIDReadFailure = true
+        hal.tapDestroyFailuresRemaining = 1
+        let controller = M1AudioRouteResourceController(operations: hal)
+        let generation = M1AudioRouteGeneration(rawValue: 21)
+        let output = try await controller.discoverOutput(generation: generation)
+
+        do {
+            _ = try await controller.createTap(generation: generation, output: output)
+            XCTFail("tap UID read failure must fail creation")
+        } catch TestFailure.injected {
+        }
+        let pending = await controller.hasPendingResources()
+        XCTAssertTrue(pending)
+        XCTAssertEqual(hal.destroyedTapIDs, [101])
+
+        do {
+            try await controller.cleanupPendingResources()
+            XCTFail("unknown identity must not be destroyed after the initial rollback window")
+        } catch let error as M1AudioRouteError {
+            XCTAssertEqual(error, .invalidTap("pending tap identity is unavailable"))
+        }
+        XCTAssertEqual(hal.destroyedTapIDs, [101])
+    }
+
     func testActiveTapRejectsSecondCreationBeforeCallingHAL() async throws {
         let hal = TestHALRouteOperations()
         let controller = M1AudioRouteResourceController(operations: hal)
@@ -108,6 +152,46 @@ final class M1AudioRouteResourceControllerTests: XCTestCase {
             XCTAssertEqual(error, .staleResource)
         }
         XCTAssertTrue(hal.aggregateRequests.isEmpty)
+    }
+
+    func testDestroySkipsReusedHALObjectIDsWithDifferentPersistentUIDs() async throws {
+        let hal = TestHALRouteOperations()
+        let controller = M1AudioRouteResourceController(operations: hal)
+        let generation = M1AudioRouteGeneration(rawValue: 6)
+        let output = try await controller.discoverOutput(generation: generation)
+        let tap = try await controller.createTap(generation: generation, output: output)
+        let aggregate = try await controller.createAggregate(
+            generation: generation,
+            output: output,
+            tap: tap
+        )
+        hal.tapUIDReadback = "replacement.tap"
+        hal.aggregateUIDReadback = "replacement.aggregate"
+
+        try await controller.destroyAggregate(aggregate)
+        try await controller.destroyTap(tap)
+
+        XCTAssertTrue(hal.destroyOrder.isEmpty)
+        let hasPendingResources = await controller.hasPendingResources()
+        XCTAssertFalse(hasPendingResources)
+    }
+
+    func testDestroyRetainsOwnershipWhenPersistentUIDCannotBeRead() async throws {
+        let hal = TestHALRouteOperations()
+        let controller = M1AudioRouteResourceController(operations: hal)
+        let generation = M1AudioRouteGeneration(rawValue: 7)
+        let output = try await controller.discoverOutput(generation: generation)
+        let tap = try await controller.createTap(generation: generation, output: output)
+        hal.tapUIDReadFailure = true
+
+        do {
+            try await controller.destroyTap(tap)
+            XCTFail("UID read failure must retain ownership")
+        } catch TestFailure.injected {}
+
+        hal.tapUIDReadFailure = false
+        try await controller.destroyTap(tap)
+        XCTAssertEqual(hal.destroyOrder, ["tap:101"])
     }
 
     func testWrongKindTapCannotCreateAggregate() async throws {
@@ -450,6 +534,10 @@ private final class TestHALRouteOperations: M1HALRouteOperations, @unchecked Sen
     var destroyOrder: [String] = []
     var defaultOutputReadCount = 0
     var defaultOutputError: M1AudioRouteError?
+    var tapUIDReadback: String?
+    var aggregateUIDReadback: String?
+    var tapUIDReadFailure = false
+    var tapDataReadFailure = false
 
     init() {
         tapData = M1HALTapData(uid: "tap.uid", format: supportedFormat)
@@ -480,7 +568,15 @@ private final class TestHALRouteOperations: M1HALRouteOperations, @unchecked Sen
         return 101
     }
 
-    func readProcessTap(_ objectID: UInt32) throws -> M1HALTapData { tapData }
+    func readProcessTap(_ objectID: UInt32) throws -> M1HALTapData {
+        if tapDataReadFailure { throw TestFailure.injected }
+        return tapData
+    }
+
+    func readProcessTapUID(_ objectID: UInt32) throws -> String {
+        if tapUIDReadFailure { throw TestFailure.injected }
+        return tapUIDReadback ?? tapData.uid
+    }
 
     func destroyProcessTap(_ objectID: UInt32) throws {
         destroyedTapIDs.append(objectID)
@@ -504,6 +600,10 @@ private final class TestHALRouteOperations: M1HALRouteOperations, @unchecked Sen
             maximumFrameCount: 256,
             bufferChannelCounts: [2]
         )
+    }
+
+    func readAggregateDeviceUID(_ objectID: UInt32) throws -> String {
+        aggregateUIDReadback ?? aggregateRequests.last!.uid
     }
 
     func destroyAggregateDevice(_ objectID: UInt32) throws {

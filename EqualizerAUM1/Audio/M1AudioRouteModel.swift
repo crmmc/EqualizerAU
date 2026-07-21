@@ -118,6 +118,7 @@ struct M1AggregateRequest: Equatable, Sendable {
 
 enum M1AudioRouteError: Error, Equatable, Sendable {
     case noOutputDevice
+    case audioCapturePermissionDenied
     case invalidOutputDevice(String)
     case invalidTap(String)
     case invalidAggregate(String)
@@ -130,18 +131,25 @@ protocol M1HALRouteOperations: Sendable {
     func readCurrentProcessObjectID() throws -> UInt32
     func createProcessTap(_ request: M1ProcessTapRequest) throws -> UInt32
     func readProcessTap(_ objectID: UInt32) throws -> M1HALTapData
+    func readProcessTapUID(_ objectID: UInt32) throws -> String
     func destroyProcessTap(_ objectID: UInt32) throws
     func createAggregateDevice(_ request: M1AggregateRequest) throws -> UInt32
     func readAggregateDevice(_ objectID: UInt32) throws -> M1HALAggregateData
+    func readAggregateDeviceUID(_ objectID: UInt32) throws -> String
     func destroyAggregateDevice(_ objectID: UInt32) throws
 }
 
 actor M1AudioRouteResourceController {
+    private struct PendingOwnership: Sendable {
+        let token: UUID
+        let persistentUID: String?
+    }
+
     private let operations: any M1HALRouteOperations
     private var activeTapTokens: [UInt32: UUID] = [:]
-    private var pendingTapTokens: [UInt32: UUID] = [:]
+    private var pendingTapTokens: [UInt32: PendingOwnership] = [:]
     private var activeAggregateTokens: [UInt32: UUID] = [:]
-    private var pendingAggregateTokens: [UInt32: UUID] = [:]
+    private var pendingAggregateTokens: [UInt32: PendingOwnership] = [:]
 
     init(operations: any M1HALRouteOperations) {
         self.operations = operations
@@ -201,9 +209,11 @@ actor M1AudioRouteResourceController {
 
         let token = UUID()
         activeTapTokens[objectID] = token
+        var persistentUID: String?
         do {
+            persistentUID = try operations.readProcessTapUID(objectID)
             let tap = try operations.readProcessTap(objectID)
-            guard !tap.uid.isEmpty, tap.format.isSupported else {
+            guard tap.uid == persistentUID, !tap.uid.isEmpty, tap.format.isSupported else {
                 throw M1AudioRouteError.invalidTap("unsupported tap UID or format")
             }
             guard tap.format.sampleRate == output.layout.sampleRate,
@@ -225,10 +235,18 @@ actor M1AudioRouteResourceController {
             )
         } catch {
             do {
-                try destroyTap(objectID: objectID, token: token)
+                if let persistentUID {
+                    try destroyTap(objectID: objectID, token: token, persistentUID: persistentUID)
+                } else {
+                    try operations.destroyProcessTap(objectID)
+                    activeTapTokens.removeValue(forKey: objectID)
+                }
             } catch {
                 if activeTapTokens[objectID] == token {
-                    pendingTapTokens[objectID] = token
+                    pendingTapTokens[objectID] = PendingOwnership(
+                        token: token,
+                        persistentUID: persistentUID
+                    )
                 }
             }
             throw error
@@ -304,10 +322,13 @@ actor M1AudioRouteResourceController {
             )
         } catch {
             do {
-                try destroyAggregate(objectID: objectID, token: token)
+                try destroyAggregate(objectID: objectID, token: token, persistentUID: uid)
             } catch {
                 if activeAggregateTokens[objectID] == token {
-                    pendingAggregateTokens[objectID] = token
+                    pendingAggregateTokens[objectID] = PendingOwnership(
+                        token: token,
+                        persistentUID: uid
+                    )
                 }
             }
             throw error
@@ -322,7 +343,8 @@ actor M1AudioRouteResourceController {
         }
         try destroyAggregate(
             objectID: resource.descriptor.objectID,
-            token: resource.descriptor.ownershipToken
+            token: resource.descriptor.ownershipToken,
+            persistentUID: resource.descriptor.persistentUID
         )
     }
 
@@ -332,22 +354,40 @@ actor M1AudioRouteResourceController {
         else {
             throw M1AudioRouteError.staleResource
         }
-        try destroyTap(objectID: resource.descriptor.objectID, token: resource.descriptor.ownershipToken)
+        try destroyTap(
+            objectID: resource.descriptor.objectID,
+            token: resource.descriptor.ownershipToken,
+            persistentUID: resource.descriptor.persistentUID
+        )
     }
 
     func cleanupPendingResources() throws {
         for objectID in pendingAggregateTokens.keys.sorted() {
-            guard let token = pendingAggregateTokens[objectID] else { continue }
-            if activeAggregateTokens[objectID] == token {
-                try destroyAggregate(objectID: objectID, token: token)
+            guard let ownership = pendingAggregateTokens[objectID] else { continue }
+            if activeAggregateTokens[objectID] == ownership.token {
+                guard let persistentUID = ownership.persistentUID else {
+                    throw M1AudioRouteError.invalidAggregate("pending aggregate identity is unavailable")
+                }
+                try destroyAggregate(
+                    objectID: objectID,
+                    token: ownership.token,
+                    persistentUID: persistentUID
+                )
             } else {
                 pendingAggregateTokens.removeValue(forKey: objectID)
             }
         }
         for objectID in pendingTapTokens.keys.sorted() {
-            guard let token = pendingTapTokens[objectID] else { continue }
-            if activeTapTokens[objectID] == token {
-                try destroyTap(objectID: objectID, token: token)
+            guard let ownership = pendingTapTokens[objectID] else { continue }
+            if activeTapTokens[objectID] == ownership.token {
+                guard let persistentUID = ownership.persistentUID else {
+                    throw M1AudioRouteError.invalidTap("pending tap identity is unavailable")
+                }
+                try destroyTap(
+                    objectID: objectID,
+                    token: ownership.token,
+                    persistentUID: persistentUID
+                )
             } else {
                 pendingTapTokens.removeValue(forKey: objectID)
             }
@@ -358,15 +398,25 @@ actor M1AudioRouteResourceController {
         !pendingAggregateTokens.isEmpty || !pendingTapTokens.isEmpty
     }
 
-    private func destroyAggregate(objectID: UInt32, token: UUID) throws {
+    private func destroyAggregate(objectID: UInt32, token: UUID, persistentUID: String) throws {
         guard activeAggregateTokens[objectID] == token else { throw M1AudioRouteError.staleResource }
+        guard try operations.readAggregateDeviceUID(objectID) == persistentUID else {
+            activeAggregateTokens.removeValue(forKey: objectID)
+            pendingAggregateTokens.removeValue(forKey: objectID)
+            return
+        }
         try operations.destroyAggregateDevice(objectID)
         activeAggregateTokens.removeValue(forKey: objectID)
         pendingAggregateTokens.removeValue(forKey: objectID)
     }
 
-    private func destroyTap(objectID: UInt32, token: UUID) throws {
+    private func destroyTap(objectID: UInt32, token: UUID, persistentUID: String) throws {
         guard activeTapTokens[objectID] == token else { throw M1AudioRouteError.staleResource }
+        guard try operations.readProcessTapUID(objectID) == persistentUID else {
+            activeTapTokens.removeValue(forKey: objectID)
+            pendingTapTokens.removeValue(forKey: objectID)
+            return
+        }
         try operations.destroyProcessTap(objectID)
         activeTapTokens.removeValue(forKey: objectID)
         pendingTapTokens.removeValue(forKey: objectID)

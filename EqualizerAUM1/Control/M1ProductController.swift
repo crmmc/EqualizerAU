@@ -31,6 +31,42 @@ protocol M1ProductAudioControlling: Sendable {
 
 extension M1NativeAudioRouteCoordinator: M1ProductAudioControlling {}
 
+enum M1AudioLifecycleEvent: Equatable, Sendable {
+    case routeChanged
+    case systemAudioServicesChanged
+    case monitoringFailed
+    case willSleep
+    case didWake
+}
+
+enum M1AudioRecoveryReason: Equatable, Sendable {
+    case routeChanged
+    case systemAudioServicesChanged
+    case wake
+}
+
+enum M1AudioRecoveryState: Equatable, Sendable {
+    case inactive
+    case suspendedForSleep
+    case recovering(reason: M1AudioRecoveryReason, attempt: Int, maximumAttempts: Int)
+    case waitingForRetry(reason: M1AudioRecoveryReason)
+    case permissionRequired
+}
+
+struct M1AudioRecoveryTiming: Sendable {
+    let maximumAttempts: Int
+    let delayNanoseconds: @Sendable (_ completedAttempt: Int) -> UInt64
+    let sleep: @Sendable (_ nanoseconds: UInt64) async throws -> Void
+
+    static let production = M1AudioRecoveryTiming(
+        maximumAttempts: 3,
+        delayNanoseconds: { attempt in
+            attempt == 1 ? 250_000_000 : 1_000_000_000
+        },
+        sleep: { try await Task.sleep(nanoseconds: $0) }
+    )
+}
+
 enum M1ProductPersistenceState: Equatable, Sendable {
     case clean
     case modified
@@ -57,6 +93,7 @@ struct M1ProductSnapshot: Equatable, Sendable {
     let focusedNodeID: UUID?
     let persistence: M1ProductPersistenceState
     let audio: M1ProductAudioState
+    let audioRecovery: M1AudioRecoveryState
     let outputLayout: M1OutputLayoutSnapshot?
     let activeDiagnostics: M1ProcessingBuildDiagnostics?
     let expectedDiagnostics: M1ProcessingBuildDiagnostics?
@@ -123,12 +160,14 @@ actor M1ProductController {
 
     private let store: any M1ConfigurationStoring
     private let audio: any M1ProductAudioControlling
+    private let recoveryTiming: M1AudioRecoveryTiming
     private var draft = M1ConfigurationSnapshot.transparentRecovery
     private var saved = M1ConfigurationSnapshot.transparentRecovery
     private var runtimeBaseline = M1ConfigurationSnapshot.transparentRecovery
     private var editingSession = M1EditingSession(nodes: [])
     private var persistence: M1ProductPersistenceState = .recovery
     private var audioState: M1ProductAudioState = .stopped
+    private var audioRecovery: M1AudioRecoveryState = .inactive
     private var layout: M1OutputLayoutSnapshot?
     private var activeDiagnostics: M1ProcessingBuildDiagnostics?
     private var expectedDiagnostics: M1ProcessingBuildDiagnostics?
@@ -151,10 +190,20 @@ actor M1ProductController {
     private var publicationTask: Task<Void, Never>?
     private var terminating = false
     private var requiresRepair = false
+    private var automaticRecoveryDesired = false
+    private var recoveryInProgress = false
+    private var recoveryToken: UInt64 = 0
+    private var isSystemSleeping = false
+    private var pendingRecoveryReason: M1AudioRecoveryReason?
 
-    init(store: any M1ConfigurationStoring, audio: any M1ProductAudioControlling) {
+    init(
+        store: any M1ConfigurationStoring,
+        audio: any M1ProductAudioControlling,
+        recoveryTiming: M1AudioRecoveryTiming = .production
+    ) {
         self.store = store
         self.audio = audio
+        self.recoveryTiming = recoveryTiming
     }
 
     func bootstrap(initialNodeID: UUID = UUID()) async {
@@ -207,6 +256,7 @@ actor M1ProductController {
             focusedNodeID: editingSession.focusedNodeID,
             persistence: persistence,
             audio: audioState,
+            audioRecovery: audioRecovery,
             outputLayout: layout,
             activeDiagnostics: activeDiagnostics,
             expectedDiagnostics: expectedDiagnostics,
@@ -221,7 +271,7 @@ actor M1ProductController {
                 && !terminating && (audioState == .stopped || audioState == .running)
                 && (recovery || waitingForOutput || draft != saved),
             canStart: bootstrapped && !uncertain && !persistenceInFlight && !effectsUpdateInFlight
-                && !terminating && audioState == .stopped,
+                && !terminating && !isSystemSleeping && audioState == .stopped && !recoveryInProgress,
             canStop: audioState != .stopped,
             canUndo: bootstrapped && !uncertain && !terminating && editingSession.canUndo,
             canRedo: bootstrapped && !uncertain && !terminating && editingSession.canRedo,
@@ -500,6 +550,9 @@ actor M1ProductController {
     func beginStart() throws -> M1ConfigurationSnapshot {
         guard snapshot().canStart else { throw M1ProductControllerError.commandUnavailable }
         let startupConfiguration = persistence == .recovery ? runtimeBaseline : saved
+        recoveryToken &+= 1
+        pendingRecoveryReason = nil
+        audioRecovery = .inactive
         audioState = .starting
         visibleError = nil
         return startupConfiguration
@@ -507,45 +560,51 @@ actor M1ProductController {
 
     func finishStart(configuration startupConfiguration: M1ConfigurationSnapshot) async throws {
         guard audioState == .starting else { throw M1ProductControllerError.commandUnavailable }
+        let token = recoveryToken
         do {
             try await audio.start(configuration: startupConfiguration)
-            audioState = .running
-            runtimeBaseline = startupConfiguration
-            appliedEffectsEnabled = startupConfiguration.effectsEnabled
-            layout = await audio.outputLayout()
-            if let layout {
-                activeDiagnostics = try M1ProcessingBuilder.build(
-                    nodes: startupConfiguration.nodes,
-                    layout: layout
-                ).diagnostics
-                activeConfigurationGeneration = commitGeneration
+            guard token == recoveryToken, !isSystemSleeping else {
+                try await audio.stop()
+                audioState = Self.productAudioState(await audio.state())
+                clearAudioProjection()
+                throw CancellationError()
             }
-            expectedConfigurationGeneration = nil
-            persistence = draft == saved ? .clean : .modified
+            try await applyStartedConfiguration(startupConfiguration, token: token)
+            automaticRecoveryDesired = true
+            if let pendingReason = pendingRecoveryReason {
+                pendingRecoveryReason = nil
+                Task { await self.recoverAudio(reason: pendingReason) }
+            }
         } catch {
+            guard token == recoveryToken else { throw error }
             audioState = Self.productAudioState(await audio.state())
-            visibleError = String(describing: error)
+            automaticRecoveryDesired = false
+            if isSystemSleeping, audioState == .stopped {
+                audioRecovery = .suspendedForSleep
+                visibleError = nil
+            } else if error as? M1AudioRouteError == .audioCapturePermissionDenied {
+                audioRecovery = .permissionRequired
+                visibleError = "System audio capture permission is required."
+            } else {
+                visibleError = String(describing: error)
+            }
             throw error
         }
     }
 
     func stop() async throws {
+        recoveryToken &+= 1
+        automaticRecoveryDesired = false
+        recoveryInProgress = false
+        pendingRecoveryReason = nil
+        audioRecovery = .inactive
         guard audioState != .stopped else { return }
         let hadPendingApplication = pendingApplication != nil
         audioState = .stopping
         do {
             try await audio.stop()
             audioState = .stopped
-            layout = nil
-            activeDiagnostics = nil
-            expectedDiagnostics = nil
-            activeConfigurationGeneration = nil
-            expectedConfigurationGeneration = nil
-            realtimeDiagnostics = nil
-            appliedEffectsEnabled = nil
-            pendingApplication = nil
-            publicationTask?.cancel()
-            publicationTask = nil
+            clearAudioProjection()
             if hadPendingApplication {
                 persistence = draft == saved ? .savedPendingStart : .modified
             }
@@ -581,7 +640,212 @@ actor M1ProductController {
         if currentState == .stopped {
             persistence = draft == saved ? .savedPendingStart : .modified
         }
+        automaticRecoveryDesired = false
+        audioRecovery = .waitingForRetry(reason: .systemAudioServicesChanged)
         visibleError = "Audio stopped after retirement maintenance: \(reason)"
+    }
+
+    func handleAudioLifecycleEvent(_ event: M1AudioLifecycleEvent) async {
+        switch event {
+        case .willSleep:
+            isSystemSleeping = true
+            await suspendAudioForSleep()
+        case .didWake:
+            guard isSystemSleeping else { return }
+            isSystemSleeping = false
+            await recoverAudio(reason: .wake)
+        case .routeChanged:
+            guard !isSystemSleeping else { return }
+            if audioState == .starting {
+                pendingRecoveryReason = .routeChanged
+                return
+            }
+            await recoverAudio(reason: .routeChanged)
+        case .systemAudioServicesChanged:
+            guard !isSystemSleeping else { return }
+            if audioState == .starting {
+                pendingRecoveryReason = .systemAudioServicesChanged
+                return
+            }
+            await recoverAudio(reason: .systemAudioServicesChanged)
+        case .monitoringFailed:
+            audioRecovery = .waitingForRetry(reason: .systemAudioServicesChanged)
+            visibleError = "Audio device monitoring is unavailable; waiting for a system device event."
+        }
+    }
+
+    private func suspendAudioForSleep() async {
+        guard (automaticRecoveryDesired || audioState == .starting), !terminating else { return }
+        recoveryToken &+= 1
+        let token = recoveryToken
+        recoveryInProgress = false
+        pendingRecoveryReason = nil
+        audioRecovery = .suspendedForSleep
+        await invalidatePendingApplication()
+        guard audioState != .stopped else { return }
+        audioState = .stopping
+        do {
+            try await audio.stop()
+            guard token == recoveryToken else { return }
+            audioState = .stopped
+            clearAudioProjection()
+            if draft == saved { persistence = .savedPendingStart }
+            visibleError = nil
+        } catch {
+            guard token == recoveryToken else { return }
+            audioState = Self.productAudioState(await audio.state())
+            visibleError = String(describing: error)
+        }
+    }
+
+    private func recoverAudio(reason: M1AudioRecoveryReason) async {
+        guard automaticRecoveryDesired, !isSystemSleeping, !terminating else { return }
+        if recoveryInProgress {
+            pendingRecoveryReason = reason
+            return
+        }
+        recoveryInProgress = true
+        recoveryToken &+= 1
+        let token = recoveryToken
+        defer {
+            if token == recoveryToken {
+                recoveryInProgress = false
+                if let pendingReason = pendingRecoveryReason,
+                   automaticRecoveryDesired,
+                   !isSystemSleeping,
+                   !terminating
+                {
+                    pendingRecoveryReason = nil
+                    Task { await self.recoverAudio(reason: pendingReason) }
+                }
+            }
+        }
+
+        await invalidatePendingApplication()
+        if audioState != .stopped {
+            audioState = .stopping
+            do {
+                try await audio.stop()
+            } catch {
+                guard token == recoveryToken else { return }
+                audioState = Self.productAudioState(await audio.state())
+                automaticRecoveryDesired = false
+                audioRecovery = .waitingForRetry(reason: reason)
+                visibleError = String(describing: error)
+                return
+            }
+        }
+        guard token == recoveryToken else { return }
+        audioState = .stopped
+        clearAudioProjection()
+        if draft == saved { persistence = .savedPendingStart }
+
+        let configuration = requiresRepair ? runtimeBaseline : saved
+        var lastError: (any Error)?
+        for attempt in 1...max(1, recoveryTiming.maximumAttempts) {
+            guard token == recoveryToken, automaticRecoveryDesired, !terminating else { return }
+            audioRecovery = .recovering(
+                reason: reason,
+                attempt: attempt,
+                maximumAttempts: max(1, recoveryTiming.maximumAttempts)
+            )
+            visibleError = nil
+            do {
+                try await audio.start(configuration: configuration)
+                guard token == recoveryToken, automaticRecoveryDesired, !terminating else {
+                    try? await audio.stop()
+                    return
+                }
+                try await applyStartedConfiguration(
+                    configuration,
+                    token: token,
+                    requiresRecoveryIntent: true
+                )
+                audioRecovery = .inactive
+                return
+            } catch {
+                guard token == recoveryToken else { return }
+                lastError = error
+                audioState = Self.productAudioState(await audio.state())
+                if error as? M1AudioRouteError == .audioCapturePermissionDenied {
+                    automaticRecoveryDesired = false
+                    audioRecovery = .permissionRequired
+                    visibleError = "System audio capture permission is required."
+                    return
+                }
+                if audioState == .cleanupRequired {
+                    automaticRecoveryDesired = false
+                    audioRecovery = .waitingForRetry(reason: reason)
+                    visibleError = String(describing: error)
+                    return
+                }
+                audioState = .stopped
+                if attempt < max(1, recoveryTiming.maximumAttempts) {
+                    do {
+                        try await recoveryTiming.sleep(recoveryTiming.delayNanoseconds(attempt))
+                    } catch {
+                        return
+                    }
+                }
+            }
+        }
+        guard token == recoveryToken else { return }
+        audioState = .stopped
+        automaticRecoveryDesired = false
+        pendingRecoveryReason = nil
+        audioRecovery = .waitingForRetry(reason: reason)
+        let failure = lastError.map { String(describing: $0) } ?? "unknown failure"
+        visibleError = "Automatic audio recovery paused: \(failure)"
+    }
+
+    private func applyStartedConfiguration(
+        _ configuration: M1ConfigurationSnapshot,
+        token: UInt64,
+        requiresRecoveryIntent: Bool = false
+    ) async throws {
+        let startedLayout = await audio.outputLayout()
+        guard token == recoveryToken,
+              !isSystemSleeping,
+              !requiresRecoveryIntent || automaticRecoveryDesired
+        else {
+            throw CancellationError()
+        }
+        do {
+            let diagnostics = try startedLayout.map {
+                try M1ProcessingBuilder.build(nodes: configuration.nodes, layout: $0).diagnostics
+            }
+            audioState = .running
+            runtimeBaseline = configuration
+            appliedEffectsEnabled = configuration.effectsEnabled
+            layout = startedLayout
+            activeDiagnostics = diagnostics
+            if diagnostics != nil { activeConfigurationGeneration = commitGeneration }
+            expectedConfigurationGeneration = nil
+            persistence = draft == saved ? .clean : .modified
+        } catch {
+            do {
+                try await audio.stop()
+            } catch {
+                audioState = Self.productAudioState(await audio.state())
+                throw error
+            }
+            audioState = Self.productAudioState(await audio.state())
+            clearAudioProjection()
+            throw error
+        }
+    }
+
+    private func clearAudioProjection() {
+        layout = nil
+        activeDiagnostics = nil
+        expectedDiagnostics = nil
+        activeConfigurationGeneration = nil
+        expectedConfigurationGeneration = nil
+        realtimeDiagnostics = nil
+        appliedEffectsEnabled = nil
+        pendingApplication = nil
+        publicationTask?.cancel()
+        publicationTask = nil
     }
 
     func refreshDiagnostics() async throws {

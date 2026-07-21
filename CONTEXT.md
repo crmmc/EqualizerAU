@@ -78,3 +78,9 @@ _避免：把旁路描述成 Stop、把底层 Start/Stop 暴露为第二个主�
 创建或销毁 EqualizerAU 系统音频链路的高级生命周期/恢复操作。它与运行中的 Processing
 旁路不同，不作为主窗口的第二个总开关。
 _避免：Processing 旁路、普通 A/B 切换_
+
+**自动音频恢复（Automatic Audio Recovery）**：
+系统处理先前正在运行时，由默认输出、设备格式、Core Audio 服务或 wake 事件触发的有界
+stop/re-discover/start。它只重新应用最近运行基线，不保存配置草稿；预算耗尽、权限拒绝、
+显式 Stop 或 Quit 后不会继续自动重试。
+_避免：自动保存、无限重启、在 sleep 期间启动_

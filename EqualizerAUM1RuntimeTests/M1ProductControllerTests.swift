@@ -852,6 +852,195 @@ final class M1ProductControllerTests: XCTestCase {
         XCTAssertNil(snapshot.activeDiagnostics)
     }
 
+    func testRouteChangeRestartsSavedConfigurationAndRestoresRunningProjection() async throws {
+        let fixture = makeFixture(recoveryTiming: immediateRecoveryTiming())
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+
+        await fixture.controller.handleAudioLifecycleEvent(.routeChanged)
+
+        let snapshot = await fixture.controller.snapshot()
+        let starts = await fixture.audio.startedConfigurations
+        XCTAssertEqual(starts.count, 2)
+        XCTAssertEqual(snapshot.audio, .running)
+        XCTAssertEqual(snapshot.audioRecovery, .inactive)
+        XCTAssertNotNil(snapshot.outputLayout)
+    }
+
+    func testSleepStopsWithoutRestartingUntilWake() async throws {
+        let fixture = makeFixture(recoveryTiming: immediateRecoveryTiming())
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+
+        await fixture.controller.handleAudioLifecycleEvent(.willSleep)
+        let sleeping = await fixture.controller.snapshot()
+        let sleepingStarts = await fixture.audio.startedConfigurations
+        XCTAssertEqual(sleeping.audio, .stopped)
+        XCTAssertEqual(sleeping.audioRecovery, .suspendedForSleep)
+        XCTAssertFalse(sleeping.canStart)
+        XCTAssertEqual(sleepingStarts.count, 1)
+
+        await fixture.controller.handleAudioLifecycleEvent(.routeChanged)
+        await fixture.controller.handleAudioLifecycleEvent(.systemAudioServicesChanged)
+        let stillSleeping = await fixture.controller.snapshot()
+        let startsBeforeWake = await fixture.audio.startedConfigurations
+        XCTAssertEqual(stillSleeping.audioRecovery, .suspendedForSleep)
+        XCTAssertEqual(startsBeforeWake.count, 1)
+
+        await fixture.controller.handleAudioLifecycleEvent(.didWake)
+        let awake = await fixture.controller.snapshot()
+        let awakeStarts = await fixture.audio.startedConfigurations
+        XCTAssertEqual(awake.audio, .running)
+        XCTAssertEqual(awake.audioRecovery, .inactive)
+        XCTAssertEqual(awakeStarts.count, 2)
+    }
+
+    func testAutomaticRecoveryStopsAfterBoundedAttempts() async throws {
+        let fixture = makeFixture(recoveryTiming: immediateRecoveryTiming(maximumAttempts: 3))
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        await fixture.audio.setStartFailuresRemaining(3)
+
+        await fixture.controller.handleAudioLifecycleEvent(.systemAudioServicesChanged)
+
+        let snapshot = await fixture.controller.snapshot()
+        let starts = await fixture.audio.startedConfigurations
+        XCTAssertEqual(starts.count, 4)
+        XCTAssertEqual(snapshot.audio, .stopped)
+        XCTAssertEqual(
+            snapshot.audioRecovery,
+            .waitingForRetry(reason: .systemAudioServicesChanged)
+        )
+        XCTAssertNotNil(snapshot.visibleError)
+        XCTAssertTrue(snapshot.canStart)
+
+        await fixture.controller.handleAudioLifecycleEvent(.routeChanged)
+        let startsAfterLaterEvent = await fixture.audio.startedConfigurations
+        XCTAssertEqual(startsAfterLaterEvent.count, 4)
+    }
+
+    func testPermissionFailureDoesNotRetryAutomatically() async throws {
+        let fixture = makeFixture(recoveryTiming: immediateRecoveryTiming(maximumAttempts: 3))
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        await fixture.audio.setPermissionFailure(true)
+
+        await fixture.controller.handleAudioLifecycleEvent(.routeChanged)
+
+        let snapshot = await fixture.controller.snapshot()
+        let starts = await fixture.audio.startedConfigurations
+        XCTAssertEqual(starts.count, 2)
+        XCTAssertEqual(snapshot.audioRecovery, .permissionRequired)
+        XCTAssertFalse(snapshot.processingEnabled)
+    }
+
+    func testExplicitStopCancelsRecoveryDuringBackoff() async throws {
+        let sleepGate = ProductTestGate()
+        let timing = M1AudioRecoveryTiming(
+            maximumAttempts: 3,
+            delayNanoseconds: { _ in 1 },
+            sleep: { _ in await sleepGate.wait() }
+        )
+        let fixture = makeFixture(recoveryTiming: timing)
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        await fixture.audio.setStartFailuresRemaining(3)
+        let recovery = Task {
+            await fixture.controller.handleAudioLifecycleEvent(.routeChanged)
+        }
+        await waitUntil { await fixture.audio.startedConfigurations.count == 2 }
+
+        try await fixture.controller.stop()
+        await sleepGate.open()
+        await recovery.value
+
+        let snapshot = await fixture.controller.snapshot()
+        let starts = await fixture.audio.startedConfigurations
+        XCTAssertEqual(snapshot.audio, .stopped)
+        XCTAssertEqual(snapshot.audioRecovery, .inactive)
+        XCTAssertEqual(starts.count, 2)
+    }
+
+    func testRouteEventDuringRecoveryIsCoalescedIntoOneFollowUpRecovery() async throws {
+        let fixture = makeFixture(recoveryTiming: immediateRecoveryTiming())
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        let startGate = ProductTestGate()
+        await fixture.audio.setStartGate(startGate)
+        let firstRecovery = Task {
+            await fixture.controller.handleAudioLifecycleEvent(.routeChanged)
+        }
+        await waitUntil { await fixture.audio.startedConfigurations.count == 2 }
+
+        await fixture.controller.handleAudioLifecycleEvent(.systemAudioServicesChanged)
+        await startGate.open()
+        await firstRecovery.value
+        await waitUntil { await fixture.audio.startedConfigurations.count == 3 }
+
+        let snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(snapshot.audio, .running)
+        XCTAssertEqual(snapshot.audioRecovery, .inactive)
+    }
+
+    func testSleepCancelsBlockedExplicitStart() async throws {
+        let fixture = makeFixture(recoveryTiming: immediateRecoveryTiming())
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        let startGate = ProductTestGate()
+        await fixture.audio.setStartGate(startGate)
+        let start = Task { try await fixture.controller.start() }
+        await waitUntil { await fixture.audio.startedConfigurations.count == 1 }
+
+        await fixture.controller.handleAudioLifecycleEvent(.willSleep)
+        await XCTAssertThrowsErrorAsync { try await start.value }
+
+        let snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(snapshot.audio, .stopped)
+        XCTAssertEqual(snapshot.audioRecovery, .suspendedForSleep)
+        XCTAssertFalse(snapshot.canStart)
+    }
+
+    func testRouteEventDuringExplicitStartTriggersFollowUpRecovery() async throws {
+        let fixture = makeFixture(recoveryTiming: immediateRecoveryTiming())
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        let startGate = ProductTestGate()
+        await fixture.audio.setStartGate(startGate)
+        let start = Task { try await fixture.controller.start() }
+        await waitUntil { await fixture.audio.startedConfigurations.count == 1 }
+
+        await fixture.controller.handleAudioLifecycleEvent(.routeChanged)
+        await startGate.open()
+        try await start.value
+        await waitUntil {
+            let starts = await fixture.audio.startedConfigurations.count
+            let snapshot = await fixture.controller.snapshot()
+            return starts == 2
+                && snapshot.audio == .running
+                && snapshot.audioRecovery == .inactive
+        }
+
+        let snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(snapshot.audio, .running)
+        XCTAssertEqual(snapshot.audioRecovery, .inactive)
+    }
+
+    func testStopDuringBlockedOutputLayoutCannotRepublishRunningProjection() async throws {
+        let fixture = makeFixture(recoveryTiming: immediateRecoveryTiming())
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        let layoutGate = ProductTestGate()
+        await fixture.audio.setLayoutGate(layoutGate)
+        let start = Task { try await fixture.controller.start() }
+        await waitUntil { await fixture.audio.calls.contains("layout") }
+
+        try await fixture.controller.stop()
+        await layoutGate.open()
+        await XCTAssertThrowsErrorAsync { try await start.value }
+
+        let snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(snapshot.audio, .stopped)
+        XCTAssertEqual(snapshot.audioRecovery, .inactive)
+        XCTAssertNil(snapshot.outputLayout)
+    }
+
     func testCopyIsPureAndFailedCutPreservesDraftAndHistory() async throws {
         let fixture = makeFixture()
         await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
@@ -1053,11 +1242,29 @@ private struct ProductFixture {
     let controller: M1ProductController
 }
 
-private func makeFixture() -> ProductFixture {
+private func makeFixture(
+    recoveryTiming: M1AudioRecoveryTiming = .production
+) -> ProductFixture {
     let nodeID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
     let store = ProductStoreFake(bootstrapResult: .loaded(.initial(nodeID: nodeID)))
     let audio = ProductAudioFake()
-    return ProductFixture(store: store, audio: audio, controller: M1ProductController(store: store, audio: audio))
+    return ProductFixture(
+        store: store,
+        audio: audio,
+        controller: M1ProductController(
+            store: store,
+            audio: audio,
+            recoveryTiming: recoveryTiming
+        )
+    )
+}
+
+private func immediateRecoveryTiming(maximumAttempts: Int = 3) -> M1AudioRecoveryTiming {
+    M1AudioRecoveryTiming(
+        maximumAttempts: maximumAttempts,
+        delayNanoseconds: { _ in 0 },
+        sleep: { _ in }
+    )
 }
 
 private actor ProductStoreFake: M1ConfigurationStoring {
@@ -1129,6 +1336,9 @@ private actor ProductAudioFake: M1ProductAudioControlling {
     private var preparationFails = false
     private var preparationGate: ProductTestGate?
     private var publishFails = false
+    private var startFailuresRemaining = 0
+    private var permissionFailure = false
+    private var layoutGate: ProductTestGate?
     private var discardedPublicationGenerations: Set<UInt64> = []
     private let layout = M1OutputLayoutSnapshot(
         sampleRate: 48_000,
@@ -1150,6 +1360,11 @@ private actor ProductAudioFake: M1ProductAudioControlling {
         startCancellationRequested = false
         if let startGate { await startGate.wait() }
         if startCancellationRequested { throw CancellationError() }
+        if permissionFailure { throw M1AudioRouteError.audioCapturePermissionDenied }
+        if startFailuresRemaining > 0 {
+            startFailuresRemaining -= 1
+            throw ProductAudioFakeError.startFailed
+        }
         if startFailureState != nil { throw ProductAudioFakeError.startFailed }
         running = true
     }
@@ -1166,8 +1381,9 @@ private actor ProductAudioFake: M1ProductAudioControlling {
         await stop()
     }
 
-    func outputLayout() -> M1OutputLayoutSnapshot? {
+    func outputLayout() async -> M1OutputLayoutSnapshot? {
         calls.append("layout")
+        await layoutGate?.wait()
         return running ? layout : nil
     }
 
@@ -1253,6 +1469,9 @@ private actor ProductAudioFake: M1ProductAudioControlling {
     func setPublishGate(_ gate: ProductTestGate?) { publishGate = gate }
     func setEffectsGate(_ gate: ProductTestGate?) { effectsGate = gate }
     func setEffectsFailure(_ fails: Bool) { effectsFailure = fails }
+    func setStartFailuresRemaining(_ count: Int) { startFailuresRemaining = count }
+    func setPermissionFailure(_ fails: Bool) { permissionFailure = fails }
+    func setLayoutGate(_ gate: ProductTestGate?) { layoutGate = gate }
 }
 
 private enum ProductAudioFakeError: Error {

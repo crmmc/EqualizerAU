@@ -402,6 +402,9 @@ struct M1SystemHALRouteOperations: M1HALRouteOperations, @unchecked Sendable {
         description.muteBehavior = .muted
         var objectID = AudioObjectID(kAudioObjectUnknown)
         let status = AudioHardwareCreateProcessTap(description, &objectID)
+        if status == kAudioDevicePermissionsError {
+            throw M1AudioRouteError.audioCapturePermissionDenied
+        }
         guard status == noErr, objectID != kAudioObjectUnknown else {
             throw M1CoreAudioStatusError(
                 operation: "AudioHardwareCreateProcessTap",
@@ -412,11 +415,7 @@ struct M1SystemHALRouteOperations: M1HALRouteOperations, @unchecked Sendable {
     }
 
     func readProcessTap(_ objectID: UInt32) throws -> M1HALTapData {
-        let uid = try reader.string(
-            objectID: objectID,
-            address: M1HALPropertyAddress(kAudioTapPropertyUID),
-            operation: "Read tap UID"
-        )
+        let uid = try readProcessTapUID(objectID)
         let format: AudioStreamBasicDescription = try reader.value(
             objectID: objectID,
             address: M1HALPropertyAddress(kAudioTapPropertyFormat),
@@ -424,6 +423,14 @@ struct M1SystemHALRouteOperations: M1HALRouteOperations, @unchecked Sendable {
             operation: "Read tap format"
         )
         return M1HALTapData(uid: uid, format: pcmFormat(format))
+    }
+
+    func readProcessTapUID(_ objectID: UInt32) throws -> String {
+        try reader.string(
+            objectID: objectID,
+            address: M1HALPropertyAddress(kAudioTapPropertyUID),
+            operation: "Read tap UID"
+        )
     }
 
     func destroyProcessTap(_ objectID: UInt32) throws {
@@ -463,11 +470,7 @@ struct M1SystemHALRouteOperations: M1HALRouteOperations, @unchecked Sendable {
     }
 
     func readAggregateDevice(_ objectID: UInt32) throws -> M1HALAggregateData {
-        let uid = try reader.string(
-            objectID: objectID,
-            address: M1HALPropertyAddress(kAudioDevicePropertyDeviceUID),
-            operation: "Read aggregate UID"
-        )
+        let uid = try readAggregateDeviceUID(objectID)
         let tapUIDs = try reader.stringArray(
             objectID: objectID,
             address: M1HALPropertyAddress(kAudioAggregateDevicePropertyTapList),
@@ -508,6 +511,14 @@ struct M1SystemHALRouteOperations: M1HALRouteOperations, @unchecked Sendable {
             format: pcmFormat(format),
             maximumFrameCount: Int(frameRange.mMaximum.rounded(.up)),
             bufferChannelCounts: topology
+        )
+    }
+
+    func readAggregateDeviceUID(_ objectID: UInt32) throws -> String {
+        try reader.string(
+            objectID: objectID,
+            address: M1HALPropertyAddress(kAudioDevicePropertyDeviceUID),
+            operation: "Read aggregate UID"
         )
     }
 

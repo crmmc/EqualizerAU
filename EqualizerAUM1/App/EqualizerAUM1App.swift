@@ -16,6 +16,7 @@ final class M1AppModel: ObservableObject {
         focusedNodeID: nil,
         persistence: .recovery,
         audio: .stopped,
+        audioRecovery: .inactive,
         outputLayout: nil,
         activeDiagnostics: nil,
         expectedDiagnostics: nil,
@@ -44,16 +45,31 @@ final class M1AppModel: ObservableObject {
     private var commandSequence: UInt64 = 0
     private var terminationPending = false
     private let pasteboard: any M1PasteboardAccess
+    private let audioLifecycleMonitor: (any M1AudioLifecycleMonitoring)?
 
-    init(controller: M1ProductController, pasteboard: any M1PasteboardAccess = M1SystemPasteboard()) {
+    init(
+        controller: M1ProductController,
+        pasteboard: any M1PasteboardAccess = M1SystemPasteboard(),
+        audioLifecycleMonitor: (any M1AudioLifecycleMonitoring)? = nil
+    ) {
         self.controller = controller
         self.pasteboard = pasteboard
+        self.audioLifecycleMonitor = audioLifecycleMonitor
     }
 
     func bootstrap() {
         guard !didBootstrap else { return }
         didBootstrap = true
-        perform { await self.controller.bootstrap() }
+        perform {
+            await self.controller.bootstrap()
+            try self.audioLifecycleMonitor?.start { [weak self] event in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    await controller.handleAudioLifecycleEvent(event)
+                    snapshot = await controller.snapshot()
+                }
+            }
+        }
     }
 
     func select(_ id: UUID?, mode: M1SelectionMode) {
@@ -247,6 +263,7 @@ final class M1AppModel: ObservableObject {
     }
 
     func shutdown() async throws {
+        audioLifecycleMonitor?.stop()
         try await controller.shutdown()
     }
 
@@ -255,7 +272,11 @@ final class M1AppModel: ObservableObject {
         await drainCommands()
         let decision = await controller.requestTermination()
         snapshot = await controller.snapshot()
-        if case .stayOpen = decision { terminationPending = false }
+        if case .terminate = decision {
+            audioLifecycleMonitor?.stop()
+        } else if case .stayOpen = decision {
+            terminationPending = false
+        }
         return decision
     }
 
@@ -263,7 +284,11 @@ final class M1AppModel: ObservableObject {
         await drainCommands()
         let decision = await controller.resolveTermination(action)
         snapshot = await controller.snapshot()
-        if case .stayOpen = decision { terminationPending = false }
+        if case .terminate = decision {
+            audioLifecycleMonitor?.stop()
+        } else if case .stayOpen = decision {
+            terminationPending = false
+        }
         return decision
     }
 
@@ -464,7 +489,10 @@ struct EqualizerAUM1App: App {
             audio: route
         )
         holder.controller = controller
-        _model = StateObject(wrappedValue: M1AppModel(controller: controller))
+        _model = StateObject(wrappedValue: M1AppModel(
+            controller: controller,
+            audioLifecycleMonitor: M1SystemAudioLifecycleMonitor()
+        ))
     }
 
     var body: some Scene {
@@ -590,6 +618,9 @@ private struct M1EditorView: View {
             if case .waitingForOutput = model.snapshot.persistence {
                 Button("Retry Output") { model.retryOutput() }
             }
+            if model.snapshot.audioRecovery == .permissionRequired {
+                Button("Open Audio Capture Settings") { openAudioCaptureSettings() }
+            }
             if let layout = model.snapshot.outputLayout {
                 Text("\(layout.channels.count) ch  \(Int(layout.sampleRate)) Hz")
                     .foregroundStyle(.secondary)
@@ -669,6 +700,18 @@ private struct M1EditorView: View {
 
     private var statusText: String {
         if let error = model.snapshot.visibleError { return error }
+        switch model.snapshot.audioRecovery {
+        case .inactive:
+            break
+        case .suspendedForSleep:
+            return "Audio suspended while the Mac sleeps"
+        case let .recovering(_, attempt, maximumAttempts):
+            return "Recovering audio route (\(attempt)/\(maximumAttempts))…"
+        case .waitingForRetry:
+            return "Automatic recovery paused; start Processing to retry"
+        case .permissionRequired:
+            return "System audio capture permission is required"
+        }
         switch model.snapshot.persistence {
         case .clean:
             if model.snapshot.audio == .running {
@@ -686,6 +729,13 @@ private struct M1EditorView: View {
         case let .pendingApplication(generation): return "Applying generation \(generation)…"
         case let .failed(reason): return reason
         }
+    }
+
+    private func openAudioCaptureSettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+        ) else { return }
+        NSWorkspace.shared.open(url)
     }
 
     @ViewBuilder

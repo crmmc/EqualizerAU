@@ -28,7 +28,8 @@ M1.3 已完成多选与键盘选择、typed 剪贴板、组移动与 Option-copy
 的固定 15 段 Graphic EQ、有序 Channels/Preamp/Graphic EQ 编译、Runtime ABI v2 biquad chain、
 10 ms 双槽切换，以及通用节点行中的频段编辑器。M3 已加入 schema v4 Convolution、严格 WAV
 IR sidecar、控制线程 SRC、Runtime ABI v3 zero-latency hybrid convolution 和安全链切换；M2/M3
-真实音频与 hosted GUI 验收尚未执行。
+真实音频与 hosted GUI 验收尚未执行。M4 已加入设备与 sleep/wake 监听、持久 UID 复核、
+有界自动恢复、权限提示和恢复状态；真实系统变化与签名发布验收尚未执行。
 M0 的源码、测试和构建产物只作参考，不被 M1 复用。BlackHole 只作为未启用的后备路线，
 不是当前依赖，也无需安装。
 
@@ -105,6 +106,7 @@ flowchart TD
 | [`docs/milestones/M1.0-runtime-kernel.md`](docs/milestones/M1.0-runtime-kernel.md) | M1.0 独立 target、运行时 ABI、所有权、实施顺序和阶段门槛 |
 | [`docs/milestones/M2-graphic-equalizer.md`](docs/milestones/M2-graphic-equalizer.md) | M2 Graphic EQ 范围、前置基础、验证计划和阶段证据 |
 | [`docs/milestones/M3-convolution.md`](docs/milestones/M3-convolution.md) | M3 Convolution 文件契约、DSP 边界、自动化证据和待验收范围 |
+| [`docs/milestones/M4-mvp-stabilization.md`](docs/milestones/M4-mvp-stabilization.md) | M4 设备/权限/睡眠恢复、资源所有权、自动化证据和发布待验收范围 |
 | [`CONTEXT.md`](CONTEXT.md) | 产品与处理链的规范领域词汇 |
 | [`AGENTS.md`](AGENTS.md) | 编码 Agent 的仓库工作规范 |
 
