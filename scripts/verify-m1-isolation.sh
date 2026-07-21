@@ -81,6 +81,7 @@ contracts = {
     sources: [
       "EqualizerAUM1/App/EqualizerAUM1App.swift",
       "EqualizerAUM1/Configuration/M1ProcessingModel.swift",
+      "EqualizerAUM1/Configuration/M1ConvolutionIR.swift",
       "EqualizerAUM1/Configuration/M1ProcessingBuilder.swift",
       "EqualizerAUM1/Configuration/M1Configuration.swift",
       "EqualizerAUM1/Configuration/M1ConfigurationStore.swift",
@@ -108,6 +109,8 @@ contracts = {
       "EqualizerAUM1RuntimeTests/EAUM1RuntimeSmokeTests.mm",
       "EqualizerAUM1/Configuration/M1ProcessingModel.swift",
       "EqualizerAUM1RuntimeTests/M1ProcessingModelTests.swift",
+      "EqualizerAUM1/Configuration/M1ConvolutionIR.swift",
+      "EqualizerAUM1RuntimeTests/M1ConvolutionIRTests.swift",
       "EqualizerAUM1/Configuration/M1ProcessingBuilder.swift",
       "EqualizerAUM1RuntimeTests/M1ProcessingBuilderTests.swift",
       "EqualizerAUM1/Configuration/M1Configuration.swift",

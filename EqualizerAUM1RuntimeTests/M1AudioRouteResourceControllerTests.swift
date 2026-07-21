@@ -189,6 +189,246 @@ final class M1AudioRouteResourceControllerTests: XCTestCase {
         XCTAssertEqual(state, .stopped)
         XCTAssertTrue(retainedExistingRuntime === existingRuntime)
     }
+
+    func testPrepareRejectsMissingIRBeforeOutputDiscovery() async throws {
+        let hal = TestHALRouteOperations()
+        let runtimeAccess = M1RuntimeLeaseAccess(stopHandler: { _, _ in })
+        let coordinator = M1NativeAudioRouteCoordinator(
+            routeResources: M1AudioRouteResourceController(operations: hal),
+            audioIO: M1AudioIOController(
+                operations: UnexpectedAudioIOOperations(),
+                timing: M1AudioIOControlTiming(nowNanoseconds: { 0 }, sleep: { _ in })
+            ),
+            runtimeFactory: TestRuntimeFactory(),
+            runtimeAccess: runtimeAccess,
+            retirementMaintenance: M1RetirementMaintenanceCoordinator(
+                access: runtimeAccess,
+                timing: M1RetirementMaintenanceTiming(nowNanoseconds: { 0 }, sleep: { _ in })
+            ),
+            irLoader: M1ConvolutionIRStore(
+                directoryURL: FileManager.default.temporaryDirectory
+                    .appendingPathComponent("missing-ir-\(UUID().uuidString)")
+            )
+        )
+        let ir = M1ConvolutionIRReference(
+            storageID: UUID(),
+            originalFileName: "missing.wav",
+            sha256: String(repeating: "0", count: 64),
+            sampleRate: 48_000,
+            channelCount: 1,
+            frameCount: 1
+        )
+        let node = M1ProcessingNode.convolution(ir: ir)
+        let configuration = M1ConfigurationSnapshot(effectsEnabled: true, nodes: [node])
+
+        do {
+            _ = try await coordinator.prepare(configuration: configuration)
+            XCTFail("missing IR must fail before waiting for output")
+        } catch let error as M1ProcessingBuildError {
+            XCTAssertEqual(
+                error,
+                .convolutionIRLoadFailed(nodeID: node.id, error: .missingResource)
+            )
+        }
+        XCTAssertEqual(hal.defaultOutputReadCount, 0)
+    }
+
+    func testPrepareBoundsAndDeduplicatesIRPreflightBeforeUnavailableOutput() async throws {
+        let hal = TestHALRouteOperations()
+        hal.defaultOutputError = .noOutputDevice
+        let loader = CountingIRLoader()
+        let runtimeAccess = M1RuntimeLeaseAccess(stopHandler: { _, _ in })
+        let coordinator = M1NativeAudioRouteCoordinator(
+            routeResources: M1AudioRouteResourceController(operations: hal),
+            audioIO: M1AudioIOController(
+                operations: UnexpectedAudioIOOperations(),
+                timing: M1AudioIOControlTiming(nowNanoseconds: { 0 }, sleep: { _ in })
+            ),
+            runtimeFactory: TestRuntimeFactory(),
+            runtimeAccess: runtimeAccess,
+            retirementMaintenance: M1RetirementMaintenanceCoordinator(
+                access: runtimeAccess,
+                timing: M1RetirementMaintenanceTiming(nowNanoseconds: { 0 }, sleep: { _ in })
+            ),
+            irLoader: loader
+        )
+        let ir = M1ConvolutionIRReference(
+            storageID: UUID(),
+            originalFileName: "shared.wav",
+            sha256: String(repeating: "0", count: 64),
+            sampleRate: 48_000,
+            channelCount: 1,
+            frameCount: 1
+        )
+
+        let waiting = try await coordinator.prepare(configuration: M1ConfigurationSnapshot(
+            effectsEnabled: true,
+            nodes: [.convolution(ir: ir), .convolution(ir: ir)]
+        ))
+        XCTAssertEqual(waiting, .waitingForOutput)
+        XCTAssertEqual(loader.validationCount, 1)
+
+        do {
+            _ = try await coordinator.prepare(configuration: M1ConfigurationSnapshot(
+                effectsEnabled: true,
+                nodes: (0...M1ProcessingBuilder.maximumConvolutionStages).map { _ in .convolution(ir: ir) }
+            ))
+            XCTFail("stage capacity must fail before IR I/O")
+        } catch let error as M1ProcessingBuildError {
+            XCTAssertEqual(error, .convolutionStageCapacityExceeded)
+        }
+        XCTAssertEqual(loader.validationCount, 1)
+    }
+
+    func testCancellingPrepareCancelsDetachedIRPreflightBeforeOutputDiscovery() async throws {
+        let entered = expectation(description: "IR validation entered")
+        let hal = TestHALRouteOperations()
+        let loader = CancellationObservingIRLoader { entered.fulfill() }
+        let runtimeAccess = M1RuntimeLeaseAccess(stopHandler: { _, _ in })
+        let coordinator = M1NativeAudioRouteCoordinator(
+            routeResources: M1AudioRouteResourceController(operations: hal),
+            audioIO: M1AudioIOController(
+                operations: UnexpectedAudioIOOperations(),
+                timing: M1AudioIOControlTiming(nowNanoseconds: { 0 }, sleep: { _ in })
+            ),
+            runtimeFactory: TestRuntimeFactory(),
+            runtimeAccess: runtimeAccess,
+            retirementMaintenance: M1RetirementMaintenanceCoordinator(
+                access: runtimeAccess,
+                timing: M1RetirementMaintenanceTiming(nowNanoseconds: { 0 }, sleep: { _ in })
+            ),
+            irLoader: loader
+        )
+        let ir = M1ConvolutionIRReference(
+            storageID: UUID(),
+            originalFileName: "cancel.wav",
+            sha256: String(repeating: "0", count: 64),
+            sampleRate: 48_000,
+            channelCount: 1,
+            frameCount: 1
+        )
+        let prepare = Task {
+            try await coordinator.prepare(configuration: M1ConfigurationSnapshot(
+                effectsEnabled: true,
+                nodes: [.convolution(ir: ir)]
+            ))
+        }
+
+        await fulfillment(of: [entered], timeout: 1)
+        prepare.cancel()
+        do {
+            _ = try await prepare.value
+            XCTFail("cancelled prepare must fail")
+        } catch is CancellationError {}
+        XCTAssertEqual(hal.defaultOutputReadCount, 0)
+    }
+
+    func testCancellingPrepareCancelsDetachedIRCompileAfterOutputDiscovery() async throws {
+        let entered = expectation(description: "IR compile load entered")
+        let hal = TestHALRouteOperations()
+        let loader = CompileCancellationObservingIRLoader { entered.fulfill() }
+        let runtimeAccess = M1RuntimeLeaseAccess(stopHandler: { _, _ in })
+        let coordinator = M1NativeAudioRouteCoordinator(
+            routeResources: M1AudioRouteResourceController(operations: hal),
+            audioIO: M1AudioIOController(
+                operations: UnexpectedAudioIOOperations(),
+                timing: M1AudioIOControlTiming(nowNanoseconds: { 0 }, sleep: { _ in })
+            ),
+            runtimeFactory: TestRuntimeFactory(),
+            runtimeAccess: runtimeAccess,
+            retirementMaintenance: M1RetirementMaintenanceCoordinator(
+                access: runtimeAccess,
+                timing: M1RetirementMaintenanceTiming(nowNanoseconds: { 0 }, sleep: { _ in })
+            ),
+            irLoader: loader
+        )
+        let ir = M1ConvolutionIRReference(
+            storageID: UUID(),
+            originalFileName: "cancel-compile.wav",
+            sha256: String(repeating: "0", count: 64),
+            sampleRate: 48_000,
+            channelCount: 1,
+            frameCount: 1
+        )
+        let prepare = Task {
+            try await coordinator.prepare(configuration: M1ConfigurationSnapshot(
+                effectsEnabled: true,
+                nodes: [.convolution(ir: ir)]
+            ))
+        }
+
+        await fulfillment(of: [entered], timeout: 1)
+        prepare.cancel()
+        do {
+            _ = try await prepare.value
+            XCTFail("cancelled compile must fail")
+        } catch is CancellationError {}
+        XCTAssertEqual(hal.defaultOutputReadCount, 1)
+    }
+}
+
+private final class CountingIRLoader: M1ConvolutionIRLoading, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _validationCount = 0
+
+    var validationCount: Int {
+        lock.withLock { _validationCount }
+    }
+
+    func validate(reference: M1ConvolutionIRReference) throws {
+        lock.withLock { _validationCount += 1 }
+    }
+
+    func load(
+        reference: M1ConvolutionIRReference,
+        targetSampleRate: Double
+    ) throws -> M1LoadedConvolutionIR {
+        throw M1ConvolutionIRError.resourceIO
+    }
+}
+
+private final class CancellationObservingIRLoader: M1ConvolutionIRLoading, @unchecked Sendable {
+    private let entered: @Sendable () -> Void
+
+    init(entered: @escaping @Sendable () -> Void) {
+        self.entered = entered
+    }
+
+    func validate(reference: M1ConvolutionIRReference) throws {
+        entered()
+        while !Task.isCancelled {
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+        throw CancellationError()
+    }
+
+    func load(
+        reference: M1ConvolutionIRReference,
+        targetSampleRate: Double
+    ) throws -> M1LoadedConvolutionIR {
+        throw M1ConvolutionIRError.resourceIO
+    }
+}
+
+private final class CompileCancellationObservingIRLoader: M1ConvolutionIRLoading, @unchecked Sendable {
+    private let entered: @Sendable () -> Void
+
+    init(entered: @escaping @Sendable () -> Void) {
+        self.entered = entered
+    }
+
+    func validate(reference: M1ConvolutionIRReference) throws {}
+
+    func load(
+        reference: M1ConvolutionIRReference,
+        targetSampleRate: Double
+    ) throws -> M1LoadedConvolutionIR {
+        entered()
+        while !Task.isCancelled {
+            Thread.sleep(forTimeInterval: 0.001)
+        }
+        throw CancellationError()
+    }
 }
 
 private final class TestHALRouteOperations: M1HALRouteOperations, @unchecked Sendable {
@@ -208,13 +448,17 @@ private final class TestHALRouteOperations: M1HALRouteOperations, @unchecked Sen
     var tapDestroyFailuresRemaining = 0
     var destroyedTapIDs: [UInt32] = []
     var destroyOrder: [String] = []
+    var defaultOutputReadCount = 0
+    var defaultOutputError: M1AudioRouteError?
 
     init() {
         tapData = M1HALTapData(uid: "tap.uid", format: supportedFormat)
     }
 
     func readDefaultOutputDevice() throws -> M1HALOutputDeviceData {
-        M1HALOutputDeviceData(
+        defaultOutputReadCount += 1
+        if let defaultOutputError { throw defaultOutputError }
+        return M1HALOutputDeviceData(
             objectID: 42,
             uid: "device.uid",
             name: "Output",

@@ -288,6 +288,21 @@ actor M1ProductController {
         }
     }
 
+    func addConvolution(
+        before id: UUID? = nil,
+        nodeID: UUID = UUID(),
+        ir: M1ConvolutionIRReference
+    ) async throws {
+        try await updateEditingSession { session, effectsEnabled in
+            try session.addConvolution(
+                before: id,
+                nodeID: nodeID,
+                ir: ir,
+                effectsEnabled: effectsEnabled
+            )
+        }
+    }
+
     func deletePreamp(id: UUID) async throws {
         try await updateEditingSession { session, effectsEnabled in
             try session.deleteNode(id: id, effectsEnabled: effectsEnabled)
@@ -345,6 +360,12 @@ actor M1ProductController {
     func setChannels(id: UUID, channels: M1ChannelSelection) async throws {
         try await updateEditingSession { session, effectsEnabled in
             try session.setChannels(id: id, channels: channels, effectsEnabled: effectsEnabled)
+        }
+    }
+
+    func setConvolutionIR(id: UUID, ir: M1ConvolutionIRReference) async throws {
+        try await updateEditingSession { session, effectsEnabled in
+            try session.setConvolutionIR(id: id, ir: ir, effectsEnabled: effectsEnabled)
         }
     }
 
@@ -416,6 +437,7 @@ actor M1ProductController {
         }
         let captured = draft
         let preparation = try await audio.prepare(configuration: captured)
+        try Task.checkCancellation()
         try await persist(
             captured,
             publishChain: true,

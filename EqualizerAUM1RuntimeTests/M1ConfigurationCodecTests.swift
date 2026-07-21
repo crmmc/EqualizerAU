@@ -70,10 +70,10 @@ final class M1ConfigurationCodecTests: XCTestCase {
     func testUnsupportedSchemaAndUnknownNodeAreRejected() {
         let id = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
         let unsupported = Data(
-            "{\"schemaVersion\":4,\"effectsEnabled\":true,\"nodes\":[]}".utf8
+            "{\"schemaVersion\":5,\"effectsEnabled\":true,\"nodes\":[]}".utf8
         )
         XCTAssertThrowsError(try M1ConfigurationCodec.decode(unsupported)) { error in
-            XCTAssertEqual(error as? M1ConfigurationCodecError, .unsupportedSchema(4))
+            XCTAssertEqual(error as? M1ConfigurationCodecError, .unsupportedSchema(5))
         }
 
         let unknown = Data(
@@ -97,7 +97,7 @@ final class M1ConfigurationCodecTests: XCTestCase {
         XCTAssertEqual(first.snapshot.nodes.map(\.kind), [.channels, .preamp])
         XCTAssertEqual(first.snapshot.nodes[1].id, id)
         let text = try XCTUnwrap(String(data: first.data, encoding: .utf8))
-        XCTAssertTrue(text.contains("\"schemaVersion\" : 3"))
+        XCTAssertTrue(text.contains("\"schemaVersion\" : 4"))
         XCTAssertTrue(text.contains("\"type\" : \"channels\""))
         XCTAssertFalse(text.contains("\"channels\" : \"all\""))
     }
@@ -110,7 +110,63 @@ final class M1ConfigurationCodecTests: XCTestCase {
 
         let decoded = try M1ConfigurationCodec.decode(source)
         XCTAssertEqual(decoded.snapshot.nodes.map(\.kind), [.preamp])
-        XCTAssertTrue(String(decoding: decoded.data, as: UTF8.self).contains("\"schemaVersion\" : 3"))
+        XCTAssertTrue(String(decoding: decoded.data, as: UTF8.self).contains("\"schemaVersion\" : 4"))
+    }
+
+    func testVersionThreeDecodesAndCanonicalizesToVersionFour() throws {
+        let id = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
+        let source = Data(
+            "{\"schemaVersion\":3,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"preamp\",\"isEnabled\":true,\"gainDB\":-2}]}".utf8
+        )
+
+        let decoded = try M1ConfigurationCodec.decode(source)
+        XCTAssertEqual(decoded.snapshot.nodes.map(\.kind), [.preamp])
+        XCTAssertTrue(String(decoding: decoded.data, as: UTF8.self).contains("\"schemaVersion\" : 4"))
+    }
+
+    func testConvolutionVersionFourRoundTripHasExactTypedShapeWithoutReadingResource() throws {
+        let reference = M1ConvolutionIRReference(
+            storageID: UUID(uuidString: "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC")!,
+            originalFileName: "Hall IR.wav",
+            sha256: String(repeating: "a", count: 64),
+            sampleRate: 48_000,
+            channelCount: 2,
+            frameCount: 96_000
+        )
+        let node = M1ProcessingNode.convolution(
+            id: UUID(uuidString: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")!,
+            isEnabled: false,
+            ir: reference
+        )
+
+        let encoded = try M1ConfigurationCodec.encode(
+            M1ConfigurationSnapshot(effectsEnabled: true, nodes: [node])
+        )
+        XCTAssertEqual(try M1ConfigurationCodec.decode(encoded.data), encoded)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded.data) as? [String: Any]
+        )
+        let nodes = try XCTUnwrap(object["nodes"] as? [[String: Any]])
+        XCTAssertEqual(Set(nodes[0].keys), ["id", "type", "isEnabled", "ir"])
+        let ir = try XCTUnwrap(nodes[0]["ir"] as? [String: Any])
+        XCTAssertEqual(Set(ir.keys), [
+            "storageID", "originalFileName", "sha256", "sampleRate", "channelCount", "frameCount",
+        ])
+    }
+
+    func testConvolutionRejectsUnknownDuplicateAndCrossKindFields() {
+        let id = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
+        let storageID = "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC"
+        let ir = "\"storageID\":\"\(storageID)\",\"originalFileName\":\"x.wav\",\"sha256\":\"\(String(repeating: "a", count: 64))\",\"sampleRate\":48000,\"channelCount\":1,\"frameCount\":1"
+        let invalidNodes = [
+            "{\"id\":\"\(id)\",\"type\":\"convolution\",\"isEnabled\":true,\"ir\":{\(ir),\"future\":1}}",
+            "{\"id\":\"\(id)\",\"type\":\"convolution\",\"isEnabled\":true,\"gainDB\":0,\"ir\":{\(ir)}}",
+            "{\"id\":\"\(id)\",\"type\":\"convolution\",\"isEnabled\":true,\"ir\":{\(ir),\"frameCount\":2}}",
+        ]
+        for node in invalidNodes {
+            let data = Data("{\"schemaVersion\":4,\"effectsEnabled\":true,\"nodes\":[\(node)]}".utf8)
+            XCTAssertThrowsError(try M1ConfigurationCodec.decode(data))
+        }
     }
 
     func testVersionTwoRejectsGraphicEQOwnedByVersionThree() {

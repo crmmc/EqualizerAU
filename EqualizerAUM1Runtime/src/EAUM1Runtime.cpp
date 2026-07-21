@@ -1,5 +1,6 @@
 #include "EAUM1Runtime.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -14,15 +15,50 @@ namespace {
 
 std::atomic<uint64_t> preparedLiveCount{0};
 
+constexpr uint32_t kPartitionSize = EAUM1_CONVOLUTION_PARTITION_SIZE;
+constexpr uint32_t kFFTSize = EAUM1_CONVOLUTION_FFT_SIZE;
+
+struct ComplexValue {
+    double real = 0.0;
+    double imaginary = 0.0;
+};
+
+struct PreparedConvolutionKernel {
+    uint32_t tapCount = 0;
+    std::vector<float> taps;
+    std::vector<ComplexValue> partitionSpectra;
+};
+
+struct RuntimeConvolution {
+    uint32_t tapCount = 0;
+    uint32_t headTapCount = 0;
+    uint32_t partitionCount = 0;
+    uint32_t inputPosition = 0;
+    uint32_t historyPosition = 0;
+    std::vector<float> taps;
+    std::vector<ComplexValue> partitionSpectra;
+    std::vector<ComplexValue> inputHistory;
+    std::array<double, kPartitionSize> directInput{};
+    std::array<double, kPartitionSize> tailInput{};
+    std::array<double, kPartitionSize> output{};
+    std::array<double, kPartitionSize> overlap{};
+};
+
 struct RuntimeStage {
     EAUM1PreparedStage definition{};
     double state1 = 0.0;
     double state2 = 0.0;
+    uint32_t convolutionIndex = 0;
 };
 
 struct ExecutionSlot {
     std::vector<RuntimeStage> stages;
     std::vector<uint32_t> channelOffsets;
+    std::vector<RuntimeConvolution> convolutions;
+    std::array<double, kFFTSize / 2> twiddleReal{};
+    std::array<double, kFFTSize / 2> twiddleImaginary{};
+    std::array<ComplexValue, kFFTSize> fftScratch{};
+    std::array<ComplexValue, kFFTSize> accumulationScratch{};
     uint32_t stageCount = 0;
 
     explicit ExecutionSlot(uint32_t channelCount)
@@ -37,16 +73,19 @@ struct EAUM1PreparedState {
     uint64_t publicationGeneration;
     std::vector<EAUM1PreparedStage> stages;
     std::vector<uint32_t> channelOffsets;
+    std::vector<PreparedConvolutionKernel> convolutions;
 
     EAUM1PreparedState(
         uint32_t channels,
         std::vector<EAUM1PreparedStage> preparedStages,
-        std::vector<uint32_t> offsets
+        std::vector<uint32_t> offsets,
+        std::vector<PreparedConvolutionKernel> preparedConvolutions = {}
     )
         : channelCount(channels),
           publicationGeneration(0),
           stages(std::move(preparedStages)),
-          channelOffsets(std::move(offsets)) {
+          channelOffsets(std::move(offsets)),
+          convolutions(std::move(preparedConvolutions)) {
         preparedLiveCount.fetch_add(1, std::memory_order_relaxed);
     }
 
@@ -146,6 +185,91 @@ bool isStableBiquad(const EAUM1PreparedStage &stage) {
         && 1.0 - stage.a1 + stage.a2 > 0.0;
 }
 
+void prepareTwiddles(
+    std::array<double, kFFTSize / 2> *real,
+    std::array<double, kFFTSize / 2> *imaginary
+) {
+    const double scale = -2.0 * std::acos(-1.0) / static_cast<double>(kFFTSize);
+    for (uint32_t index = 0; index < kFFTSize / 2; ++index) {
+        const double phase = scale * static_cast<double>(index);
+        (*real)[index] = std::cos(phase);
+        (*imaginary)[index] = std::sin(phase);
+    }
+}
+
+void fftTransform(
+    std::array<ComplexValue, kFFTSize> *values,
+    const std::array<double, kFFTSize / 2> &twiddleReal,
+    const std::array<double, kFFTSize / 2> &twiddleImaginary,
+    bool inverse
+) {
+    for (uint32_t index = 1, reversed = 0; index < kFFTSize; ++index) {
+        uint32_t bit = kFFTSize >> 1;
+        while ((reversed & bit) != 0) {
+            reversed ^= bit;
+            bit >>= 1;
+        }
+        reversed ^= bit;
+        if (index < reversed) {
+            const ComplexValue temporary = (*values)[index];
+            (*values)[index] = (*values)[reversed];
+            (*values)[reversed] = temporary;
+        }
+    }
+
+    for (uint32_t length = 2; length <= kFFTSize; length <<= 1) {
+        const uint32_t half = length >> 1;
+        const uint32_t twiddleStep = kFFTSize / length;
+        for (uint32_t start = 0; start < kFFTSize; start += length) {
+            for (uint32_t offset = 0; offset < half; ++offset) {
+                const uint32_t twiddleIndex = offset * twiddleStep;
+                const double wr = twiddleReal[twiddleIndex];
+                const double wi = inverse
+                    ? -twiddleImaginary[twiddleIndex]
+                    : twiddleImaginary[twiddleIndex];
+                const ComplexValue right = (*values)[start + offset + half];
+                const double productReal = right.real * wr - right.imaginary * wi;
+                const double productImaginary = right.real * wi + right.imaginary * wr;
+                const ComplexValue left = (*values)[start + offset];
+                (*values)[start + offset] = {
+                    left.real + productReal,
+                    left.imaginary + productImaginary,
+                };
+                (*values)[start + offset + half] = {
+                    left.real - productReal,
+                    left.imaginary - productImaginary,
+                };
+            }
+        }
+    }
+
+    if (inverse) {
+        const double scale = 1.0 / static_cast<double>(kFFTSize);
+        for (ComplexValue &value : *values) {
+            value.real *= scale;
+            value.imaginary *= scale;
+        }
+    }
+}
+
+bool convolutionDescriptorIndex(
+    const EAUM1PreparedStage &stage,
+    uint32_t convolutionCount,
+    uint32_t *indexOut
+) {
+    if (stage.b1 != 0.0 || stage.b2 != 0.0 || stage.a1 != 0.0 || stage.a2 != 0.0
+        || !std::isfinite(stage.b0) || stage.b0 < 0.0
+        || stage.b0 > static_cast<double>(std::numeric_limits<uint32_t>::max())) {
+        return false;
+    }
+    const uint32_t index = static_cast<uint32_t>(stage.b0);
+    if (stage.b0 != static_cast<double>(index) || index >= convolutionCount) {
+        return false;
+    }
+    *indexOut = index;
+    return true;
+}
+
 bool validateStage(const EAUM1PreparedStage &stage) {
     switch (stage.kind) {
     case EAUM1PreparedStageGain:
@@ -190,19 +314,64 @@ bool allRequiredAtomicsAreLockFree() {
         && slotIndex.is_lock_free();
 }
 
-void copyPreparedToSlot(
+EAUM1Status copyPreparedToSlot(
     const EAUM1PreparedState *prepared,
     ExecutionSlot *slot
 ) {
+    std::vector<RuntimeConvolution> convolutions;
+    uint32_t convolutionStageCount = 0;
+    for (const EAUM1PreparedStage &stage : prepared->stages) {
+        if (stage.kind == EAUM1PreparedStageConvolution) {
+            ++convolutionStageCount;
+        }
+    }
+    try {
+        convolutions.reserve(convolutionStageCount);
+        for (const EAUM1PreparedStage &stage : prepared->stages) {
+            if (stage.kind != EAUM1PreparedStageConvolution) {
+                continue;
+            }
+            const uint32_t descriptorIndex = static_cast<uint32_t>(stage.b0);
+            const PreparedConvolutionKernel &kernel = prepared->convolutions[descriptorIndex];
+            RuntimeConvolution convolution;
+            convolution.tapCount = kernel.tapCount;
+            convolution.headTapCount = std::min(kernel.tapCount, kPartitionSize);
+            const uint32_t tailTapCount = kernel.tapCount - convolution.headTapCount;
+            convolution.partitionCount = tailTapCount == 0
+                ? 0
+                : static_cast<uint32_t>(
+                    (static_cast<uint64_t>(tailTapCount) + kPartitionSize - 1) / kPartitionSize
+                );
+            convolution.taps = kernel.taps;
+            convolution.partitionSpectra = kernel.partitionSpectra;
+            convolution.inputHistory.resize(
+                static_cast<size_t>(convolution.partitionCount) * kFFTSize
+            );
+            convolutions.push_back(std::move(convolution));
+        }
+    } catch (const std::bad_alloc &) {
+        return EAUM1StatusOutOfMemory;
+    } catch (...) {
+        return EAUM1StatusInvalidArgument;
+    }
+
+    prepareTwiddles(&slot->twiddleReal, &slot->twiddleImaginary);
     slot->stageCount = static_cast<uint32_t>(prepared->stages.size());
+    uint32_t convolutionIndex = 0;
     for (uint32_t index = 0; index < slot->stageCount; ++index) {
         slot->stages[index].definition = prepared->stages[index];
         slot->stages[index].state1 = 0.0;
         slot->stages[index].state2 = 0.0;
+        slot->stages[index].convolutionIndex = convolutionIndex;
+        if (prepared->stages[index].kind == EAUM1PreparedStageConvolution) {
+            ++convolutionIndex;
+        }
     }
     for (uint32_t index = 0; index <= prepared->channelCount; ++index) {
         slot->channelOffsets[index] = prepared->channelOffsets[index];
     }
+    slot->convolutions = std::move(convolutions);
+    return EAUM1StatusOK;
 }
 
 bool executionPlanMatches(
@@ -223,6 +392,28 @@ bool executionPlanMatches(
             || left.a1 != right.a1
             || left.a2 != right.a2) {
             return false;
+        }
+    }
+    uint32_t convolutionIndex = 0;
+    for (const EAUM1PreparedStage &stage : prepared->stages) {
+        if (stage.kind != EAUM1PreparedStageConvolution) {
+            continue;
+        }
+        const PreparedConvolutionKernel &left = prepared->convolutions[
+            static_cast<uint32_t>(stage.b0)
+        ];
+        const RuntimeConvolution &right = slot.convolutions[convolutionIndex++];
+        if (left.tapCount != right.tapCount
+            || left.taps != right.taps
+            || left.partitionSpectra.size() != right.partitionSpectra.size()) {
+            return false;
+        }
+        for (size_t index = 0; index < left.partitionSpectra.size(); ++index) {
+            if (left.partitionSpectra[index].real != right.partitionSpectra[index].real
+                || left.partitionSpectra[index].imaginary
+                    != right.partitionSpectra[index].imaginary) {
+                return false;
+            }
         }
     }
     return true;
@@ -297,6 +488,92 @@ float normalizedFloatSample(double value) {
     return converted;
 }
 
+double normalizedDSPState(double value) {
+    return value != 0.0 && !std::isnormal(value) ? 0.0 : value;
+}
+
+float processConvolutionSample(
+    EAUM1Runtime *runtime,
+    ExecutionSlot *slot,
+    RuntimeConvolution *convolution,
+    float input
+) {
+    const uint32_t inputPosition = convolution->inputPosition;
+    convolution->directInput[inputPosition] = static_cast<double>(input);
+    double result = 0.0;
+    for (uint32_t tap = 0; tap < convolution->headTapCount; ++tap) {
+        const uint32_t inputIndex = (inputPosition + kPartitionSize - tap) % kPartitionSize;
+        result += static_cast<double>(convolution->taps[tap])
+            * convolution->directInput[inputIndex];
+    }
+    if (convolution->partitionCount != 0) {
+        result += convolution->output[inputPosition];
+        convolution->tailInput[inputPosition] = static_cast<double>(input);
+    }
+    convolution->inputPosition = inputPosition + 1;
+    if (convolution->inputPosition != kPartitionSize) {
+        return normalizedFloatSample(boundedDSPValue(runtime, result));
+    }
+    convolution->inputPosition = 0;
+    if (convolution->partitionCount == 0) {
+        return normalizedFloatSample(boundedDSPValue(runtime, result));
+    }
+
+    for (uint32_t index = 0; index < kFFTSize; ++index) {
+        slot->fftScratch[index] = {
+            index < kPartitionSize ? convolution->tailInput[index] : 0.0,
+            0.0,
+        };
+    }
+    fftTransform(
+        &slot->fftScratch,
+        slot->twiddleReal,
+        slot->twiddleImaginary,
+        false
+    );
+    const size_t historyOffset = static_cast<size_t>(convolution->historyPosition) * kFFTSize;
+    for (uint32_t index = 0; index < kFFTSize; ++index) {
+        convolution->inputHistory[historyOffset + index] = slot->fftScratch[index];
+        slot->accumulationScratch[index] = {};
+    }
+
+    for (uint32_t partition = 0; partition < convolution->partitionCount; ++partition) {
+        const uint32_t historyPartition = (
+            convolution->historyPosition + convolution->partitionCount - partition
+        ) % convolution->partitionCount;
+        const size_t inputOffset = static_cast<size_t>(historyPartition) * kFFTSize;
+        const size_t kernelOffset = static_cast<size_t>(partition) * kFFTSize;
+        for (uint32_t index = 0; index < kFFTSize; ++index) {
+            const ComplexValue &left = convolution->inputHistory[inputOffset + index];
+            const ComplexValue &right = convolution->partitionSpectra[kernelOffset + index];
+            slot->accumulationScratch[index].real +=
+                left.real * right.real - left.imaginary * right.imaginary;
+            slot->accumulationScratch[index].imaginary +=
+                left.real * right.imaginary + left.imaginary * right.real;
+        }
+    }
+    slot->fftScratch = slot->accumulationScratch;
+    fftTransform(
+        &slot->fftScratch,
+        slot->twiddleReal,
+        slot->twiddleImaginary,
+        true
+    );
+    for (uint32_t index = 0; index < kPartitionSize; ++index) {
+        convolution->output[index] = normalizedDSPState(boundedDSPValue(
+            runtime,
+            slot->fftScratch[index].real + convolution->overlap[index]
+        ));
+        convolution->overlap[index] = normalizedDSPState(boundedDSPValue(
+            runtime,
+            slot->fftScratch[index + kPartitionSize].real
+        ));
+    }
+    convolution->historyPosition =
+        (convolution->historyPosition + 1) % convolution->partitionCount;
+    return normalizedFloatSample(boundedDSPValue(runtime, result));
+}
+
 float processChainSample(
     EAUM1Runtime *runtime,
     ExecutionSlot *slot,
@@ -316,6 +593,17 @@ float processChainSample(
             }
             processed = true;
             value = boundedDSPValue(runtime, value * definition.b0);
+            continue;
+        }
+
+        if (definition.kind == EAUM1PreparedStageConvolution) {
+            processed = true;
+            value = static_cast<double>(processConvolutionSample(
+                runtime,
+                slot,
+                &slot->convolutions[stage.convolutionIndex],
+                normalizedFloatSample(value)
+            ));
             continue;
         }
 
@@ -440,7 +728,10 @@ EAUM1Status publishCandidate(
     }
 
     const uint32_t targetSlot = 1u - activeSlot;
-    copyPreparedToSlot(candidate, &runtime->slots[targetSlot]);
+    const EAUM1Status copyStatus = copyPreparedToSlot(candidate, &runtime->slots[targetSlot]);
+    if (copyStatus != EAUM1StatusOK) {
+        return copyStatus;
+    }
     EAUM1PreparedState *old = runtime->activePrepared.exchange(
         candidate,
         std::memory_order_release
@@ -579,6 +870,151 @@ EAUM1Status EAUM1PreparedStateCreateV2(
     }
 }
 
+EAUM1Status EAUM1PreparedStateCreateV3(
+    const EAUM1PreparedDescriptionV3 *description,
+    EAUM1PreparedState **preparedOut
+) {
+    if (preparedOut == nullptr) {
+        return EAUM1StatusInvalidArgument;
+    }
+    *preparedOut = nullptr;
+    if (description == nullptr
+        || description->channelCount == 0
+        || description->stageCount > EAUM1_MAX_PREPARED_STAGE_COUNT
+        || (description->stageCount != 0 && description->stages == nullptr)
+        || (description->convolutionCount != 0 && description->convolutions == nullptr)) {
+        return EAUM1StatusInvalidArgument;
+    }
+    if (description->convolutionCount > EAUM1_MAX_CONVOLUTION_STAGES) {
+        return EAUM1StatusCapacityExceeded;
+    }
+    for (uint32_t index = 0; index < description->convolutionCount; ++index) {
+        const EAUM1PreparedConvolution &convolution = description->convolutions[index];
+        if (convolution.tapCount == 0 || convolution.taps == nullptr) {
+            return EAUM1StatusInvalidArgument;
+        }
+        if (convolution.tapCount > EAUM1_MAX_CONVOLUTION_TAPS) {
+            return EAUM1StatusCapacityExceeded;
+        }
+        for (uint32_t tap = 0; tap < convolution.tapCount; ++tap) {
+            const float value = convolution.taps[tap];
+            if (value != 0.0f && (!std::isfinite(value) || !std::isnormal(value))) {
+                return EAUM1StatusInvalidArgument;
+            }
+        }
+    }
+
+    uint32_t previousChannel = 0;
+    uint32_t stagesForChannel = 0;
+    uint32_t convolutionStageCount = 0;
+    uint64_t totalConvolutionTaps = 0;
+    std::array<bool, EAUM1_MAX_CONVOLUTION_STAGES> referencedConvolutions{};
+    for (uint32_t index = 0; index < description->stageCount; ++index) {
+        const EAUM1PreparedStage &stage = description->stages[index];
+        if (stage.channelIndex >= description->channelCount
+            || (index != 0 && stage.channelIndex < previousChannel)) {
+            return EAUM1StatusInvalidArgument;
+        }
+        if (index == 0 || stage.channelIndex != previousChannel) {
+            stagesForChannel = 1;
+        } else {
+            ++stagesForChannel;
+        }
+        if (stagesForChannel > EAUM1_MAX_STAGES_PER_CHANNEL) {
+            return EAUM1StatusCapacityExceeded;
+        }
+
+        if (stage.kind == EAUM1PreparedStageConvolution) {
+            uint32_t descriptorIndex = 0;
+            if (!convolutionDescriptorIndex(
+                    stage,
+                    description->convolutionCount,
+                    &descriptorIndex
+                )) {
+                return EAUM1StatusInvalidArgument;
+            }
+            ++convolutionStageCount;
+            if (convolutionStageCount > EAUM1_MAX_CONVOLUTION_STAGES) {
+                return EAUM1StatusCapacityExceeded;
+            }
+            totalConvolutionTaps += description->convolutions[descriptorIndex].tapCount;
+            if (totalConvolutionTaps > EAUM1_MAX_TOTAL_CONVOLUTION_TAPS) {
+                return EAUM1StatusCapacityExceeded;
+            }
+            referencedConvolutions[descriptorIndex] = true;
+        } else if (!validateStage(stage)) {
+            return EAUM1StatusInvalidArgument;
+        }
+        previousChannel = stage.channelIndex;
+    }
+    for (uint32_t index = 0; index < description->convolutionCount; ++index) {
+        if (!referencedConvolutions[index]) {
+            return EAUM1StatusInvalidArgument;
+        }
+    }
+
+    try {
+        std::array<double, kFFTSize / 2> twiddleReal{};
+        std::array<double, kFFTSize / 2> twiddleImaginary{};
+        std::array<ComplexValue, kFFTSize> scratch{};
+        prepareTwiddles(&twiddleReal, &twiddleImaginary);
+        std::vector<PreparedConvolutionKernel> convolutions;
+        convolutions.reserve(description->convolutionCount);
+        for (uint32_t index = 0; index < description->convolutionCount; ++index) {
+            const EAUM1PreparedConvolution &source = description->convolutions[index];
+            PreparedConvolutionKernel kernel;
+            kernel.tapCount = source.tapCount;
+            kernel.taps.assign(source.taps, source.taps + source.tapCount);
+            const uint32_t tailTapCount = source.tapCount > kPartitionSize
+                ? source.tapCount - kPartitionSize
+                : 0;
+            const uint32_t partitionCount = tailTapCount == 0
+                ? 0
+                : static_cast<uint32_t>(
+                    (static_cast<uint64_t>(tailTapCount) + kPartitionSize - 1) / kPartitionSize
+                );
+            kernel.partitionSpectra.resize(static_cast<size_t>(partitionCount) * kFFTSize);
+            for (uint32_t partition = 0; partition < partitionCount; ++partition) {
+                const uint64_t tapStart = kPartitionSize
+                    + static_cast<uint64_t>(partition) * kPartitionSize;
+                for (uint32_t bin = 0; bin < kFFTSize; ++bin) {
+                    const uint64_t tapIndex = tapStart + bin;
+                    scratch[bin] = {
+                        bin < kPartitionSize && tapIndex < source.tapCount
+                            ? static_cast<double>(source.taps[tapIndex])
+                            : 0.0,
+                        0.0,
+                    };
+                }
+                fftTransform(&scratch, twiddleReal, twiddleImaginary, false);
+                const size_t spectrumOffset = static_cast<size_t>(partition) * kFFTSize;
+                for (uint32_t bin = 0; bin < kFFTSize; ++bin) {
+                    kernel.partitionSpectra[spectrumOffset + bin] = scratch[bin];
+                }
+            }
+            convolutions.push_back(std::move(kernel));
+        }
+
+        std::vector<EAUM1PreparedStage> stages;
+        if (description->stageCount != 0) {
+            stages.assign(description->stages, description->stages + description->stageCount);
+        }
+        std::vector<uint32_t> offsets = makeChannelOffsets(stages, description->channelCount);
+        EAUM1PreparedState *prepared = new EAUM1PreparedState(
+            description->channelCount,
+            std::move(stages),
+            std::move(offsets),
+            std::move(convolutions)
+        );
+        *preparedOut = prepared;
+        return EAUM1StatusOK;
+    } catch (const std::bad_alloc &) {
+        return EAUM1StatusOutOfMemory;
+    } catch (...) {
+        return EAUM1StatusInvalidArgument;
+    }
+}
+
 void EAUM1PreparedStateDestroy(EAUM1PreparedState *prepared) {
     delete prepared;
 }
@@ -635,7 +1071,15 @@ EAUM1Status EAUM1RuntimeCreate(
             static_cast<uint32_t>(rampFrames),
             *initialPreparedInOut
         );
-        copyPreparedToSlot(*initialPreparedInOut, &runtime->slots[0]);
+        const EAUM1Status copyStatus = copyPreparedToSlot(
+            *initialPreparedInOut,
+            &runtime->slots[0]
+        );
+        if (copyStatus != EAUM1StatusOK) {
+            runtime->activePrepared.store(nullptr, std::memory_order_relaxed);
+            delete runtime;
+            return copyStatus;
+        }
         *initialPreparedInOut = nullptr;
         *runtimeOut = runtime;
         return EAUM1StatusOK;

@@ -20,6 +20,51 @@ final class M1ProductControllerTests: XCTestCase {
         XCTAssertTrue(calls.isEmpty)
     }
 
+    func testConvolutionAddAndReplaceOnlyMutateDraft() async throws {
+        let fixture = makeFixture()
+        let convolutionID = UUID()
+        let firstIR = productConvolutionIR(storageID: UUID(), fileName: "first.wav")
+        let secondIR = productConvolutionIR(storageID: UUID(), fileName: "second.wav")
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+
+        try await fixture.controller.addConvolution(nodeID: convolutionID, ir: firstIR)
+        try await fixture.controller.setConvolutionIR(id: convolutionID, ir: secondIR)
+
+        let snapshot = await fixture.controller.snapshot()
+        let commits = await fixture.store.commits
+        let calls = await fixture.audio.calls
+        XCTAssertEqual(snapshot.draft.nodes.map(\.kind), [.preamp, .convolution])
+        XCTAssertEqual(snapshot.draft.nodes.last?.convolutionIR, secondIR)
+        XCTAssertEqual(snapshot.persistence, .modified)
+        XCTAssertTrue(commits.isEmpty)
+        XCTAssertTrue(calls.isEmpty)
+    }
+
+    func testConvolutionDraftPrepareFailureKeepsSavedConfigurationAndActiveChain() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        let before = await fixture.controller.snapshot()
+        let convolutionID = UUID()
+        let firstIR = productConvolutionIR(storageID: UUID(), fileName: "first.wav")
+        let secondIR = productConvolutionIR(storageID: UUID(), fileName: "second.wav")
+        try await fixture.controller.addConvolution(nodeID: convolutionID, ir: firstIR)
+        try await fixture.controller.setConvolutionIR(id: convolutionID, ir: secondIR)
+        await fixture.audio.setPreparationFailure(true)
+
+        await XCTAssertThrowsErrorAsync { try await fixture.controller.save() }
+
+        let after = await fixture.controller.snapshot()
+        let commits = await fixture.store.commits
+        let published = await fixture.audio.publishedGenerations
+        XCTAssertTrue(commits.isEmpty)
+        XCTAssertTrue(published.isEmpty)
+        XCTAssertEqual(after.persistence, .modified)
+        XCTAssertEqual(after.activeDiagnostics, before.activeDiagnostics)
+        XCTAssertEqual(after.activeConfigurationGeneration, before.activeConfigurationGeneration)
+        XCTAssertEqual(after.draft.nodes.last?.convolutionIR, secondIR)
+    }
+
     func testSaveWhileStoppedPersistsCapturedDraftWithoutAudioPublication() async throws {
         let fixture = makeFixture()
         await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
@@ -34,6 +79,25 @@ final class M1ProductControllerTests: XCTestCase {
         XCTAssertEqual(commits.first?.snapshot.nodes.first?.gainDB, -3)
         XCTAssertEqual(snapshot.persistence, .savedPendingStart)
         XCTAssertFalse(calls.contains("publish"))
+    }
+
+    func testCancelledSaveDoesNotPersistAfterPreparationReturns() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        let gate = ProductTestGate()
+        await fixture.audio.setPreparationGate(gate)
+        let save = Task { try await fixture.controller.save() }
+        await waitUntil { await fixture.audio.calls.contains("prepare") }
+
+        save.cancel()
+        await gate.open()
+        do {
+            try await save.value
+            XCTFail("cancelled save must fail")
+        } catch is CancellationError {}
+
+        let commits = await fixture.store.commits
+        XCTAssertTrue(commits.isEmpty)
     }
 
     func testStartUsesSavedSnapshotAndDiscoversLayoutOnce() async throws {
@@ -834,7 +898,7 @@ final class M1ProductControllerTests: XCTestCase {
         let fixture = makeFixture()
         await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
         let pasteboard = ProductPasteboardFake(
-            data: Data("{\"nodes\":[],\"schemaVersion\":2}\n".utf8)
+            data: Data("{\"nodes\":[],\"schemaVersion\":5}\n".utf8)
         )
         let before = await fixture.controller.snapshot()
 
@@ -970,6 +1034,17 @@ final class M1ProductControllerTests: XCTestCase {
     }
 }
 
+private func productConvolutionIR(storageID: UUID, fileName: String) -> M1ConvolutionIRReference {
+    M1ConvolutionIRReference(
+        storageID: storageID,
+        originalFileName: fileName,
+        sha256: String(repeating: "a", count: 64),
+        sampleRate: 48_000,
+        channelCount: 1,
+        frameCount: 48_000
+    )
+}
+
 private struct ProductFixture {
     let nodeID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
     let secondNodeID = UUID(uuidString: "10000000-0000-0000-0000-000000000002")!
@@ -1052,6 +1127,7 @@ private actor ProductAudioFake: M1ProductAudioControlling {
     private var effectsFailure = false
     private var outputAvailable = true
     private var preparationFails = false
+    private var preparationGate: ProductTestGate?
     private var publishFails = false
     private var discardedPublicationGenerations: Set<UInt64> = []
     private let layout = M1OutputLayoutSnapshot(
@@ -1095,8 +1171,9 @@ private actor ProductAudioFake: M1ProductAudioControlling {
         return running ? layout : nil
     }
 
-    func prepare(configuration: M1ConfigurationSnapshot) throws -> M1AudioConfigurationPreparation {
+    func prepare(configuration: M1ConfigurationSnapshot) async throws -> M1AudioConfigurationPreparation {
         calls.append("prepare")
+        if let preparationGate { await preparationGate.wait() }
         if preparationFails { throw ProductAudioFakeError.preparationFailed }
         guard outputAvailable else { return .waitingForOutput }
         let compiled = try M1ProcessingBuilder.build(nodes: configuration.nodes, layout: layout)
@@ -1167,6 +1244,7 @@ private actor ProductAudioFake: M1ProductAudioControlling {
     func setStartFailure(state: M1NativeAudioRouteState) { startFailureState = state }
     func setOutputAvailable(_ available: Bool) { outputAvailable = available }
     func setPreparationFailure(_ fails: Bool) { preparationFails = fails }
+    func setPreparationGate(_ gate: ProductTestGate?) { preparationGate = gate }
     func setPublishFailure(_ fails: Bool) { publishFails = fails }
     func setPublication(disposition: M1PreparedPublicationDisposition, gate: ProductTestGate?) {
         publicationDisposition = disposition

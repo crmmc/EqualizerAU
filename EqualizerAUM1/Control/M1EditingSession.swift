@@ -31,7 +31,7 @@ struct M1EncodedNodeEnvelope: Equatable, Sendable {
 }
 
 enum M1NodeEnvelopeCodec {
-    static let schemaVersion = 3
+    static let schemaVersion = 4
     static let maximumDataSize = M1ConfigurationCodec.maximumDataSize
 
     static func encode(_ nodes: [M1ProcessingNode]) throws -> M1EncodedNodeEnvelope {
@@ -79,6 +79,10 @@ enum M1NodeEnvelopeCodec {
                 )
             case 2:
                 try M1JSONShapeValidator.validateNodeEnvelope(data, schemaVersion: 2)
+                let wire = try JSONDecoder().decode(M1NodeEnvelopeWire.self, from: data)
+                return try encode(try wire.nodes.map { try $0.node() })
+            case 3:
+                try M1JSONShapeValidator.validateNodeEnvelope(data, schemaVersion: 3)
                 let wire = try JSONDecoder().decode(M1NodeEnvelopeWire.self, from: data)
                 return try encode(try wire.nodes.map { try $0.node() })
             case schemaVersion:
@@ -285,6 +289,22 @@ struct M1EditingSession: Sendable {
         try replaceNodes(candidate, effectsEnabled: effectsEnabled)
     }
 
+    mutating func addConvolution(
+        before id: UUID?,
+        nodeID: UUID,
+        ir: M1ConvolutionIRReference,
+        effectsEnabled: Bool
+    ) throws {
+        var candidate = nodes
+        let node = M1ProcessingNode.convolution(id: nodeID, ir: ir)
+        if let id, let index = candidate.firstIndex(where: { $0.id == id }) {
+            candidate.insert(node, at: index)
+        } else {
+            candidate.append(node)
+        }
+        try replaceNodes(candidate, effectsEnabled: effectsEnabled)
+    }
+
     mutating func deleteNode(id: UUID, effectsEnabled: Bool) throws {
         guard let index = nodes.firstIndex(where: { $0.id == id }) else {
             throw M1EditingSessionError.nodeNotFound
@@ -307,7 +327,7 @@ struct M1EditingSession: Sendable {
 
     mutating func setNodeEnabled(id: UUID, enabled: Bool, effectsEnabled: Bool) throws {
         guard let kind = nodes.first(where: { $0.id == id })?.kind,
-              kind == .preamp || kind == .graphicEQ
+              kind == .preamp || kind == .graphicEQ || kind == .convolution
         else {
             throw M1EditingSessionError.invalidNodeKind
         }
@@ -355,6 +375,17 @@ struct M1EditingSession: Sendable {
             throw M1EditingSessionError.invalidNodeKind
         }
         try updateNode(id: id, effectsEnabled: effectsEnabled) { $0.channels = channels }
+    }
+
+    mutating func setConvolutionIR(
+        id: UUID,
+        ir: M1ConvolutionIRReference,
+        effectsEnabled: Bool
+    ) throws {
+        guard nodes.first(where: { $0.id == id })?.kind == .convolution else {
+            throw M1EditingSessionError.invalidNodeKind
+        }
+        try updateNode(id: id, effectsEnabled: effectsEnabled) { $0.convolutionIR = ir }
     }
 
     mutating func moveSelection(

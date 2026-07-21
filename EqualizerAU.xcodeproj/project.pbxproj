@@ -97,6 +97,9 @@
 		D10000000000000000000032 /* M1EditingSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000028 /* M1EditingSession.swift */; };
 		D10000000000000000000033 /* M1EditingSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000028 /* M1EditingSession.swift */; };
 		D10000000000000000000034 /* M1EditingSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000029 /* M1EditingSessionTests.swift */; };
+		D10000000000000000000035 /* M1ConvolutionIR.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002A /* M1ConvolutionIR.swift */; };
+		D10000000000000000000036 /* M1ConvolutionIR.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002A /* M1ConvolutionIR.swift */; };
+		D10000000000000000000037 /* M1ConvolutionIRTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002B /* M1ConvolutionIRTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -229,6 +232,8 @@
 		D20000000000000000000027 /* M1ProductControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1ProductControllerTests.swift; sourceTree = "<group>"; };
 		D20000000000000000000028 /* M1EditingSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1EditingSession.swift; sourceTree = "<group>"; };
 		D20000000000000000000029 /* M1EditingSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1EditingSessionTests.swift; sourceTree = "<group>"; };
+		D2000000000000000000002A /* M1ConvolutionIR.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1ConvolutionIR.swift; sourceTree = "<group>"; };
+		D2000000000000000000002B /* M1ConvolutionIRTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1ConvolutionIRTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -460,6 +465,7 @@
 			isa = PBXGroup;
 			children = (
 				D2000000000000000000000E /* M1ProcessingModel.swift */,
+				D2000000000000000000002A /* M1ConvolutionIR.swift */,
 				D20000000000000000000010 /* M1ProcessingBuilder.swift */,
 				D20000000000000000000022 /* M1Configuration.swift */,
 				D20000000000000000000023 /* M1ConfigurationStore.swift */,
@@ -522,6 +528,7 @@
 			children = (
 				D20000000000000000000006 /* EAUM1RuntimeSmokeTests.mm */,
 				D2000000000000000000000F /* M1ProcessingModelTests.swift */,
+				D2000000000000000000002B /* M1ConvolutionIRTests.swift */,
 				D20000000000000000000011 /* M1ProcessingBuilderTests.swift */,
 				D20000000000000000000013 /* M1RetirementMaintenanceCoordinatorTests.swift */,
 				D2000000000000000000001E /* EAUM1AudioIOHostTests.mm */,
@@ -885,6 +892,7 @@
 			files = (
 				D10000000000000000000003 /* EqualizerAUM1App.swift in Sources */,
 				D1000000000000000000000B /* M1ProcessingModel.swift in Sources */,
+				D10000000000000000000035 /* M1ConvolutionIR.swift in Sources */,
 				D1000000000000000000000E /* M1ProcessingBuilder.swift in Sources */,
 				D10000000000000000000029 /* M1Configuration.swift in Sources */,
 				D1000000000000000000002B /* M1ConfigurationStore.swift in Sources */,
@@ -908,6 +916,8 @@
 				D10000000000000000000004 /* EAUM1RuntimeSmokeTests.mm in Sources */,
 				D1000000000000000000000C /* M1ProcessingModel.swift in Sources */,
 				D1000000000000000000000D /* M1ProcessingModelTests.swift in Sources */,
+				D10000000000000000000036 /* M1ConvolutionIR.swift in Sources */,
+				D10000000000000000000037 /* M1ConvolutionIRTests.swift in Sources */,
 				D1000000000000000000000F /* M1ProcessingBuilder.swift in Sources */,
 				D10000000000000000000010 /* M1ProcessingBuilderTests.swift in Sources */,
 				D1000000000000000000002A /* M1Configuration.swift in Sources */,

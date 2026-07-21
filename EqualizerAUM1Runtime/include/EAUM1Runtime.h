@@ -7,9 +7,14 @@
 extern "C" {
 #endif
 
-#define EAUM1_RUNTIME_ABI_VERSION 2u
+#define EAUM1_RUNTIME_ABI_VERSION 3u
 #define EAUM1_MAX_STAGES_PER_CHANNEL 512u
 #define EAUM1_MAX_PREPARED_STAGE_COUNT 4096u
+#define EAUM1_CONVOLUTION_PARTITION_SIZE 256u
+#define EAUM1_CONVOLUTION_FFT_SIZE 512u
+#define EAUM1_MAX_CONVOLUTION_TAPS 384000u
+#define EAUM1_MAX_TOTAL_CONVOLUTION_TAPS 131072u
+#define EAUM1_MAX_CONVOLUTION_STAGES 8u
 
 typedef int32_t EAUM1Status;
 
@@ -54,6 +59,7 @@ typedef uint32_t EAUM1PreparedStageKind;
 enum {
     EAUM1PreparedStageGain = 1,
     EAUM1PreparedStageBiquad = 2,
+    EAUM1PreparedStageConvolution = 3,
 };
 
 typedef struct EAUM1PreparedStage {
@@ -71,6 +77,19 @@ typedef struct EAUM1PreparedDescription {
     uint32_t stageCount;
     const EAUM1PreparedStage *stages;
 } EAUM1PreparedDescription;
+
+typedef struct EAUM1PreparedConvolution {
+    uint32_t tapCount;
+    const float *taps;
+} EAUM1PreparedConvolution;
+
+typedef struct EAUM1PreparedDescriptionV3 {
+    uint32_t channelCount;
+    uint32_t stageCount;
+    const EAUM1PreparedStage *stages;
+    uint32_t convolutionCount;
+    const EAUM1PreparedConvolution *convolutions;
+} EAUM1PreparedDescriptionV3;
 
 typedef struct EAUM1AudioBuffer {
     float *samples;
@@ -111,6 +130,15 @@ EAUM1Status EAUM1PreparedStateCreate(
  */
 EAUM1Status EAUM1PreparedStateCreateV2(
     const EAUM1PreparedDescription *description,
+    EAUM1PreparedState **preparedOut
+);
+
+/*
+ * Convolution stage b0 is an exact zero-based convolution descriptor index;
+ * b1, b2, a1 and a2 must be zero. Descriptors and taps are copied.
+ */
+EAUM1Status EAUM1PreparedStateCreateV3(
+    const EAUM1PreparedDescriptionV3 *description,
     EAUM1PreparedState **preparedOut
 );
 

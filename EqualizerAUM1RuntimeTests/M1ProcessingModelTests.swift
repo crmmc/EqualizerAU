@@ -1,6 +1,29 @@
 import XCTest
 
 final class M1ProcessingModelTests: XCTestCase {
+    func testConvolutionCopyPreservesImmutableIRAndInheritsChannelsScope() {
+        let reference = M1ConvolutionIRReference(
+            storageID: UUID(),
+            originalFileName: "room.wav",
+            sha256: String(repeating: "a", count: 64),
+            sampleRate: 48_000,
+            channelCount: 1,
+            frameCount: 128
+        )
+        let node = M1ProcessingNode.convolution(ir: reference)
+        let copy = node.copied(id: UUID())
+        let scope = M1ProcessingNode.channels(
+            selection: .identifiers([M1ChannelIdentifier("L")!])
+        )
+
+        XCTAssertNotEqual(copy.id, node.id)
+        XCTAssertEqual(copy.convolutionIR, reference)
+        XCTAssertEqual(
+            M1ProcessingScopeResolver.effectiveSelections(nodes: [scope, copy])[copy.id],
+            scope.channels
+        )
+    }
+
     func testGraphicEQFactoryUsesFixedReferenceBandsAndCopiesPayload() {
         var node = M1ProcessingNode.graphicEQ(id: UUID())
         node.graphicEQBands[7].gainDB = 3.5

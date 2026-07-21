@@ -84,6 +84,7 @@ actor M1NativeAudioRouteCoordinator {
     private let runtimeFactory: any M1RuntimeCreating
     private let runtimeAccess: M1RuntimeLeaseAccess
     private let retirementMaintenance: M1RetirementMaintenanceCoordinator
+    private let irLoader: any M1ConvolutionIRLoading
     private var current: RouteResources?
     private var nextGeneration: UInt64 = 0
     private var nextBridgeGeneration: UInt64 = 0
@@ -96,13 +97,15 @@ actor M1NativeAudioRouteCoordinator {
         audioIO: M1AudioIOController,
         runtimeFactory: any M1RuntimeCreating,
         runtimeAccess: M1RuntimeLeaseAccess,
-        retirementMaintenance: M1RetirementMaintenanceCoordinator
+        retirementMaintenance: M1RetirementMaintenanceCoordinator,
+        irLoader: any M1ConvolutionIRLoading = M1ConvolutionIRStore()
     ) {
         self.routeResources = routeResources
         self.audioIO = audioIO
         self.runtimeFactory = runtimeFactory
         self.runtimeAccess = runtimeAccess
         self.retirementMaintenance = retirementMaintenance
+        self.irLoader = irLoader
     }
 
     func state() -> M1NativeAudioRouteState {
@@ -166,9 +169,14 @@ actor M1NativeAudioRouteCoordinator {
             )
             resources.aggregate = aggregate
             try checkStartCancellation()
-            let compiled = try await Task.detached {
-                try M1ProcessingBuilder.build(nodes: configuration.nodes, layout: output.layout)
-            }.value
+            let irLoader = irLoader
+            let compiled = try await detachedValue {
+                try M1ProcessingBuilder.build(
+                    nodes: configuration.nodes,
+                    layout: output.layout,
+                    irLoader: irLoader
+                )
+            }
             try checkStartCancellation()
             let runtime = try runtimeFactory.createRuntime(
                 bridgeGeneration: resources.bridgeGeneration,
@@ -232,9 +240,14 @@ actor M1NativeAudioRouteCoordinator {
 
     func prepare(configuration: M1ConfigurationSnapshot) async throws -> M1AudioConfigurationPreparation {
         if let current, current.phase == .running, let output = current.output {
-            let compiled = try await Task.detached {
-                try M1ProcessingBuilder.build(nodes: configuration.nodes, layout: output.layout)
-            }.value
+            let irLoader = irLoader
+            let compiled = try await detachedValue {
+                try M1ProcessingBuilder.build(
+                    nodes: configuration.nodes,
+                    layout: output.layout,
+                    irLoader: irLoader
+                )
+            }
             guard self.current === current, current.phase == .running else {
                 return .waitingForOutput
             }
@@ -244,15 +257,40 @@ actor M1NativeAudioRouteCoordinator {
                 bridgeGeneration: current.bridgeGeneration
             )
         }
+        try M1ProcessingBuilder.validate(nodes: configuration.nodes)
+        let convolutionNodes = configuration.nodes.filter { $0.kind == .convolution && $0.isEnabled }
+        guard convolutionNodes.count <= M1ProcessingBuilder.maximumConvolutionStages else {
+            throw M1ProcessingBuildError.convolutionStageCapacityExceeded
+        }
+        let irLoader = irLoader
+        try await detachedValue {
+            var validatedReferences: [M1ConvolutionIRReference] = []
+            for node in convolutionNodes {
+                try Task.checkCancellation()
+                let ir = node.convolutionIR!
+                guard !validatedReferences.contains(ir) else { continue }
+                do {
+                    try irLoader.validate(reference: ir)
+                } catch let error as M1ConvolutionIRError {
+                    throw M1ProcessingBuildError.convolutionIRLoadFailed(nodeID: node.id, error: error)
+                }
+                validatedReferences.append(ir)
+            }
+        }
         guard current == nil, !operationInProgress, nextGeneration < UInt64.max else {
             return .waitingForOutput
         }
         do {
             let discoveryGeneration = M1AudioRouteGeneration(rawValue: nextGeneration + 1)
             let output = try await routeResources.discoverOutput(generation: discoveryGeneration)
-            let compiled = try await Task.detached {
-                try M1ProcessingBuilder.build(nodes: configuration.nodes, layout: output.layout)
-            }.value
+            let irLoader = irLoader
+            let compiled = try await detachedValue {
+                try M1ProcessingBuilder.build(
+                    nodes: configuration.nodes,
+                    layout: output.layout,
+                    irLoader: irLoader
+                )
+            }
             guard current == nil, !operationInProgress else { return .waitingForOutput }
             return M1AudioConfigurationPreparation(
                 layout: output.layout,
@@ -261,6 +299,8 @@ actor M1NativeAudioRouteCoordinator {
             )
         } catch let error as M1ProcessingBuildError {
             throw error
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             return .waitingForOutput
         }
@@ -351,6 +391,7 @@ actor M1NativeAudioRouteCoordinator {
     }
 
     private func checkStartCancellation() throws {
+        try Task.checkCancellation()
         if startCancellationRequested {
             throw CancellationError()
         }
@@ -424,4 +465,17 @@ actor M1NativeAudioRouteCoordinator {
         }
         if let firstError { throw firstError }
     }
+}
+
+private func detachedValue<Value: Sendable>(
+    operation: @escaping @Sendable () throws -> Value
+) async throws -> Value {
+    let task = Task.detached(operation: operation)
+    let value = try await withTaskCancellationHandler {
+        try await task.value
+    } onCancel: {
+        task.cancel()
+    }
+    try Task.checkCancellation()
+    return value
 }

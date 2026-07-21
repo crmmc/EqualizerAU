@@ -1,7 +1,7 @@
 import Foundation
 
 struct M1ConfigurationSnapshot: Equatable, Sendable {
-    static let schemaVersion = 3
+    static let schemaVersion = 4
 
     var effectsEnabled: Bool
     var nodes: [M1ProcessingNode]
@@ -100,6 +100,10 @@ enum M1ConfigurationCodec {
             try M1JSONShapeValidator.validateConfiguration(data, schemaVersion: 2)
             let wire = try JSONDecoder().decode(M1ConfigurationWire.self, from: data)
             snapshot = try wire.snapshot(expectedSchemaVersion: 2)
+        case 3:
+            try M1JSONShapeValidator.validateConfiguration(data, schemaVersion: 3)
+            let wire = try JSONDecoder().decode(M1ConfigurationWire.self, from: data)
+            snapshot = try wire.snapshot(expectedSchemaVersion: 3)
         case M1ConfigurationSnapshot.schemaVersion:
             try M1JSONShapeValidator.validateConfiguration(
                 data,
@@ -171,6 +175,18 @@ enum M1JSONShapeValidator {
                         throw M1ConfigurationCodecError.invalidJSON
                     }
                 case M1ProcessingNodeKind.graphicEQ.rawValue:
+                    throw M1ConfigurationCodecError.invalidJSON
+                case M1ProcessingNodeKind.convolution.rawValue where schemaVersion >= 4:
+                    allowedKeys = ["id", "type", "isEnabled", "ir"]
+                    guard let ir = node["ir"] as? [String: Any],
+                          Set(ir.keys) == [
+                              "storageID", "originalFileName", "sha256", "sampleRate",
+                              "channelCount", "frameCount",
+                          ]
+                    else {
+                        throw M1ConfigurationCodecError.invalidJSON
+                    }
+                case M1ProcessingNodeKind.convolution.rawValue:
                     throw M1ConfigurationCodecError.invalidJSON
                 default:
                     continue
@@ -343,6 +359,7 @@ struct M1ProcessingNodeWire: Codable {
     let gainDB: Double?
     let channels: M1ChannelSelectionWire?
     let bands: [M1GraphicEQBandWire]?
+    let ir: M1ConvolutionIRReferenceWire?
 
     init(_ node: M1ProcessingNode) {
         id = node.id
@@ -353,28 +370,37 @@ struct M1ProcessingNodeWire: Codable {
             gainDB = nil
             channels = M1ChannelSelectionWire(node.channels)
             bands = nil
+            ir = nil
         case .preamp:
             isEnabled = node.isEnabled
             gainDB = node.gainDB
             channels = nil
             bands = nil
+            ir = nil
         case .graphicEQ:
             isEnabled = node.isEnabled
             gainDB = nil
             channels = nil
             bands = node.graphicEQBands.map(M1GraphicEQBandWire.init)
+            ir = nil
+        case .convolution:
+            isEnabled = node.isEnabled
+            gainDB = nil
+            channels = nil
+            bands = nil
+            ir = node.convolutionIR.map(M1ConvolutionIRReferenceWire.init)
         }
     }
 
     func node() throws -> M1ProcessingNode {
         switch type {
         case M1ProcessingNodeKind.channels.rawValue:
-            guard let channels, isEnabled == nil, gainDB == nil, bands == nil else {
+            guard let channels, isEnabled == nil, gainDB == nil, bands == nil, ir == nil else {
                 throw M1ConfigurationCodecError.invalidJSON
             }
             return .channels(id: id, selection: try channels.selection())
         case M1ProcessingNodeKind.preamp.rawValue:
-            guard let isEnabled, let gainDB, channels == nil, bands == nil else {
+            guard let isEnabled, let gainDB, channels == nil, bands == nil, ir == nil else {
                 throw M1ConfigurationCodecError.invalidJSON
             }
             return M1ProcessingNode(
@@ -384,7 +410,7 @@ struct M1ProcessingNodeWire: Codable {
                 channels: .all
             )
         case M1ProcessingNodeKind.graphicEQ.rawValue:
-            guard let isEnabled, let bands, gainDB == nil, channels == nil else {
+            guard let isEnabled, let bands, gainDB == nil, channels == nil, ir == nil else {
                 throw M1ConfigurationCodecError.invalidJSON
             }
             return .graphicEQ(
@@ -392,9 +418,43 @@ struct M1ProcessingNodeWire: Codable {
                 isEnabled: isEnabled,
                 bands: bands.map(\.band)
             )
+        case M1ProcessingNodeKind.convolution.rawValue:
+            guard let isEnabled, let ir, gainDB == nil, channels == nil, bands == nil else {
+                throw M1ConfigurationCodecError.invalidJSON
+            }
+            return .convolution(id: id, isEnabled: isEnabled, ir: ir.reference)
         default:
             throw M1ConfigurationCodecError.unknownNodeType(type)
         }
+    }
+}
+
+struct M1ConvolutionIRReferenceWire: Codable {
+    let storageID: UUID
+    let originalFileName: String
+    let sha256: String
+    let sampleRate: Double
+    let channelCount: Int
+    let frameCount: Int
+
+    init(_ reference: M1ConvolutionIRReference) {
+        storageID = reference.storageID
+        originalFileName = reference.originalFileName
+        sha256 = reference.sha256
+        sampleRate = reference.sampleRate
+        channelCount = reference.channelCount
+        frameCount = reference.frameCount
+    }
+
+    var reference: M1ConvolutionIRReference {
+        M1ConvolutionIRReference(
+            storageID: storageID,
+            originalFileName: originalFileName,
+            sha256: sha256,
+            sampleRate: sampleRate,
+            channelCount: channelCount,
+            frameCount: frameCount
+        )
     }
 }
 
@@ -526,6 +586,24 @@ enum M1ConfigurationMigration {
                         id: node.id,
                         isEnabled: node.isEnabled,
                         bands: node.graphicEQBands
+                    )
+                )
+            case .convolution:
+                if node.channels != .all, node.channels != currentScope {
+                    currentScope = node.channels
+                    let id = uniqueMigratedChannelsID(
+                        preampID: node.id,
+                        selection: currentScope,
+                        occupiedIDs: occupiedIDs
+                    )
+                    occupiedIDs.insert(id)
+                    result.append(.channels(id: id, selection: currentScope))
+                }
+                result.append(
+                    .convolution(
+                        id: node.id,
+                        isEnabled: node.isEnabled,
+                        ir: node.convolutionIR!
                     )
                 )
             }

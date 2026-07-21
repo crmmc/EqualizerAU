@@ -72,6 +72,26 @@ final class M1AppModel: ObservableObject {
         performEdit { try await self.controller.addGraphicEQ(before: id) }
     }
 
+    func importConvolution(before id: UUID?) {
+        guard let url = selectWAV() else { return }
+        performEdit {
+            let ir = try await Task.detached {
+                try M1ConvolutionIRStore().importWAV(at: url)
+            }.value
+            try await self.controller.addConvolution(before: id, ir: ir)
+        }
+    }
+
+    func replaceConvolutionIR(id: UUID) {
+        guard let url = selectWAV() else { return }
+        performEdit {
+            let ir = try await Task.detached {
+                try M1ConvolutionIRStore().importWAV(at: url)
+            }.value
+            try await self.controller.setConvolutionIR(id: id, ir: ir)
+        }
+    }
+
     func delete(_ id: UUID) {
         performEdit { try await self.controller.deletePreamp(id: id) }
     }
@@ -179,6 +199,15 @@ final class M1AppModel: ObservableObject {
     func setEffects(_ enabled: Bool) { perform { try await self.controller.setEffectsEnabled(enabled) } }
     func setProcessing(_ enabled: Bool) {
         perform { try await self.controller.setProcessingEnabled(enabled) }
+    }
+
+    private func selectWAV() -> URL? {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.wav]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        return panel.runModal() == .OK ? panel.url : nil
     }
 
     func presentDiagnostics() {
@@ -595,6 +624,7 @@ private struct M1EditorView: View {
                     Button("Channels") { model.addChannels(before: nil) }
                     Button("Preamp") { model.add(before: nil) }
                     Button("Graphic EQ") { model.addGraphicEQ(before: nil) }
+                    Button("Convolution…") { model.importConvolution(before: nil) }
                 } label: {
                     Label("Add", systemImage: "plus")
                 }
@@ -747,6 +777,8 @@ private struct M1EditorView: View {
                     Spacer()
                     Text(graphicEQSummary(node.graphicEQBands))
                         .monospacedDigit()
+                case .convolution:
+                    convolutionSummary(node)
                 }
                 Spacer()
                 Button { model.delete(node.id) } label: { Image(systemName: "trash") }
@@ -763,6 +795,8 @@ private struct M1EditorView: View {
                     preampEditor(node)
                 case .graphicEQ:
                     graphicEQEditor(node)
+                case .convolution:
+                    convolutionEditor(node)
                 }
             }
         }
@@ -928,6 +962,51 @@ private struct M1EditorView: View {
         }
     }
 
+    private func convolutionSummary(_ node: M1ProcessingNode) -> some View {
+        let ir = node.convolutionIR!
+        return HStack(spacing: 8) {
+            Text(node.isEnabled ? "Enabled" : "Disabled")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(channelSummary(effectiveSelections[node.id] ?? .all))
+                .foregroundStyle(.secondary)
+            Text(ir.originalFileName)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Text("\(Int(ir.sampleRate)) Hz · \(ir.channelCount) ch · \(ir.frameCount) frames")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+    }
+
+    private func convolutionEditor(_ node: M1ProcessingNode) -> some View {
+        let ir = node.convolutionIR!
+        let duration = Double(ir.frameCount) / ir.sampleRate
+        return VStack(alignment: .leading, spacing: 8) {
+            Toggle("Enabled", isOn: Binding(
+                get: { node.isEnabled },
+                set: { model.setEnabled($0, id: node.id) }
+            ))
+            LabeledContent("Impulse response") {
+                Text(ir.originalFileName)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            LabeledContent("Source") {
+                Text("\(Int(ir.sampleRate)) Hz · \(ir.channelCount) ch · \(ir.frameCount) frames · \(duration.formatted(.number.precision(.fractionLength(3)))) s")
+                    .lineLimit(1)
+            }
+            LabeledContent("Processing") {
+                Text("0 frame algorithmic latency")
+            }
+            Button { model.replaceConvolutionIR(id: node.id) } label: {
+                Label("Replace…", systemImage: "arrow.triangle.2.circlepath")
+            }
+            .help("Replace impulse response")
+        }
+    }
+
     private func channelEditor(_ node: M1ProcessingNode) -> some View {
         HStack {
             Text("Apply following effects to")
@@ -1004,6 +1083,7 @@ private struct M1EditorView: View {
         case .channels: return "speaker.wave.2"
         case .preamp: return "dial.medium"
         case .graphicEQ: return "slider.vertical.3"
+        case .convolution: return "waveform.path"
         }
     }
 
@@ -1012,6 +1092,7 @@ private struct M1EditorView: View {
         case .channels: return "Channels"
         case .preamp: return "Preamp"
         case .graphicEQ: return "Graphic EQ"
+        case .convolution: return "Convolution"
         }
     }
 

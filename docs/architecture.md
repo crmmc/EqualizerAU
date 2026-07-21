@@ -11,16 +11,30 @@ bundle ID 为 `com.ruimingchen.EqualizerAU`。M1 正常构建产物位于 config
 
 ### M1 独立实现边界
 
-`EqualizerAUM1Runtime` 提供正式 C ABI v2、有限值 Gain/Biquad chain、10 ms 双槽切换、Prepared
+`EqualizerAUM1Runtime` 提供正式 C ABI v3、有限值 Gain/Biquad/Convolution chain、10 ms 双槽切换、Prepared
 发布和退休回收；`EqualizerAUM1` 独立拥有原生 Tap、Aggregate、捕获、输出和代次生命周期。
-配置层使用有序的 typed processing-node 快照以及版本化规范 JSON。schema v3 当前包含
-非 DSP 的 Channels 作用域节点，以及 Preamp 和固定 15 段 Graphic EQ 效果节点：Channels
+配置层使用有序的 typed processing-node 快照以及版本化规范 JSON。schema v4 当前包含
+非 DSP 的 Channels 作用域节点，以及 Preamp、固定 15 段 Graphic EQ 和 Convolution 效果节点：Channels
 选择后续效果的目标声道，直到下一个 Channels 节点覆盖；效果节点不重复保存声道字段。
 schema v1 读取时按有效作用域
 变化确定性插入 Channels 节点，保留原 Preamp UUID/顺序，并以确定性加盐避开任何已有 UUID；
-下一次 Save 写出 v3；schema v2 也会在读取后规范化为 v3。编码结果按键排序、可读格式、
+下一次 Save 写出 v4；schema v2/v3 也会在读取后规范化为 v4。编码结果按键排序、可读格式、
 保留 slash 并以 LF 结尾，最终 UTF-8
 数据上限为 `4 MiB`。设备无关校验不依赖输出布局。
+
+Convolution 配置只引用应用数据目录中的不可变 WAV sidecar，不保存外部路径或 WAV bytes。
+导入接受最大 `32 MiB`、最长 2 秒、1...64 声道、8...768 kHz 的 RIFF/WAVE linear PCM 8/16/24/32 或
+Float32，拒绝空、非有限及 subnormal 样本。文件和目录同步后才返回引用；加载时重新验证
+SHA-256 与来源元数据。控制线程按真实输出采样率执行 windowed-sinc SRC；单声道 IR 广播，
+多声道 IR 必须与当前有效 Channels 作用域严格等宽并按作用域顺序映射。
+没有可发现输出或路线正在转换时，Save 仍先验证启用节点的 IR sidecar 存在性、hash、WAV 与来源
+metadata；只有依赖真实布局的 SRC、声道映射和容量编译可以等待输出。
+
+Runtime ABI v3 的 Convolution stage 引用 Prepared 中的 planar taps。每个 kernel 前 256 taps
+逐样本直接卷积，余下 tail 使用 256-frame partition、512-point FFT 的 overlap-add，因此不引入
+算法延迟并可与 Gain/Biquad 任意排序。所有 taps 复制、FFT plan 和频谱预计算均在控制线程完成；
+回调只使用预分配状态。单 Prepared 最多 8 个 Convolution stages，所有声道实例 taps 合计最多
+131072；未引用 descriptor、格式错误和容量超限均在发布前失败。
 
 `M1ConfigurationStore` actor 串行化完整快照提交。它通过同目录临时文件、文件同步、原子
 替换和目录同步维护 `config.json` 与上一版完整 `config.previous.json`；首次创建和 Repair
@@ -56,7 +70,7 @@ Retry、音效后继提交和已接纳编辑到达终态，再按节点、音效
 
 音频宿主和 Runtime 通过 lock-free 原子计数器记录捕获/渲染帧、欠载、溢出、积压丢帧、
 无效回调、重叠回调、非有限输入和有限值饱和。产品只在控制线程显式读取快照并展示当前值。
-`verify-m1-realtime.sh` 对 26 个明确列出的回调和实时 helper 做源码审计，并检查同两个实现
+`verify-m1-realtime.sh` 对 29 个明确列出的回调和实时 helper 做源码审计，并检查同两个实现
 文件中按裸函数名直接调用的本地 helper 是否也在审计集合中；审计拒绝常见分配入口、锁、
 等待、日志、文件/网络 I/O、dispatch、Objective-C 消息和异常。它是保守的源码回归门禁，
 不宣称解析 C++ 重载、头文件内联调用或提供编译器/二进制级证明；启动前能力检查同时要求
@@ -91,7 +105,7 @@ flowchart LR
     D[原始 AudioDevice IOProc 捕获]
     E[预分配固定容量 SPSC]
     F[有限值清理]
-    G[已编译的每声道有序<br/>Gain / Biquad chain]
+    G[已编译的每声道有序<br/>Gain / Biquad / Convolution chain]
     H[有限值边界与 10 ms<br/>双链 / dry-wet 切换]
     I[绑定并校验临时设备 ID 与格式的<br/>DefaultOutput Audio Unit]
     J[扬声器或耳机]
@@ -304,6 +318,8 @@ flowchart LR
   但未执行 hosted 自动化验收。
 - M2 Graphic EQ 已完成 hostless 数值、状态、发布和产品层验证，但尚未执行 hosted GUI 或真实
   音频验收。
+- M3 Convolution 已完成 hostless 文件、SRC、数值、容量、发布和产品层验证，但尚未执行 hosted
+  文件选择器、GUI 或真实音频验收；sidecar 当前不执行自动垃圾回收。
 - 用户已按 M1.4 完整人工脚本报告真实音频、重复启停、持久恢复和 30 秒实时计数增量验收通过；
   该报告是整体结论，未附设备型号或逐项原始计数。
 - 应用退出后处理停止。

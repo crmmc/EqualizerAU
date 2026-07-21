@@ -10,6 +10,11 @@ enum M1ProcessingBuildError: Error, Equatable, Sendable {
     case invalidGraphicEQFrequency(nodeID: UUID, bandIndex: Int)
     case nonFiniteGraphicEQGain(nodeID: UUID, bandIndex: Int)
     case graphicEQGainOutOfRange(nodeID: UUID, bandIndex: Int)
+    case invalidConvolutionIRReference(nodeID: UUID)
+    case convolutionIRLoadFailed(nodeID: UUID, error: M1ConvolutionIRError)
+    case convolutionChannelCountMismatch(nodeID: UUID, expected: Int, actual: Int)
+    case convolutionStageCapacityExceeded
+    case convolutionTapCapacityExceeded
     case stageCapacityExceeded(channel: M1ChannelIdentifier)
     case totalStageCapacityExceeded
 }
@@ -34,18 +39,28 @@ struct M1ProcessingBuildDiagnostics: Equatable, Sendable {
     let clippingRiskChannels: [M1ChannelIdentifier]
     let gainBoundaries: [M1GainBoundaryDiagnostic]
     let unavailableGraphicEQBands: [M1UnavailableGraphicEQBandDiagnostic]
+    let convolutionSources: [M1ConvolutionSourceDiagnostic]
 
     init(
         unresolvedChannels: [M1UnresolvedChannelDiagnostic],
         clippingRiskChannels: [M1ChannelIdentifier],
         gainBoundaries: [M1GainBoundaryDiagnostic],
-        unavailableGraphicEQBands: [M1UnavailableGraphicEQBandDiagnostic] = []
+        unavailableGraphicEQBands: [M1UnavailableGraphicEQBandDiagnostic] = [],
+        convolutionSources: [M1ConvolutionSourceDiagnostic] = []
     ) {
         self.unresolvedChannels = unresolvedChannels
         self.clippingRiskChannels = clippingRiskChannels
         self.gainBoundaries = gainBoundaries
         self.unavailableGraphicEQBands = unavailableGraphicEQBands
+        self.convolutionSources = convolutionSources
     }
+}
+
+struct M1ConvolutionSourceDiagnostic: Equatable, Sendable {
+    let nodeID: UUID
+    let source: M1ConvolutionIRReference
+    let targetSampleRate: Double
+    let targetFrameCount: Int
 }
 
 struct M1UnavailableGraphicEQBandDiagnostic: Equatable, Sendable {
@@ -64,17 +79,22 @@ struct M1BiquadCoefficients: Equatable, Sendable {
 enum M1CompiledProcessingStage: Equatable, Sendable {
     case gain(nodeID: UUID, linearGain: Double)
     case biquad(nodeID: UUID, bandIndex: Int, coefficients: M1BiquadCoefficients)
+    case convolution(nodeID: UUID, taps: [Float])
 }
 
 struct M1CompiledPreampTargets: Equatable, Sendable {
     let linearGainsByChannel: [Float]
     let stagesByChannel: [[M1CompiledProcessingStage]]
     let diagnostics: M1ProcessingBuildDiagnostics
+    let processingLatencyFrames: Int
 }
 
 enum M1ProcessingBuilder {
     static let maximumStagesPerChannel = 512
     static let maximumPreparedStageCount = 4_096
+    static let maximumConvolutionStages = Int(EAUM1_MAX_CONVOLUTION_STAGES)
+    static let maximumTotalConvolutionTaps = 131_072
+    static let convolutionLatencyFrames = 0
     private static let minimumGainDB = -100.0
     private static let maximumGainDB = 100.0
     private static let maximumFiniteGainDB = 20 * log10(Double(Float.greatestFiniteMagnitude))
@@ -82,7 +102,8 @@ enum M1ProcessingBuilder {
 
     static func build(
         nodes: [M1ProcessingNode],
-        layout: M1OutputLayoutSnapshot
+        layout: M1OutputLayoutSnapshot,
+        irLoader: any M1ConvolutionIRLoading = M1ConvolutionIRStore()
     ) throws -> M1CompiledPreampTargets {
         try validate(nodes: nodes)
 
@@ -97,6 +118,10 @@ enum M1ProcessingBuilder {
         var stagesByChannel = Array(repeating: [M1CompiledProcessingStage](), count: layout.channels.count)
         var unresolvedDiagnostics: [M1UnresolvedChannelDiagnostic] = []
         var unavailableGraphicEQBands: [M1UnavailableGraphicEQBandDiagnostic] = []
+        var convolutionSources: [M1ConvolutionSourceDiagnostic] = []
+        var convolutionStageCount = 0
+        var totalConvolutionTaps = 0
+        var latencyByChannel = Array(repeating: 0, count: layout.channels.count)
         var reportedUnresolvedOwners: Set<UUID> = []
 
         var currentScope: M1ChannelSelection = .all
@@ -181,6 +206,63 @@ enum M1ProcessingBuilder {
                     )
                     stagesByChannel[index].append(contentsOf: availableBands)
                 }
+            case .convolution:
+                guard !selectedIndexes.isEmpty else { continue }
+                let reference = node.convolutionIR!
+                let loaded: M1LoadedConvolutionIR
+                do {
+                    loaded = try irLoader.load(
+                        reference: reference,
+                        targetSampleRate: layout.sampleRate
+                    )
+                } catch let error as M1ConvolutionIRError {
+                    throw M1ProcessingBuildError.convolutionIRLoadFailed(
+                        nodeID: node.id,
+                        error: error
+                    )
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    throw M1ProcessingBuildError.convolutionIRLoadFailed(
+                        nodeID: node.id,
+                        error: .resourceIO
+                    )
+                }
+                guard loaded.channels.count == 1 || loaded.channels.count == selectedIndexes.count else {
+                    throw M1ProcessingBuildError.convolutionChannelCountMismatch(
+                        nodeID: node.id,
+                        expected: selectedIndexes.count,
+                        actual: loaded.channels.count
+                    )
+                }
+                convolutionSources.append(
+                    M1ConvolutionSourceDiagnostic(
+                        nodeID: node.id,
+                        source: loaded.source,
+                        targetSampleRate: loaded.targetSampleRate,
+                        targetFrameCount: loaded.channels[0].count
+                    )
+                )
+                for (selectionOffset, index) in selectedIndexes.enumerated() {
+                    appendPendingGainStage(
+                        channelIndex: index,
+                        pending: &pendingPreampGainsByChannel,
+                        stages: &stagesByChannel
+                    )
+                    let taps = loaded.channels.count == 1
+                        ? loaded.channels[0]
+                        : loaded.channels[selectionOffset]
+                    convolutionStageCount += 1
+                    totalConvolutionTaps += taps.count
+                    guard convolutionStageCount <= maximumConvolutionStages else {
+                        throw M1ProcessingBuildError.convolutionStageCapacityExceeded
+                    }
+                    guard totalConvolutionTaps <= maximumTotalConvolutionTaps else {
+                        throw M1ProcessingBuildError.convolutionTapCapacityExceeded
+                    }
+                    stagesByChannel[index].append(.convolution(nodeID: node.id, taps: taps))
+                    latencyByChannel[index] += convolutionLatencyFrames
+                }
             }
         }
 
@@ -260,8 +342,10 @@ enum M1ProcessingBuilder {
                 unresolvedChannels: unresolvedDiagnostics,
                 clippingRiskChannels: clippingRiskChannels,
                 gainBoundaries: gainBoundaryDiagnostics,
-                unavailableGraphicEQBands: unavailableGraphicEQBands
-            )
+                unavailableGraphicEQBands: unavailableGraphicEQBands,
+                convolutionSources: convolutionSources
+            ),
+            processingLatencyFrames: latencyByChannel.max() ?? 0
         )
     }
 
@@ -304,6 +388,28 @@ enum M1ProcessingBuilder {
                             bandIndex: index
                         )
                     }
+                }
+            }
+            if node.kind == .convolution {
+                guard let reference = node.convolutionIR,
+                      !reference.originalFileName.isEmpty,
+                      reference.originalFileName == (reference.originalFileName as NSString).lastPathComponent,
+                      reference.sha256.utf8.count == 64,
+                      reference.sha256.utf8.allSatisfy({
+                          (UInt8(ascii: "0")...UInt8(ascii: "9")).contains($0)
+                              || (UInt8(ascii: "a")...UInt8(ascii: "f")).contains($0)
+                      }),
+                      reference.sampleRate.isFinite,
+                      reference.sampleRate >= M1ConvolutionIRStore.minimumSampleRate,
+                      (1...64).contains(reference.channelCount),
+                      reference.frameCount > 0,
+                      Double(reference.frameCount) / reference.sampleRate
+                        <= M1ConvolutionIRStore.maximumDurationSeconds
+                else {
+                    throw M1ProcessingBuildError.invalidConvolutionIRReference(nodeID: node.id)
+                }
+                guard node.convolutionIR!.sampleRate <= M1ConvolutionIRStore.maximumSampleRate else {
+                    throw M1ProcessingBuildError.invalidConvolutionIRReference(nodeID: node.id)
                 }
             }
 

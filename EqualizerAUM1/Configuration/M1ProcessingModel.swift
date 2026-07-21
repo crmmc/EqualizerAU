@@ -31,6 +31,16 @@ enum M1ProcessingNodeKind: String, Sendable {
     case channels
     case preamp
     case graphicEQ
+    case convolution
+}
+
+struct M1ConvolutionIRReference: Equatable, Sendable {
+    let storageID: UUID
+    let originalFileName: String
+    let sha256: String
+    let sampleRate: Double
+    let channelCount: Int
+    let frameCount: Int
 }
 
 struct M1GraphicEQBand: Equatable, Sendable {
@@ -60,6 +70,7 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
     var gainDB: Double
     var channels: M1ChannelSelection
     var graphicEQBands: [M1GraphicEQBand]
+    var convolutionIR: M1ConvolutionIRReference?
 
     init(
         id: UUID,
@@ -73,6 +84,7 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
         self.gainDB = gainDB
         self.channels = channels
         graphicEQBands = []
+        convolutionIR = nil
     }
 
     static func channels(id: UUID = UUID(), selection: M1ChannelSelection) -> Self {
@@ -82,7 +94,8 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
             isEnabled: true,
             gainDB: 0,
             channels: selection,
-            graphicEQBands: []
+            graphicEQBands: [],
+            convolutionIR: nil
         )
     }
 
@@ -97,7 +110,24 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
             isEnabled: isEnabled,
             gainDB: 0,
             channels: .all,
-            graphicEQBands: bands
+            graphicEQBands: bands,
+            convolutionIR: nil
+        )
+    }
+
+    static func convolution(
+        id: UUID = UUID(),
+        isEnabled: Bool = true,
+        ir: M1ConvolutionIRReference
+    ) -> Self {
+        Self(
+            id: id,
+            kind: .convolution,
+            isEnabled: isEnabled,
+            gainDB: 0,
+            channels: .all,
+            graphicEQBands: [],
+            convolutionIR: ir
         )
     }
 
@@ -107,7 +137,8 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
         isEnabled: Bool,
         gainDB: Double,
         channels: M1ChannelSelection,
-        graphicEQBands: [M1GraphicEQBand]
+        graphicEQBands: [M1GraphicEQBand],
+        convolutionIR: M1ConvolutionIRReference?
     ) {
         self.id = id
         self.kind = kind
@@ -115,6 +146,7 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
         self.gainDB = gainDB
         self.channels = channels
         self.graphicEQBands = graphicEQBands
+        self.convolutionIR = convolutionIR
     }
 
     func copied(id: UUID) -> Self {
@@ -130,6 +162,8 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
             )
         case .graphicEQ:
             return .graphicEQ(id: id, isEnabled: isEnabled, bands: graphicEQBands)
+        case .convolution:
+            return .convolution(id: id, isEnabled: isEnabled, ir: convolutionIR!)
         }
     }
 }

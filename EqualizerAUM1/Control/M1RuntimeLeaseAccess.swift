@@ -18,6 +18,7 @@ enum M1RuntimePreparedStateFactory {
             throw M1AudioIOError.invalidConfiguration("invalid Prepared channel count")
         }
         var stages: [EAUM1PreparedStage] = []
+        var convolutionTaps: [[Float]] = []
         stages.reserveCapacity(stagesByChannel.reduce(0) { $0 + $1.count })
         for (channelIndex, channelStages) in stagesByChannel.enumerated() {
             guard channelStages.count <= Int(EAUM1_MAX_STAGES_PER_CHANNEL),
@@ -51,6 +52,20 @@ enum M1RuntimePreparedStateFactory {
                             a2: coefficients.a2
                         )
                     )
+                case let .convolution(_, taps):
+                    let descriptorIndex = convolutionTaps.count
+                    convolutionTaps.append(taps)
+                    stages.append(
+                        EAUM1PreparedStage(
+                            kind: UInt32(EAUM1PreparedStageConvolution),
+                            channelIndex: channel,
+                            b0: Double(descriptorIndex),
+                            b1: 0,
+                            b2: 0,
+                            a1: 0,
+                            a2: 0
+                        )
+                    )
                 }
             }
         }
@@ -61,18 +76,53 @@ enum M1RuntimePreparedStateFactory {
         }
 
         var prepared: OpaquePointer?
-        let status = stages.withUnsafeBufferPointer { values in
-            var description = EAUM1PreparedDescription(
-                channelCount: channelCount,
-                stageCount: stageCount,
-                stages: values.baseAddress
-            )
-            return EAUM1PreparedStateCreateV2(&description, &prepared)
+        var convolutionDescriptors: [EAUM1PreparedConvolution] = []
+        convolutionDescriptors.reserveCapacity(convolutionTaps.count)
+        let status = withUnsafeConvolutionDescriptors(
+            taps: convolutionTaps,
+            index: 0,
+            descriptors: &convolutionDescriptors
+        ) { descriptors in
+            stages.withUnsafeBufferPointer { stageValues in
+                descriptors.withUnsafeBufferPointer { convolutionValues in
+                    var description = EAUM1PreparedDescriptionV3(
+                        channelCount: channelCount,
+                        stageCount: stageCount,
+                        stages: stageValues.baseAddress,
+                        convolutionCount: UInt32(convolutionValues.count),
+                        convolutions: convolutionValues.baseAddress
+                    )
+                    return EAUM1PreparedStateCreateV3(&description, &prepared)
+                }
+            }
         }
         guard status == EAUM1StatusOK, let prepared else {
             throw M1AudioIOError.invalidConfiguration("Prepared creation failed: \(status)")
         }
         return prepared
+    }
+
+    private static func withUnsafeConvolutionDescriptors<Result>(
+        taps: [[Float]],
+        index: Int,
+        descriptors: inout [EAUM1PreparedConvolution],
+        _ body: ([EAUM1PreparedConvolution]) throws -> Result
+    ) rethrows -> Result {
+        guard index < taps.count else { return try body(descriptors) }
+        return try taps[index].withUnsafeBufferPointer { values in
+            descriptors.append(
+                EAUM1PreparedConvolution(
+                    tapCount: UInt32(values.count),
+                    taps: values.baseAddress
+                )
+            )
+            return try withUnsafeConvolutionDescriptors(
+                taps: taps,
+                index: index + 1,
+                descriptors: &descriptors,
+                body
+            )
+        }
     }
 }
 

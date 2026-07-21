@@ -170,9 +170,9 @@ final class M1EditingSessionTests: XCTestCase {
     }
 
     func testClipboardRejectsUnsupportedSchemaMalformedAndOversizedData() {
-        let unsupported = Data("{\"nodes\":[],\"schemaVersion\":4}\n".utf8)
+        let unsupported = Data("{\"nodes\":[],\"schemaVersion\":5}\n".utf8)
         XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(unsupported)) {
-            XCTAssertEqual($0 as? M1EditingSessionError, .unsupportedClipboardSchema(4))
+            XCTAssertEqual($0 as? M1EditingSessionError, .unsupportedClipboardSchema(5))
         }
         XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(Data("nope".utf8)))
         XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(Data(
@@ -245,6 +245,100 @@ final class M1EditingSessionTests: XCTestCase {
 
         XCTAssertThrowsError(
             try session.setGainDB(id: ids[0], gainDB: 1, effectsEnabled: true)
+        )
+    }
+
+    func testClipboardDecodesVersionsOneThroughFourAndPreservesVersionThreeGraphicEQ() throws {
+        let preampID = ids[0]
+        let v1 = Data(
+            "{\"schemaVersion\":1,\"nodes\":[{\"id\":\"\(preampID)\",\"type\":\"preamp\",\"isEnabled\":true,\"gainDB\":-2,\"channels\":\"all\"}]}".utf8
+        )
+        let v2 = Data(
+            "{\"schemaVersion\":2,\"nodes\":[{\"id\":\"\(preampID)\",\"type\":\"preamp\",\"isEnabled\":true,\"gainDB\":-2}]}".utf8
+        )
+        let bands = M1GraphicEQContract.flatBands.map {
+            "{\"frequencyHz\":\($0.frequencyHz),\"gainDB\":\($0.gainDB)}"
+        }.joined(separator: ",")
+        let v3 = Data(
+            "{\"schemaVersion\":3,\"nodes\":[{\"id\":\"\(ids[1])\",\"type\":\"graphicEQ\",\"isEnabled\":true,\"bands\":[\(bands)]}]}".utf8
+        )
+        let ir = convolutionIR(storageID: ids[2])
+        let v4 = try M1NodeEnvelopeCodec.encode([.convolution(id: ids[3], ir: ir)]).data
+
+        XCTAssertEqual(try M1NodeEnvelopeCodec.decode(v1).nodes.map(\.kind), [.preamp])
+        XCTAssertEqual(try M1NodeEnvelopeCodec.decode(v2).nodes.map(\.kind), [.preamp])
+        XCTAssertEqual(try M1NodeEnvelopeCodec.decode(v3).nodes.map(\.kind), [.graphicEQ])
+        XCTAssertEqual(try M1NodeEnvelopeCodec.decode(v4).nodes.map(\.kind), [.convolution])
+        XCTAssertTrue(String(decoding: try M1NodeEnvelopeCodec.decode(v3).data, as: UTF8.self)
+            .contains("\"schemaVersion\" : 4"))
+    }
+
+    func testConvolutionClipboardRoundTripAndCopyPreserveImmutableIRWithNewNodeIdentity() throws {
+        let ir = convolutionIR(storageID: ids[5])
+        let source = M1ProcessingNode.convolution(id: ids[0], isEnabled: false, ir: ir)
+        let encoded = try M1NodeEnvelopeCodec.encode([source])
+        let decoded = try XCTUnwrap(M1NodeEnvelopeCodec.decode(encoded.data).nodes.first)
+        XCTAssertEqual(decoded, source)
+
+        var session = M1EditingSession(nodes: [decoded])
+        session.select(decoded.id, mode: .replacing)
+        try session.moveSelection(
+            to: 1,
+            operation: .copy,
+            copiedIDs: [ids[1]],
+            effectsEnabled: true
+        )
+        XCTAssertEqual(session.nodes.map(\.id), [ids[0], ids[1]])
+        XCTAssertEqual(session.nodes[1].convolutionIR, ir)
+        XCTAssertEqual(session.nodes[1].convolutionIR?.storageID, source.convolutionIR?.storageID)
+    }
+
+    func testConvolutionAddReplaceEnableAndWrongKindContracts() throws {
+        let firstIR = convolutionIR(storageID: ids[4])
+        let secondIR = convolutionIR(storageID: ids[5], fileName: "replacement.wav")
+        var session = M1EditingSession(nodes: nodes(1))
+
+        try session.addConvolution(
+            before: ids[0],
+            nodeID: ids[1],
+            ir: firstIR,
+            effectsEnabled: true
+        )
+        XCTAssertEqual(session.nodes.map(\.kind), [.convolution, .preamp])
+        try session.setConvolutionIR(id: ids[1], ir: secondIR, effectsEnabled: true)
+        XCTAssertEqual(session.nodes[0].convolutionIR, secondIR)
+        XCTAssertEqual(session.historyMetrics.undoCount, 2)
+        try session.undo(effectsEnabled: true)
+        XCTAssertEqual(session.nodes[0].convolutionIR, firstIR)
+
+        try session.setNodeEnabled(id: ids[1], enabled: false, effectsEnabled: true)
+        XCTAssertFalse(session.nodes[0].isEnabled)
+        XCTAssertThrowsError(
+            try session.setConvolutionIR(id: ids[0], ir: secondIR, effectsEnabled: true)
+        ) {
+            XCTAssertEqual($0 as? M1EditingSessionError, .invalidNodeKind)
+        }
+    }
+
+    func testConvolutionClipboardRejectsUnknownNestedField() {
+        let ir = "\"storageID\":\"\(ids[1])\",\"originalFileName\":\"ir.wav\",\"sha256\":\"\(String(repeating: "a", count: 64))\",\"sampleRate\":48000,\"channelCount\":1,\"frameCount\":1,\"future\":true"
+        let data = Data(
+            "{\"schemaVersion\":4,\"nodes\":[{\"id\":\"\(ids[0])\",\"type\":\"convolution\",\"isEnabled\":true,\"ir\":{\(ir)}}]}".utf8
+        )
+        XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(data))
+    }
+
+    private func convolutionIR(
+        storageID: UUID,
+        fileName: String = "Room IR.wav"
+    ) -> M1ConvolutionIRReference {
+        M1ConvolutionIRReference(
+            storageID: storageID,
+            originalFileName: fileName,
+            sha256: String(repeating: "a", count: 64),
+            sampleRate: 48_000,
+            channelCount: 1,
+            frameCount: 48_000
         )
     }
 
