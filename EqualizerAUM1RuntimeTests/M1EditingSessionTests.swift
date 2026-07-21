@@ -170,9 +170,9 @@ final class M1EditingSessionTests: XCTestCase {
     }
 
     func testClipboardRejectsUnsupportedSchemaMalformedAndOversizedData() {
-        let unsupported = Data("{\"nodes\":[],\"schemaVersion\":3}\n".utf8)
+        let unsupported = Data("{\"nodes\":[],\"schemaVersion\":4}\n".utf8)
         XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(unsupported)) {
-            XCTAssertEqual($0 as? M1EditingSessionError, .unsupportedClipboardSchema(3))
+            XCTAssertEqual($0 as? M1EditingSessionError, .unsupportedClipboardSchema(4))
         }
         XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(Data("nope".utf8)))
         XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(Data(
@@ -180,10 +180,10 @@ final class M1EditingSessionTests: XCTestCase {
             count: M1NodeEnvelopeCodec.maximumDataSize + 1
         )))
         XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(Data(
-            "{\"schemaVersion\":2,\"nodes\":[],\"future\":true}".utf8
+            "{\"schemaVersion\":3,\"nodes\":[],\"future\":true}".utf8
         )))
         XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(Data(
-            "{\"schemaVersion\":2,\"schemaVersion\":2,\"nodes\":[]}".utf8
+            "{\"schemaVersion\":3,\"schemaVersion\":3,\"nodes\":[]}".utf8
         )))
     }
 
@@ -224,6 +224,28 @@ final class M1EditingSessionTests: XCTestCase {
             XCTAssertEqual($0 as? M1EditingSessionError, .invalidNodeKind)
         }
         XCTAssertEqual(session.nodes, [channels, preamp])
+    }
+
+    func testGraphicEQClipboardCopyAndGesturePreserveTypedBands() throws {
+        var eq = M1ProcessingNode.graphicEQ(id: ids[0])
+        eq.graphicEQBands[5].gainDB = -3
+        let envelope = try M1NodeEnvelopeCodec.encode([eq])
+        let decoded = try XCTUnwrap(M1NodeEnvelopeCodec.decode(envelope.data).nodes.first)
+        XCTAssertEqual(decoded, eq)
+
+        var session = M1EditingSession(nodes: [decoded])
+        session.beginGesture(ids[0])
+        try session.setGraphicEQGainDB(id: ids[0], bandIndex: 5, gainDB: -2.04, effectsEnabled: true)
+        try session.setGraphicEQGainDB(id: ids[0], bandIndex: 5, gainDB: -1.04, effectsEnabled: true)
+        session.endGesture(ids[0])
+        XCTAssertEqual(session.historyMetrics.undoCount, 1)
+        XCTAssertEqual(session.nodes[0].graphicEQBands[5].gainDB, -1, accuracy: 1e-12)
+        try session.undo(effectsEnabled: true)
+        XCTAssertEqual(session.nodes[0].graphicEQBands[5].gainDB, -3)
+
+        XCTAssertThrowsError(
+            try session.setGainDB(id: ids[0], gainDB: 1, effectsEnabled: true)
+        )
     }
 
     private func nodes(_ count: Int) -> [M1PreampNode] {

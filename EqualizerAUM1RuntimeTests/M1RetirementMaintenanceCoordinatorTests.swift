@@ -24,6 +24,44 @@ final class M1RetirementMaintenanceCoordinatorTests: XCTestCase {
         XCTAssertTrue(stopRequests.isEmpty)
     }
 
+    func testCompletedRunClearsAdmissionBeforeNextTicketStarts() async {
+        let access = TestMaintenanceAccess(steps: [.completed, .completed])
+        let coordinator = M1RetirementMaintenanceCoordinator(
+            access: access,
+            timing: TestMonotonicClock().timing()
+        )
+
+        let firstStarted = await coordinator.start(ticket: 7, bridgeGeneration: 3)
+        XCTAssertTrue(firstStarted)
+        await coordinator.waitUntilIdle()
+        let secondStarted = await coordinator.start(ticket: 8, bridgeGeneration: 3)
+        XCTAssertTrue(secondStarted)
+        await coordinator.waitUntilIdle()
+
+        let tickets = await access.maintenanceCalls().map(\.ticket)
+        XCTAssertEqual(tickets, [7, 8])
+    }
+
+    func testTicketArrivingWhileCompletionIsInFlightIsTakenOver() async {
+        let access = ReentrantTicketMaintenanceAccess()
+        let coordinator = M1RetirementMaintenanceCoordinator(
+            access: access,
+            timing: TestMonotonicClock().timing()
+        )
+        await access.setBeforeFirstCompletion {
+            await coordinator.start(ticket: 8, bridgeGeneration: 3)
+        }
+
+        let started = await coordinator.start(ticket: 7, bridgeGeneration: 3)
+        XCTAssertTrue(started)
+        await coordinator.waitUntilIdle()
+
+        let tickets = await access.maintenanceCalls().map(\.ticket)
+        let takeoverResults = await access.takeoverResults()
+        XCTAssertEqual(tickets, [7, 8])
+        XCTAssertEqual(takeoverResults, [false])
+    }
+
     func testNewTicketStartsItsOwnDeadline() async {
         let clock = TestMonotonicClock()
         let access = TestMaintenanceAccess(steps: [
@@ -354,6 +392,43 @@ private actor TestMaintenanceAccess: M1RetirementMaintenanceAccess {
 
     func stopRequests() -> [TestStopRequest] {
         requests
+    }
+}
+
+private actor ReentrantTicketMaintenanceAccess: M1RetirementMaintenanceAccess {
+    private var calls: [TestMaintenanceCall] = []
+    private var beforeFirstCompletion: (@Sendable () async -> Bool)?
+    private var results: [Bool] = []
+
+    func setBeforeFirstCompletion(_ operation: @escaping @Sendable () async -> Bool) {
+        beforeFirstCompletion = operation
+    }
+
+    func performMaintenance(
+        ticket: UInt64,
+        bridgeGeneration: UInt64
+    ) async -> M1RetirementMaintenanceStep {
+        calls.append(.init(ticket: ticket, generation: bridgeGeneration))
+        if let operation = beforeFirstCompletion {
+            beforeFirstCompletion = nil
+            results.append(await operation())
+        }
+        return .completed
+    }
+
+    func discardPendingPrepared(bridgeGeneration: UInt64) {}
+
+    func requestRecoverableStop(
+        reason: M1RetirementStopReason,
+        bridgeGeneration: UInt64
+    ) {}
+
+    func maintenanceCalls() -> [TestMaintenanceCall] {
+        calls
+    }
+
+    func takeoverResults() -> [Bool] {
+        results
     }
 }
 

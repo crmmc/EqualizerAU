@@ -225,11 +225,9 @@ struct M1SystemRuntimeFactory: M1RuntimeCreating, @unchecked Sendable {
         maximumFrameCount: Int,
         sampleRate: Double
     ) throws -> M1RuntimeHandleLease {
-        let channelCount = initialState.linearGainsByChannel.count
+        let channelCount = initialState.stagesByChannel.count
         guard let channels = UInt32(exactly: channelCount), channels > 0,
-              let maximumFrames = UInt32(exactly: maximumFrameCount), maximumFrames > 0,
-              !initialState.bufferChannelCounts.isEmpty,
-              initialState.bufferChannelCounts.reduce(0, +) == channelCount,
+               let maximumFrames = UInt32(exactly: maximumFrameCount), maximumFrames > 0,
               sampleRate.isFinite, sampleRate > 0
         else {
             throw M1AudioIOError.invalidConfiguration("invalid Runtime dimensions")
@@ -244,21 +242,11 @@ struct M1SystemRuntimeFactory: M1RuntimeCreating, @unchecked Sendable {
             throw M1AudioIOError.invalidConfiguration("required Runtime atomics are not lock-free")
         }
 
-        let gains = initialState.linearGainsByChannel
-        var prepared: OpaquePointer?
-        let preparedStatus = gains.withUnsafeBufferPointer { values in
-            EAUM1PreparedStateCreate(values.baseAddress, channels, &prepared)
-        }
-        guard preparedStatus == EAUM1StatusOK, prepared != nil else {
-            throw M1AudioIOError.invalidConfiguration("initial Prepared creation failed")
-        }
+        let channelCounts = [channels]
+        var prepared: OpaquePointer? = try M1RuntimePreparedStateFactory.create(
+            stagesByChannel: initialState.stagesByChannel
+        )
         var runtime: OpaquePointer?
-        var channelCounts = try initialState.bufferChannelCounts.map { count -> UInt32 in
-            guard let value = UInt32(exactly: count), value > 0 else {
-                throw M1AudioIOError.invalidConfiguration("invalid Runtime buffer topology")
-            }
-            return value
-        }
         let createStatus = channelCounts.withUnsafeBufferPointer { counts in
             var description = EAUM1RuntimeDescription(
                 sampleRate: sampleRate,

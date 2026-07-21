@@ -1,7 +1,7 @@
 import Foundation
 
 struct M1ConfigurationSnapshot: Equatable, Sendable {
-    static let schemaVersion = 2
+    static let schemaVersion = 3
 
     var effectsEnabled: Bool
     var nodes: [M1ProcessingNode]
@@ -48,7 +48,7 @@ enum M1ConfigurationCodec {
     static func encode(_ snapshot: M1ConfigurationSnapshot) throws -> M1EncodedConfiguration {
         let snapshot = M1ConfigurationSnapshot(
             effectsEnabled: snapshot.effectsEnabled,
-            nodes: M1ConfigurationMigration.normalizedV2Nodes(snapshot.nodes)
+            nodes: M1ConfigurationMigration.normalizedCurrentNodes(snapshot.nodes)
         )
         do {
             try M1ProcessingBuilder.validate(nodes: snapshot.nodes)
@@ -96,13 +96,17 @@ enum M1ConfigurationCodec {
             try M1JSONShapeValidator.validateConfiguration(data, schemaVersion: 1)
             let wire = try JSONDecoder().decode(M1ConfigurationV1Wire.self, from: data)
             snapshot = try wire.snapshot()
+        case 2:
+            try M1JSONShapeValidator.validateConfiguration(data, schemaVersion: 2)
+            let wire = try JSONDecoder().decode(M1ConfigurationWire.self, from: data)
+            snapshot = try wire.snapshot(expectedSchemaVersion: 2)
         case M1ConfigurationSnapshot.schemaVersion:
             try M1JSONShapeValidator.validateConfiguration(
                 data,
                 schemaVersion: M1ConfigurationSnapshot.schemaVersion
             )
             let wire = try JSONDecoder().decode(M1ConfigurationWire.self, from: data)
-            snapshot = try wire.snapshot()
+            snapshot = try wire.snapshot(expectedSchemaVersion: M1ConfigurationSnapshot.schemaVersion)
         default:
             throw M1ConfigurationCodecError.unsupportedSchema(version.schemaVersion)
         }
@@ -159,6 +163,15 @@ enum M1JSONShapeValidator {
                     allowedKeys = ["id", "type", "channels"]
                 case M1ProcessingNodeKind.preamp.rawValue:
                     allowedKeys = ["id", "type", "isEnabled", "gainDB"]
+                case M1ProcessingNodeKind.graphicEQ.rawValue where schemaVersion >= 3:
+                    allowedKeys = ["id", "type", "isEnabled", "bands"]
+                    guard let bands = node["bands"] as? [[String: Any]],
+                          bands.allSatisfy({ Set($0.keys) == ["frequencyHz", "gainDB"] })
+                    else {
+                        throw M1ConfigurationCodecError.invalidJSON
+                    }
+                case M1ProcessingNodeKind.graphicEQ.rawValue:
+                    throw M1ConfigurationCodecError.invalidJSON
                 default:
                     continue
                 }
@@ -289,7 +302,10 @@ private struct M1ConfigurationWire: Codable {
         nodes = snapshot.nodes.map { M1ProcessingNodeWire($0) }
     }
 
-    func snapshot() throws -> M1ConfigurationSnapshot {
+    func snapshot(expectedSchemaVersion: Int) throws -> M1ConfigurationSnapshot {
+        guard schemaVersion == expectedSchemaVersion else {
+            throw M1ConfigurationCodecError.unsupportedSchema(schemaVersion)
+        }
         let snapshot = M1ConfigurationSnapshot(
             effectsEnabled: effectsEnabled,
             nodes: try nodes.map { try $0.node() }
@@ -326,6 +342,7 @@ struct M1ProcessingNodeWire: Codable {
     let isEnabled: Bool?
     let gainDB: Double?
     let channels: M1ChannelSelectionWire?
+    let bands: [M1GraphicEQBandWire]?
 
     init(_ node: M1ProcessingNode) {
         id = node.id
@@ -335,22 +352,29 @@ struct M1ProcessingNodeWire: Codable {
             isEnabled = nil
             gainDB = nil
             channels = M1ChannelSelectionWire(node.channels)
+            bands = nil
         case .preamp:
             isEnabled = node.isEnabled
             gainDB = node.gainDB
             channels = nil
+            bands = nil
+        case .graphicEQ:
+            isEnabled = node.isEnabled
+            gainDB = nil
+            channels = nil
+            bands = node.graphicEQBands.map(M1GraphicEQBandWire.init)
         }
     }
 
     func node() throws -> M1ProcessingNode {
         switch type {
         case M1ProcessingNodeKind.channels.rawValue:
-            guard let channels, isEnabled == nil, gainDB == nil else {
+            guard let channels, isEnabled == nil, gainDB == nil, bands == nil else {
                 throw M1ConfigurationCodecError.invalidJSON
             }
             return .channels(id: id, selection: try channels.selection())
         case M1ProcessingNodeKind.preamp.rawValue:
-            guard let isEnabled, let gainDB, channels == nil else {
+            guard let isEnabled, let gainDB, channels == nil, bands == nil else {
                 throw M1ConfigurationCodecError.invalidJSON
             }
             return M1ProcessingNode(
@@ -359,9 +383,32 @@ struct M1ProcessingNodeWire: Codable {
                 gainDB: gainDB,
                 channels: .all
             )
+        case M1ProcessingNodeKind.graphicEQ.rawValue:
+            guard let isEnabled, let bands, gainDB == nil, channels == nil else {
+                throw M1ConfigurationCodecError.invalidJSON
+            }
+            return .graphicEQ(
+                id: id,
+                isEnabled: isEnabled,
+                bands: bands.map(\.band)
+            )
         default:
             throw M1ConfigurationCodecError.unknownNodeType(type)
         }
+    }
+}
+
+struct M1GraphicEQBandWire: Codable {
+    let frequencyHz: Double
+    let gainDB: Double
+
+    init(_ band: M1GraphicEQBand) {
+        frequencyHz = band.frequencyHz
+        gainDB = band.gainDB
+    }
+
+    var band: M1GraphicEQBand {
+        M1GraphicEQBand(frequencyHz: frequencyHz, gainDB: gainDB)
     }
 }
 
@@ -428,7 +475,7 @@ enum M1ConfigurationMigration {
         return result
     }
 
-    static func normalizedV2Nodes(_ nodes: [M1ProcessingNode]) -> [M1ProcessingNode] {
+    static func normalizedCurrentNodes(_ nodes: [M1ProcessingNode]) -> [M1ProcessingNode] {
         var result: [M1ProcessingNode] = []
         result.reserveCapacity(nodes.count)
         var currentScope: M1ChannelSelection = .all
@@ -461,6 +508,24 @@ enum M1ConfigurationMigration {
                         isEnabled: node.isEnabled,
                         gainDB: node.gainDB,
                         channels: .all
+                    )
+                )
+            case .graphicEQ:
+                if node.channels != .all, node.channels != currentScope {
+                    currentScope = node.channels
+                    let id = uniqueMigratedChannelsID(
+                        preampID: node.id,
+                        selection: currentScope,
+                        occupiedIDs: occupiedIDs
+                    )
+                    occupiedIDs.insert(id)
+                    result.append(.channels(id: id, selection: currentScope))
+                }
+                result.append(
+                    .graphicEQ(
+                        id: node.id,
+                        isEnabled: node.isEnabled,
+                        bands: node.graphicEQBands
                     )
                 )
             }

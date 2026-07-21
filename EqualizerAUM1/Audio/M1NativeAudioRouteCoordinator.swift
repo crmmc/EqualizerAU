@@ -11,8 +11,7 @@ protocol M1RuntimeCreating: Sendable {
 }
 
 struct M1RuntimeInitialState: Equatable, Sendable {
-    let linearGainsByChannel: [Float]
-    let bufferChannelCounts: [Int]
+    let stagesByChannel: [[M1CompiledProcessingStage]]
     let effectsEnabled: Bool
 }
 
@@ -174,8 +173,7 @@ actor M1NativeAudioRouteCoordinator {
             let runtime = try runtimeFactory.createRuntime(
                 bridgeGeneration: resources.bridgeGeneration,
                 initialState: M1RuntimeInitialState(
-                    linearGainsByChannel: compiled.linearGainsByChannel,
-                    bufferChannelCounts: output.layout.bufferChannelCounts,
+                    stagesByChannel: compiled.stagesByChannel,
                     effectsEnabled: configuration.effectsEnabled
                 ),
                 maximumFrameCount: aggregate.maximumFrameCount,
@@ -283,7 +281,7 @@ actor M1NativeAudioRouteCoordinator {
         let runtimePublication: M1RuntimePreparedPublication
         do {
             runtimePublication = try await runtimeAccess.publish(
-                linearGainsByChannel: compiled.linearGainsByChannel,
+                stagesByChannel: compiled.stagesByChannel,
                 configurationGeneration: configurationGeneration,
                 bridgeGeneration: current.bridgeGeneration
             )

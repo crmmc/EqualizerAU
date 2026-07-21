@@ -86,6 +86,68 @@ final class M1ProductControllerTests: XCTestCase {
         XCTAssertEqual(publishedGenerations, [1])
     }
 
+    func testPublishFailureLeavesSavedConfigurationPendingRestart() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        try await fixture.controller.setGainDB(id: fixture.nodeID, gainDB: 6)
+        await fixture.audio.setPublishFailure(true)
+
+        await XCTAssertThrowsErrorAsync { try await fixture.controller.save() }
+
+        let failed = await fixture.controller.snapshot()
+        let commits = await fixture.store.commits
+        XCTAssertEqual(commits.last?.snapshot.nodes.first?.gainDB, 6)
+        XCTAssertEqual(failed.persistence, .savedPendingStart)
+        XCTAssertFalse(failed.hasUnsavedNodes)
+        XCTAssertEqual(failed.expectedConfigurationGeneration, 1)
+        XCTAssertNotNil(failed.visibleError)
+
+        try await fixture.controller.stop()
+        await fixture.audio.setPublishFailure(false)
+        try await fixture.controller.start()
+        let starts = await fixture.audio.startedConfigurations
+        XCTAssertEqual(starts.last?.nodes.first?.gainDB, 6)
+    }
+
+    func testGraphicEQDraftPublishesScopedBiquadStagesOnlyAfterSave() async throws {
+        let fixture = makeFixture()
+        let channelsID = UUID()
+        let equalizerID = UUID()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        try await fixture.controller.addChannels(
+            nodeID: channelsID,
+            selection: .identifiers([M1ChannelIdentifier("L")!])
+        )
+        try await fixture.controller.addGraphicEQ(nodeID: equalizerID)
+        try await fixture.controller.setGraphicEQGainDB(
+            id: equalizerID,
+            bandIndex: 8,
+            gainDB: 6
+        )
+
+        var commits = await fixture.store.commits
+        var publishedStages = await fixture.audio.publishedStagesByChannel
+        XCTAssertTrue(commits.isEmpty)
+        XCTAssertTrue(publishedStages.isEmpty)
+
+        try await fixture.controller.save()
+
+        commits = await fixture.store.commits
+        publishedStages = await fixture.audio.publishedStagesByChannel
+        XCTAssertEqual(commits.last?.snapshot.nodes.map(\.kind), [.preamp, .channels, .graphicEQ])
+        XCTAssertEqual(commits.last?.snapshot.nodes.last?.graphicEQBands[8].gainDB, 6)
+        XCTAssertEqual(publishedStages.count, 1)
+        XCTAssertEqual(publishedStages[0][0].count, 1)
+        XCTAssertTrue(publishedStages[0][1].isEmpty)
+        guard case let .biquad(nodeID, bandIndex, _) = publishedStages[0][0][0] else {
+            return XCTFail("Expected a scoped Graphic EQ biquad")
+        }
+        XCTAssertEqual(nodeID, equalizerID)
+        XCTAssertEqual(bandIndex, 8)
+    }
+
     func testEffectsToggleUpdatesRuntimeAndPersistsWithoutPublishingChain() async throws {
         let fixture = makeFixture()
         await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
@@ -978,6 +1040,7 @@ private actor ProductAudioFake: M1ProductAudioControlling {
     var calls: [String] = []
     var startedConfigurations: [M1ConfigurationSnapshot] = []
     var publishedGenerations: [UInt64] = []
+    var publishedStagesByChannel: [[[M1CompiledProcessingStage]]] = []
     private var running = false
     private var startCancellationRequested = false
     private var startGate: ProductTestGate?
@@ -989,6 +1052,7 @@ private actor ProductAudioFake: M1ProductAudioControlling {
     private var effectsFailure = false
     private var outputAvailable = true
     private var preparationFails = false
+    private var publishFails = false
     private var discardedPublicationGenerations: Set<UInt64> = []
     private let layout = M1OutputLayoutSnapshot(
         sampleRate: 48_000,
@@ -1007,6 +1071,7 @@ private actor ProductAudioFake: M1ProductAudioControlling {
     func start(configuration: M1ConfigurationSnapshot) async throws {
         calls.append("start")
         startedConfigurations.append(configuration)
+        startCancellationRequested = false
         if let startGate { await startGate.wait() }
         if startCancellationRequested { throw CancellationError() }
         if startFailureState != nil { throw ProductAudioFakeError.startFailed }
@@ -1048,8 +1113,10 @@ private actor ProductAudioFake: M1ProductAudioControlling {
     ) async throws -> M1PreparedPublication? {
         calls.append("publish")
         if let publishGate { await publishGate.wait() }
+        if publishFails { throw ProductAudioFakeError.publishFailed }
         guard preparation.bridgeGeneration == 1, let compiled = preparation.compiled else { return nil }
         publishedGenerations.append(configurationGeneration)
+        publishedStagesByChannel.append(compiled.stagesByChannel)
         return M1PreparedPublication(
             disposition: publicationDisposition,
             diagnostics: compiled.diagnostics
@@ -1100,6 +1167,7 @@ private actor ProductAudioFake: M1ProductAudioControlling {
     func setStartFailure(state: M1NativeAudioRouteState) { startFailureState = state }
     func setOutputAvailable(_ available: Bool) { outputAvailable = available }
     func setPreparationFailure(_ fails: Bool) { preparationFails = fails }
+    func setPublishFailure(_ fails: Bool) { publishFails = fails }
     func setPublication(disposition: M1PreparedPublicationDisposition, gate: ProductTestGate?) {
         publicationDisposition = disposition
         publicationGate = gate
@@ -1112,6 +1180,7 @@ private actor ProductAudioFake: M1ProductAudioControlling {
 private enum ProductAudioFakeError: Error {
     case startFailed
     case preparationFailed
+    case publishFailed
     case effectsFailed
 }
 

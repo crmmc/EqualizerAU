@@ -70,21 +70,21 @@ final class M1ConfigurationCodecTests: XCTestCase {
     func testUnsupportedSchemaAndUnknownNodeAreRejected() {
         let id = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
         let unsupported = Data(
-            "{\"schemaVersion\":3,\"effectsEnabled\":true,\"nodes\":[]}".utf8
+            "{\"schemaVersion\":4,\"effectsEnabled\":true,\"nodes\":[]}".utf8
         )
         XCTAssertThrowsError(try M1ConfigurationCodec.decode(unsupported)) { error in
-            XCTAssertEqual(error as? M1ConfigurationCodecError, .unsupportedSchema(3))
+            XCTAssertEqual(error as? M1ConfigurationCodecError, .unsupportedSchema(4))
         }
 
         let unknown = Data(
-            "{\"schemaVersion\":2,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"biquad\"}]}".utf8
+            "{\"schemaVersion\":3,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"biquad\"}]}".utf8
         )
         XCTAssertThrowsError(try M1ConfigurationCodec.decode(unknown)) { error in
             XCTAssertEqual(error as? M1ConfigurationCodecError, .unknownNodeType("biquad"))
         }
     }
 
-    func testVersionOneMigrationIsDeterministicAndVersionTwoOmitsPreampChannels() throws {
+    func testVersionOneMigrationIsDeterministicAndVersionThreeOmitsPreampChannels() throws {
         let id = UUID(uuidString: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")!
         let source = Data(
             "{\"schemaVersion\":1,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"preamp\",\"isEnabled\":true,\"gainDB\":-6,\"channels\":[\"L\"]}]}".utf8
@@ -97,9 +97,86 @@ final class M1ConfigurationCodecTests: XCTestCase {
         XCTAssertEqual(first.snapshot.nodes.map(\.kind), [.channels, .preamp])
         XCTAssertEqual(first.snapshot.nodes[1].id, id)
         let text = try XCTUnwrap(String(data: first.data, encoding: .utf8))
-        XCTAssertTrue(text.contains("\"schemaVersion\" : 2"))
+        XCTAssertTrue(text.contains("\"schemaVersion\" : 3"))
         XCTAssertTrue(text.contains("\"type\" : \"channels\""))
         XCTAssertFalse(text.contains("\"channels\" : \"all\""))
+    }
+
+    func testVersionTwoDecodesAndCanonicalizesToVersionThree() throws {
+        let id = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
+        let source = Data(
+            "{\"schemaVersion\":2,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"preamp\",\"isEnabled\":true,\"gainDB\":-2}]}".utf8
+        )
+
+        let decoded = try M1ConfigurationCodec.decode(source)
+        XCTAssertEqual(decoded.snapshot.nodes.map(\.kind), [.preamp])
+        XCTAssertTrue(String(decoding: decoded.data, as: UTF8.self).contains("\"schemaVersion\" : 3"))
+    }
+
+    func testVersionTwoRejectsGraphicEQOwnedByVersionThree() {
+        let id = UUID()
+        let bands = M1GraphicEQContract.flatBands.map {
+            "{\"frequencyHz\":\($0.frequencyHz),\"gainDB\":0}"
+        }.joined(separator: ",")
+        let node = "{\"id\":\"\(id)\",\"type\":\"graphicEQ\",\"isEnabled\":true,\"bands\":[\(bands)]}"
+        let configuration = Data(
+            "{\"schemaVersion\":2,\"effectsEnabled\":true,\"nodes\":[\(node)]}".utf8
+        )
+        let clipboard = Data("{\"schemaVersion\":2,\"nodes\":[\(node)]}".utf8)
+
+        XCTAssertThrowsError(try M1ConfigurationCodec.decode(configuration))
+        XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(clipboard))
+    }
+
+    func testGraphicEQRoundTripPreservesFixedBands() throws {
+        var node = M1ProcessingNode.graphicEQ(id: UUID())
+        node.graphicEQBands[0].gainDB = -24
+        node.graphicEQBands[7].gainDB = 6.4
+        node.graphicEQBands[14].gainDB = 24
+
+        let encoded = try M1ConfigurationCodec.encode(
+            M1ConfigurationSnapshot(effectsEnabled: true, nodes: [node])
+        )
+        let decoded = try M1ConfigurationCodec.decode(encoded.data)
+
+        XCTAssertEqual(decoded.snapshot.nodes, [node])
+        XCTAssertEqual(decoded, encoded)
+    }
+
+    func testGraphicEQRejectsNestedShapeAndBandContractViolations() throws {
+        let id = UUID()
+        let validBands = M1GraphicEQContract.flatBands.map {
+            "{\"frequencyHz\":\($0.frequencyHz),\"gainDB\":\($0.gainDB)}"
+        }.joined(separator: ",")
+        let unknownField = Data(
+            "{\"schemaVersion\":3,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"graphicEQ\",\"isEnabled\":true,\"bands\":[{\"frequencyHz\":25,\"gainDB\":0,\"future\":1}]}]}".utf8
+        )
+        let duplicateField = Data(
+            "{\"schemaVersion\":3,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"graphicEQ\",\"isEnabled\":true,\"bands\":[{\"frequencyHz\":25,\"gainDB\":0,\"gainDB\":1}]}]}".utf8
+        )
+        let wrongCount = Data(
+            "{\"schemaVersion\":3,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"graphicEQ\",\"isEnabled\":true,\"bands\":[]}]}".utf8
+        )
+        let crossKindField = Data(
+            "{\"schemaVersion\":3,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"graphicEQ\",\"isEnabled\":true,\"gainDB\":0,\"bands\":[\(validBands)]}]}".utf8
+        )
+
+        XCTAssertThrowsError(try M1ConfigurationCodec.decode(unknownField))
+        XCTAssertThrowsError(try M1ConfigurationCodec.decode(duplicateField))
+        XCTAssertThrowsError(try M1ConfigurationCodec.decode(wrongCount))
+        XCTAssertThrowsError(try M1ConfigurationCodec.decode(crossKindField))
+
+        var wrongFrequency = M1ProcessingNode.graphicEQ(id: id)
+        wrongFrequency.graphicEQBands[0] = M1GraphicEQBand(frequencyHz: 24, gainDB: 0)
+        XCTAssertThrowsError(try M1ConfigurationCodec.encode(
+            M1ConfigurationSnapshot(effectsEnabled: true, nodes: [wrongFrequency])
+        ))
+
+        var wrongGain = M1ProcessingNode.graphicEQ(id: id)
+        wrongGain.graphicEQBands[0].gainDB = 24.1
+        XCTAssertThrowsError(try M1ConfigurationCodec.encode(
+            M1ConfigurationSnapshot(effectsEnabled: true, nodes: [wrongGain])
+        ))
     }
 
     func testVersionOneMigrationAvoidsDeterministicIDCollisions() throws {

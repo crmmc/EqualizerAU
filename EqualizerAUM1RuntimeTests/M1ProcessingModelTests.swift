@@ -1,6 +1,18 @@
 import XCTest
 
 final class M1ProcessingModelTests: XCTestCase {
+    func testGraphicEQFactoryUsesFixedReferenceBandsAndCopiesPayload() {
+        var node = M1ProcessingNode.graphicEQ(id: UUID())
+        node.graphicEQBands[7].gainDB = 3.5
+        let copy = node.copied(id: UUID())
+
+        XCTAssertEqual(node.graphicEQBands.map(\.frequencyHz), M1GraphicEQContract.centerFrequenciesHz)
+        XCTAssertEqual(copy.kind, .graphicEQ)
+        XCTAssertNotEqual(copy.id, node.id)
+        XCTAssertEqual(copy.graphicEQBands, node.graphicEQBands)
+        XCTAssertEqual(M1GraphicEQContract.gainStepDB, 0.1)
+    }
+
     func testChannelIdentifierCanonicalizesCustomAndNumericValues() {
         XCTAssertEqual(M1ChannelIdentifier(" sub ")?.rawValue, "SUB")
         XCTAssertEqual(M1ChannelIdentifier("001")?.rawValue, "1")

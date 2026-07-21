@@ -39,6 +39,7 @@ final class M1AppModel: ObservableObject {
     let controller: M1ProductController
     private var didBootstrap = false
     private var commandTask: Task<Void, Never>?
+    private var editTask: Task<Void, Never>?
     private var stopTask: Task<Void, Never>?
     private var commandSequence: UInt64 = 0
     private var terminationPending = false
@@ -67,6 +68,10 @@ final class M1AppModel: ObservableObject {
         performEdit { try await self.controller.addChannels(before: id) }
     }
 
+    func addGraphicEQ(before id: UUID?) {
+        performEdit { try await self.controller.addGraphicEQ(before: id) }
+    }
+
     func delete(_ id: UUID) {
         performEdit { try await self.controller.deletePreamp(id: id) }
     }
@@ -81,6 +86,16 @@ final class M1AppModel: ObservableObject {
 
     func setGain(_ gain: Double, id: UUID) {
         performEdit { try await self.controller.setGainDB(id: id, gainDB: gain) }
+    }
+
+    func setGraphicEQGain(_ gain: Double, bandIndex: Int, id: UUID) {
+        performEdit {
+            try await self.controller.setGraphicEQGainDB(
+                id: id,
+                bandIndex: bandIndex,
+                gainDB: gain
+            )
+        }
     }
 
     func setChannels(_ channels: M1ChannelSelection, id: UUID) {
@@ -227,8 +242,10 @@ final class M1AppModel: ObservableObject {
         guard !terminationPending else { return }
         commandSequence &+= 1
         let predecessor = commandTask
+        let precedingEdits = editTask
         let task = Task {
             await predecessor?.value
+            await precedingEdits?.value
             async let operationResult: Void = operation()
             await Task.yield()
             snapshot = await controller.snapshot()
@@ -248,9 +265,9 @@ final class M1AppModel: ObservableObject {
 
     private func performEdit(_ operation: @escaping @MainActor () async throws -> Void) {
         guard !terminationPending else { return }
-        let predecessor = commandTask
+        let predecessor = editTask
         commandSequence &+= 1
-        commandTask = Task {
+        editTask = Task {
             await predecessor?.value
             do {
                 try await operation()
@@ -265,8 +282,10 @@ final class M1AppModel: ObservableObject {
         while true {
             let sequence = commandSequence
             let tail = commandTask
+            let editTail = editTask
             let stopTail = stopTask
             await tail?.value
+            await editTail?.value
             await stopTail?.value
             if sequence == commandSequence { return }
         }
@@ -575,6 +594,7 @@ private struct M1EditorView: View {
                 Menu {
                     Button("Channels") { model.addChannels(before: nil) }
                     Button("Preamp") { model.add(before: nil) }
+                    Button("Graphic EQ") { model.addGraphicEQ(before: nil) }
                 } label: {
                     Label("Add", systemImage: "plus")
                 }
@@ -671,6 +691,12 @@ private struct M1EditorView: View {
             let channels = diagnostics.gainBoundaries.map { $0.channel.rawValue }
             details.append("Gain boundary: \(channels.joined(separator: ", "))")
         }
+        if !diagnostics.unavailableGraphicEQBands.isEmpty {
+            let frequencies = diagnostics.unavailableGraphicEQBands.map {
+                formatFrequency($0.frequencyHz)
+            }
+            details.append("Above Nyquist: \(frequencies.joined(separator: ", "))")
+        }
         return details
     }
 
@@ -680,11 +706,12 @@ private struct M1EditorView: View {
             HStack(spacing: 10) {
                 Image(systemName: "line.3.horizontal")
                     .foregroundStyle(.tertiary)
-                Image(systemName: node.kind == .channels ? "speaker.wave.2" : "dial.medium")
-                Text(node.kind == .channels ? "Channels" : "Preamp")
+                Image(systemName: nodeIcon(node.kind))
+                Text(nodeTitle(node.kind))
                     .fontWeight(.medium)
-                    .frame(width: 76, alignment: .leading)
-                if node.kind == .channels {
+                    .frame(width: 90, alignment: .leading)
+                switch node.kind {
+                case .channels:
                     Text(channelSummary(node.channels))
                         .foregroundStyle(.secondary)
                     if let warning = scopeDiagnosticSummary(node.id) {
@@ -692,7 +719,7 @@ private struct M1EditorView: View {
                             .font(.caption)
                             .foregroundStyle(.orange)
                     }
-                } else {
+                case .preamp:
                     if !node.isEnabled {
                         Text("Disabled")
                             .font(.caption)
@@ -704,6 +731,22 @@ private struct M1EditorView: View {
                     Text(node.gainDB.formatted(.number.precision(.fractionLength(1))))
                         .monospacedDigit()
                     Text("dB").foregroundStyle(.secondary)
+                case .graphicEQ:
+                    if !node.isEnabled {
+                        Text("Disabled")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(channelSummary(effectiveSelections[node.id] ?? .all))
+                        .foregroundStyle(.secondary)
+                    if let warning = graphicEQDiagnosticSummary(node.id) {
+                        Text(warning)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                    Spacer()
+                    Text(graphicEQSummary(node.graphicEQBands))
+                        .monospacedDigit()
                 }
                 Spacer()
                 Button { model.delete(node.id) } label: { Image(systemName: "trash") }
@@ -713,10 +756,13 @@ private struct M1EditorView: View {
 
             if model.snapshot.focusedNodeID == node.id {
                 Divider()
-                if node.kind == .channels {
+                switch node.kind {
+                case .channels:
                     channelEditor(node)
-                } else {
+                case .preamp:
                     preampEditor(node)
+                case .graphicEQ:
+                    graphicEQEditor(node)
                 }
             }
         }
@@ -738,8 +784,38 @@ private struct M1EditorView: View {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
+    private func graphicEQDiagnosticSummary(_ nodeID: UUID) -> String? {
+        let draft = model.snapshot.draft.nodes.first { $0.id == nodeID }.map {
+            $0.graphicEQBands.filter(isGraphicEQBandUnavailable).map {
+                formatFrequency($0.frequencyHz)
+            }
+        }
+        let active = model.snapshot.activeDiagnostics?.unavailableGraphicEQBands
+            .filter { $0.nodeID == nodeID }
+            .map { formatFrequency($0.frequencyHz) }
+        let expected = model.snapshot.expectedDiagnostics?.unavailableGraphicEQBands
+            .filter { $0.nodeID == nodeID }
+            .map { formatFrequency($0.frequencyHz) }
+        var parts: [String] = []
+        if let draft, !draft.isEmpty {
+            parts.append("Draft unavailable: \(draft.joined(separator: ", "))")
+        }
+        if let active, !active.isEmpty {
+            parts.append("Active unavailable: \(active.joined(separator: ", "))")
+        }
+        if let expected, !expected.isEmpty {
+            parts.append("Expected unavailable: \(expected.joined(separator: ", "))")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
     private var effectiveSelections: [UUID: M1ChannelSelection] {
         M1ProcessingScopeResolver.effectiveSelections(nodes: model.snapshot.draft.nodes)
+    }
+
+    private func isGraphicEQBandUnavailable(_ band: M1GraphicEQBand) -> Bool {
+        guard let sampleRate = model.snapshot.outputLayout?.sampleRate else { return false }
+        return band.frequencyHz >= sampleRate / 2
     }
 
     private func preampEditor(_ node: M1ProcessingNode) -> some View {
@@ -772,6 +848,83 @@ private struct M1EditorView: View {
             .monospacedDigit()
             .frame(width: 64)
             Text("dB").foregroundStyle(.secondary)
+        }
+    }
+
+    private func graphicEQEditor(_ node: M1ProcessingNode) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle("Enabled", isOn: Binding(
+                get: { node.isEnabled },
+                set: { model.setEnabled($0, id: node.id) }
+            ))
+
+            ScrollView(.horizontal) {
+                HStack(alignment: .top, spacing: 8) {
+                    ForEach(Array(node.graphicEQBands.enumerated()), id: \.offset) { index, band in
+                        let unavailable = isGraphicEQBandUnavailable(band)
+                        VStack(spacing: 6) {
+                            Text(formatFrequency(band.frequencyHz))
+                                .font(.caption)
+                                .foregroundStyle(unavailable ? .orange : .secondary)
+                                .frame(width: 54)
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                                .opacity(unavailable ? 1 : 0)
+                                .frame(height: 10)
+                                .accessibilityHidden(true)
+                            Slider(
+                                value: Binding(
+                                    get: { band.gainDB },
+                                    set: { model.setGraphicEQGain($0, bandIndex: index, id: node.id) }
+                                ),
+                                in: M1GraphicEQContract.minimumGainDB...M1GraphicEQContract.maximumGainDB,
+                                step: M1GraphicEQContract.gainStepDB,
+                                onEditingChanged: { editing in
+                                    if editing { model.beginGesture(node.id) }
+                                    else { model.endGesture(node.id) }
+                                }
+                            )
+                            .rotationEffect(.degrees(-90))
+                            .frame(width: 112, height: 24)
+                            .frame(width: 32, height: 112)
+                            .accessibilityLabel(
+                                "\(formatFrequency(band.frequencyHz)) gain"
+                                    + (unavailable ? ", unavailable at current sample rate" : "")
+                            )
+                            TextField(
+                                "Gain",
+                                value: Binding(
+                                    get: { band.gainDB },
+                                    set: {
+                                        let bounded = min(
+                                            max($0, M1GraphicEQContract.minimumGainDB),
+                                            M1GraphicEQContract.maximumGainDB
+                                        )
+                                        model.setGraphicEQGain(
+                                            bounded,
+                                            bandIndex: index,
+                                            id: node.id
+                                        )
+                                    }
+                                ),
+                                format: .number.precision(.fractionLength(1))
+                            )
+                            .textFieldStyle(.roundedBorder)
+                            .multilineTextAlignment(.trailing)
+                            .monospacedDigit()
+                            .frame(width: 54)
+                            .accessibilityLabel(
+                                "\(formatFrequency(band.frequencyHz)) gain in decibels"
+                                    + (unavailable ? ", unavailable at current sample rate" : "")
+                            )
+                        }
+                        .frame(width: 58)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .scrollIndicators(.visible)
         }
     }
 
@@ -844,6 +997,38 @@ private struct M1EditorView: View {
         case .all: return "All"
         case let .identifiers(values): return values.map(\.rawValue).joined(separator: ", ")
         }
+    }
+
+    private func nodeIcon(_ kind: M1ProcessingNodeKind) -> String {
+        switch kind {
+        case .channels: return "speaker.wave.2"
+        case .preamp: return "dial.medium"
+        case .graphicEQ: return "slider.vertical.3"
+        }
+    }
+
+    private func nodeTitle(_ kind: M1ProcessingNodeKind) -> String {
+        switch kind {
+        case .channels: return "Channels"
+        case .preamp: return "Preamp"
+        case .graphicEQ: return "Graphic EQ"
+        }
+    }
+
+    private func graphicEQSummary(_ bands: [M1GraphicEQBand]) -> String {
+        let gains = bands.map(\.gainDB)
+        guard let minimum = gains.min(), let maximum = gains.max(), minimum != 0 || maximum != 0 else {
+            return "Flat"
+        }
+        return "\(minimum.formatted(.number.precision(.fractionLength(1))))…\(maximum.formatted(.number.precision(.fractionLength(1)))) dB"
+    }
+
+    private func formatFrequency(_ frequencyHz: Double) -> String {
+        if frequencyHz >= 1_000 {
+            let kilohertz = frequencyHz / 1_000
+            return "\(kilohertz.formatted(.number.precision(.fractionLength(kilohertz == kilohertz.rounded() ? 0 : 1)))) kHz"
+        }
+        return "\(frequencyHz.formatted(.number.precision(.fractionLength(frequencyHz == frequencyHz.rounded() ? 0 : 1)))) Hz"
     }
 
     private func selectedIdentifiers(_ selection: M1ChannelSelection) -> [M1ChannelIdentifier] {

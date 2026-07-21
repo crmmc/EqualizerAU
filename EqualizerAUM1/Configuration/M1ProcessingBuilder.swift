@@ -6,6 +6,12 @@ enum M1ProcessingBuildError: Error, Equatable, Sendable {
     case gainOutOfRange(nodeID: UUID)
     case emptyChannelSelection(nodeID: UUID)
     case duplicateChannelIdentifier(nodeID: UUID, identifier: M1ChannelIdentifier)
+    case invalidGraphicEQBandCount(nodeID: UUID)
+    case invalidGraphicEQFrequency(nodeID: UUID, bandIndex: Int)
+    case nonFiniteGraphicEQGain(nodeID: UUID, bandIndex: Int)
+    case graphicEQGainOutOfRange(nodeID: UUID, bandIndex: Int)
+    case stageCapacityExceeded(channel: M1ChannelIdentifier)
+    case totalStageCapacityExceeded
 }
 
 struct M1UnresolvedChannelDiagnostic: Equatable, Sendable {
@@ -27,14 +33,48 @@ struct M1ProcessingBuildDiagnostics: Equatable, Sendable {
     let unresolvedChannels: [M1UnresolvedChannelDiagnostic]
     let clippingRiskChannels: [M1ChannelIdentifier]
     let gainBoundaries: [M1GainBoundaryDiagnostic]
+    let unavailableGraphicEQBands: [M1UnavailableGraphicEQBandDiagnostic]
+
+    init(
+        unresolvedChannels: [M1UnresolvedChannelDiagnostic],
+        clippingRiskChannels: [M1ChannelIdentifier],
+        gainBoundaries: [M1GainBoundaryDiagnostic],
+        unavailableGraphicEQBands: [M1UnavailableGraphicEQBandDiagnostic] = []
+    ) {
+        self.unresolvedChannels = unresolvedChannels
+        self.clippingRiskChannels = clippingRiskChannels
+        self.gainBoundaries = gainBoundaries
+        self.unavailableGraphicEQBands = unavailableGraphicEQBands
+    }
+}
+
+struct M1UnavailableGraphicEQBandDiagnostic: Equatable, Sendable {
+    let nodeID: UUID
+    let frequencyHz: Double
+}
+
+struct M1BiquadCoefficients: Equatable, Sendable {
+    let b0: Double
+    let b1: Double
+    let b2: Double
+    let a1: Double
+    let a2: Double
+}
+
+enum M1CompiledProcessingStage: Equatable, Sendable {
+    case gain(nodeID: UUID, linearGain: Double)
+    case biquad(nodeID: UUID, bandIndex: Int, coefficients: M1BiquadCoefficients)
 }
 
 struct M1CompiledPreampTargets: Equatable, Sendable {
     let linearGainsByChannel: [Float]
+    let stagesByChannel: [[M1CompiledProcessingStage]]
     let diagnostics: M1ProcessingBuildDiagnostics
 }
 
 enum M1ProcessingBuilder {
+    static let maximumStagesPerChannel = 512
+    static let maximumPreparedStageCount = 4_096
     private static let minimumGainDB = -100.0
     private static let maximumGainDB = 100.0
     private static let maximumFiniteGainDB = 20 * log10(Double(Float.greatestFiniteMagnitude))
@@ -50,7 +90,13 @@ enum M1ProcessingBuilder {
             uniqueKeysWithValues: layout.channels.map { ($0.identifier, $0.linearIndex) }
         )
         var gainsByChannel = Array(repeating: [Double](), count: layout.channels.count)
+        var pendingPreampGainsByChannel = Array(
+            repeating: [(nodeID: UUID, gainDB: Double)](),
+            count: layout.channels.count
+        )
+        var stagesByChannel = Array(repeating: [M1CompiledProcessingStage](), count: layout.channels.count)
         var unresolvedDiagnostics: [M1UnresolvedChannelDiagnostic] = []
+        var unavailableGraphicEQBands: [M1UnavailableGraphicEQBandDiagnostic] = []
         var reportedUnresolvedOwners: Set<UUID> = []
 
         var currentScope: M1ChannelSelection = .all
@@ -93,9 +139,65 @@ enum M1ProcessingBuilder {
                 selectedIndexes = resolvedIndexes
             }
 
-            for index in selectedIndexes {
-                gainsByChannel[index].append(node.gainDB)
+            switch node.kind {
+            case .channels:
+                break
+            case .preamp:
+                for index in selectedIndexes {
+                    gainsByChannel[index].append(node.gainDB)
+                    if node.gainDB != 0 {
+                        pendingPreampGainsByChannel[index].append((node.id, node.gainDB))
+                    }
+                }
+            case .graphicEQ:
+                let availableBands: [M1CompiledProcessingStage] = node.graphicEQBands
+                    .enumerated()
+                    .compactMap { bandIndex, band in
+                    guard band.frequencyHz < layout.sampleRate / 2 else {
+                        unavailableGraphicEQBands.append(
+                            M1UnavailableGraphicEQBandDiagnostic(
+                                nodeID: node.id,
+                                frequencyHz: band.frequencyHz
+                            )
+                        )
+                        return nil
+                    }
+                    guard band.gainDB != 0 else { return nil }
+                    return M1CompiledProcessingStage.biquad(
+                        nodeID: node.id,
+                        bandIndex: bandIndex,
+                        coefficients: graphicEQCoefficients(
+                            frequencyHz: band.frequencyHz,
+                            gainDB: band.gainDB,
+                            sampleRate: layout.sampleRate
+                        )
+                    )
+                    }
+                for index in selectedIndexes where !availableBands.isEmpty {
+                    appendPendingGainStage(
+                        channelIndex: index,
+                        pending: &pendingPreampGainsByChannel,
+                        stages: &stagesByChannel
+                    )
+                    stagesByChannel[index].append(contentsOf: availableBands)
+                }
             }
+        }
+
+        for index in layout.channels.indices {
+            appendPendingGainStage(
+                channelIndex: index,
+                pending: &pendingPreampGainsByChannel,
+                stages: &stagesByChannel
+            )
+        }
+
+        for channel in layout.channels
+        where stagesByChannel[channel.linearIndex].count > maximumStagesPerChannel {
+            throw M1ProcessingBuildError.stageCapacityExceeded(channel: channel.identifier)
+        }
+        guard stagesByChannel.reduce(0, { $0 + $1.count }) <= maximumPreparedStageCount else {
+            throw M1ProcessingBuildError.totalStageCapacityExceeded
         }
 
         var targets: [Float] = []
@@ -153,10 +255,12 @@ enum M1ProcessingBuilder {
 
         return M1CompiledPreampTargets(
             linearGainsByChannel: targets,
+            stagesByChannel: stagesByChannel,
             diagnostics: M1ProcessingBuildDiagnostics(
                 unresolvedChannels: unresolvedDiagnostics,
                 clippingRiskChannels: clippingRiskChannels,
-                gainBoundaries: gainBoundaryDiagnostics
+                gainBoundaries: gainBoundaryDiagnostics,
+                unavailableGraphicEQBands: unavailableGraphicEQBands
             )
         )
     }
@@ -175,6 +279,33 @@ enum M1ProcessingBuilder {
                     throw M1ProcessingBuildError.gainOutOfRange(nodeID: node.id)
                 }
             }
+            if node.kind == .graphicEQ {
+                guard node.graphicEQBands.count == M1GraphicEQContract.centerFrequenciesHz.count else {
+                    throw M1ProcessingBuildError.invalidGraphicEQBandCount(nodeID: node.id)
+                }
+                for (index, band) in node.graphicEQBands.enumerated() {
+                    guard band.frequencyHz == M1GraphicEQContract.centerFrequenciesHz[index] else {
+                        throw M1ProcessingBuildError.invalidGraphicEQFrequency(
+                            nodeID: node.id,
+                            bandIndex: index
+                        )
+                    }
+                    guard band.gainDB.isFinite else {
+                        throw M1ProcessingBuildError.nonFiniteGraphicEQGain(
+                            nodeID: node.id,
+                            bandIndex: index
+                        )
+                    }
+                    guard band.gainDB >= M1GraphicEQContract.minimumGainDB,
+                          band.gainDB <= M1GraphicEQContract.maximumGainDB
+                    else {
+                        throw M1ProcessingBuildError.graphicEQGainOutOfRange(
+                            nodeID: node.id,
+                            bandIndex: index
+                        )
+                    }
+                }
+            }
 
             switch node.channels {
             case .all:
@@ -191,6 +322,57 @@ enum M1ProcessingBuilder {
                     )
                 }
             }
+        }
+    }
+
+    private static func graphicEQCoefficients(
+        frequencyHz: Double,
+        gainDB: Double,
+        sampleRate: Double
+    ) -> M1BiquadCoefficients {
+        let bandwidthRatio = pow(2, M1GraphicEQContract.octaveBandwidth)
+        let q = sqrt(bandwidthRatio) / (bandwidthRatio - 1)
+        let amplitude = pow(10, gainDB / 40)
+        let omega = 2 * Double.pi * frequencyHz / sampleRate
+        let alpha = sin(omega) / (2 * q)
+        let cosine = cos(omega)
+        let a0 = 1 + alpha / amplitude
+        return M1BiquadCoefficients(
+            b0: (1 + alpha * amplitude) / a0,
+            b1: (-2 * cosine) / a0,
+            b2: (1 - alpha * amplitude) / a0,
+            a1: (-2 * cosine) / a0,
+            a2: (1 - alpha / amplitude) / a0
+        )
+    }
+
+    private static func appendPendingGainStage(
+        channelIndex: Int,
+        pending: inout [[(nodeID: UUID, gainDB: Double)]],
+        stages: inout [[M1CompiledProcessingStage]]
+    ) {
+        guard let first = pending[channelIndex].first else { return }
+        let totalGainDB = pending[channelIndex].map { $0.gainDB }.sorted().reduce(0, +)
+        pending[channelIndex].removeAll(keepingCapacity: true)
+        let linearGain: Float
+        if totalGainDB > maximumFiniteGainDB {
+            linearGain = Float.greatestFiniteMagnitude
+        } else if totalGainDB < minimumNormalGainDB {
+            linearGain = 0
+        } else {
+            let converted = Float(pow(10, totalGainDB / 20))
+            if !converted.isFinite {
+                linearGain = Float.greatestFiniteMagnitude
+            } else if converted != 0, !converted.isNormal {
+                linearGain = 0
+            } else {
+                linearGain = converted
+            }
+        }
+        if linearGain != 1 {
+            stages[channelIndex].append(
+                .gain(nodeID: first.nodeID, linearGain: Double(linearGain))
+            )
         }
     }
 }

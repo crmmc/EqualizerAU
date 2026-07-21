@@ -7,7 +7,9 @@
 extern "C" {
 #endif
 
-#define EAUM1_RUNTIME_ABI_VERSION 1u
+#define EAUM1_RUNTIME_ABI_VERSION 2u
+#define EAUM1_MAX_STAGES_PER_CHANNEL 512u
+#define EAUM1_MAX_PREPARED_STAGE_COUNT 4096u
 
 typedef int32_t EAUM1Status;
 
@@ -47,6 +49,29 @@ typedef struct EAUM1RuntimeDescription {
     uint8_t effectsEnabled;
 } EAUM1RuntimeDescription;
 
+typedef uint32_t EAUM1PreparedStageKind;
+
+enum {
+    EAUM1PreparedStageGain = 1,
+    EAUM1PreparedStageBiquad = 2,
+};
+
+typedef struct EAUM1PreparedStage {
+    EAUM1PreparedStageKind kind;
+    uint32_t channelIndex;
+    double b0;
+    double b1;
+    double b2;
+    double a1;
+    double a2;
+} EAUM1PreparedStage;
+
+typedef struct EAUM1PreparedDescription {
+    uint32_t channelCount;
+    uint32_t stageCount;
+    const EAUM1PreparedStage *stages;
+} EAUM1PreparedDescription;
+
 typedef struct EAUM1AudioBuffer {
     float *samples;
     uint32_t channelCount;
@@ -79,6 +104,16 @@ EAUM1Status EAUM1PreparedStateCreate(
     EAUM1PreparedState **preparedOut
 );
 
+/*
+ * Copies a channel-major ordered stage array. Each channel may contain at most
+ * EAUM1_MAX_STAGES_PER_CHANNEL stages. Biquad coefficients use normalized a0=1
+ * transposed direct-form II coefficients generated off the realtime thread.
+ */
+EAUM1Status EAUM1PreparedStateCreateV2(
+    const EAUM1PreparedDescription *description,
+    EAUM1PreparedState **preparedOut
+);
+
 /* Valid only before publication or after runtime retirement returns ownership. */
 void EAUM1PreparedStateDestroy(EAUM1PreparedState *prepared);
 
@@ -94,8 +129,9 @@ EAUM1Status EAUM1RuntimeCreate(
 
 /*
  * Control-thread operations. Calls on the same runtime must be serialized.
- * A successful publish consumes and nulls *candidateInOut. If an older chain
- * is still retired, the latest candidate replaces the prior pending candidate.
+ * A successful publish consumes and nulls *candidateInOut. The old and new
+ * execution slots crossfade for 10 ms. If that transition is still active,
+ * the latest candidate replaces the prior pending candidate.
  */
 EAUM1Status EAUM1RuntimePublishPrepared(
     EAUM1Runtime *runtime,
@@ -104,7 +140,7 @@ EAUM1Status EAUM1RuntimePublishPrepared(
 );
 
 /*
- * Polls one exact retirement ticket. A stale ticket never reclaims memory.
+ * Polls one exact transition ticket. A stale ticket never reclaims memory.
  * Control owns the 1 ms polling cadence, 100 ms deadline and bridge generation.
  */
 EAUM1Status EAUM1RuntimePerformMaintenance(

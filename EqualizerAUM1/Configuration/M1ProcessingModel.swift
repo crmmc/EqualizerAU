@@ -30,6 +30,27 @@ enum M1ChannelSelection: Equatable, Sendable {
 enum M1ProcessingNodeKind: String, Sendable {
     case channels
     case preamp
+    case graphicEQ
+}
+
+struct M1GraphicEQBand: Equatable, Sendable {
+    let frequencyHz: Double
+    var gainDB: Double
+}
+
+enum M1GraphicEQContract {
+    static let minimumGainDB = -24.0
+    static let maximumGainDB = 24.0
+    static let gainStepDB = 0.1
+    static let octaveBandwidth = 2.0 / 3.0
+    static let centerFrequenciesHz: [Double] = [
+        25, 40, 63, 100, 160, 250, 400, 630,
+        1_000, 1_600, 2_500, 4_000, 6_300, 10_000, 16_000,
+    ]
+
+    static var flatBands: [M1GraphicEQBand] {
+        centerFrequenciesHz.map { M1GraphicEQBand(frequencyHz: $0, gainDB: 0) }
+    }
 }
 
 struct M1ProcessingNode: Identifiable, Equatable, Sendable {
@@ -38,6 +59,7 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
     var isEnabled: Bool
     var gainDB: Double
     var channels: M1ChannelSelection
+    var graphicEQBands: [M1GraphicEQBand]
 
     init(
         id: UUID,
@@ -50,6 +72,7 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
         self.isEnabled = isEnabled
         self.gainDB = gainDB
         self.channels = channels
+        graphicEQBands = []
     }
 
     static func channels(id: UUID = UUID(), selection: M1ChannelSelection) -> Self {
@@ -58,7 +81,23 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
             kind: .channels,
             isEnabled: true,
             gainDB: 0,
-            channels: selection
+            channels: selection,
+            graphicEQBands: []
+        )
+    }
+
+    static func graphicEQ(
+        id: UUID = UUID(),
+        isEnabled: Bool = true,
+        bands: [M1GraphicEQBand] = M1GraphicEQContract.flatBands
+    ) -> Self {
+        Self(
+            id: id,
+            kind: .graphicEQ,
+            isEnabled: isEnabled,
+            gainDB: 0,
+            channels: .all,
+            graphicEQBands: bands
         )
     }
 
@@ -67,13 +106,15 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
         kind: M1ProcessingNodeKind,
         isEnabled: Bool,
         gainDB: Double,
-        channels: M1ChannelSelection
+        channels: M1ChannelSelection,
+        graphicEQBands: [M1GraphicEQBand]
     ) {
         self.id = id
         self.kind = kind
         self.isEnabled = isEnabled
         self.gainDB = gainDB
         self.channels = channels
+        self.graphicEQBands = graphicEQBands
     }
 
     func copied(id: UUID) -> Self {
@@ -87,6 +128,8 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
                 gainDB: gainDB,
                 channels: channels
             )
+        case .graphicEQ:
+            return .graphicEQ(id: id, isEnabled: isEnabled, bands: graphicEQBands)
         }
     }
 }

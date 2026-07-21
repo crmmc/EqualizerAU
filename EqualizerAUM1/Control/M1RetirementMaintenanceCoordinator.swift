@@ -60,6 +60,8 @@ actor M1RetirementMaintenanceCoordinator {
     private var stopTask: Task<Void, Never>?
     private var stopJoinerCount = 0
     private var activeBridgeGeneration: UInt64?
+    private var activeTicket: UInt64?
+    private var pendingTicket: UInt64?
     private var runIdentifier: UInt64 = 0
     private var isStopping = false
 
@@ -73,27 +75,28 @@ actor M1RetirementMaintenanceCoordinator {
 
     @discardableResult
     func start(ticket: UInt64, bridgeGeneration: UInt64) -> Bool {
-        guard maintenanceTask == nil, !isStopping else {
+        guard !isStopping else {
+            return false
+        }
+        if maintenanceTask != nil {
+            guard activeBridgeGeneration == bridgeGeneration else { return false }
+            if ticket != activeTicket {
+                pendingTicket = ticket
+            }
             return false
         }
 
         runIdentifier &+= 1
         let identifier = runIdentifier
         activeBridgeGeneration = bridgeGeneration
-        maintenanceTask = Task { [access, timing] in
-            let stopReason = await Self.runMaintenanceLoop(
+        activeTicket = ticket
+        pendingTicket = nil
+        maintenanceTask = Task {
+            await self.runMaintenanceLoop(
                 initialTicket: ticket,
                 bridgeGeneration: bridgeGeneration,
-                access: access,
-                timing: timing
+                identifier: identifier
             )
-            guard await self.finishRun(identifier: identifier) else { return }
-            if let stopReason {
-                await access.requestRecoverableStop(
-                    reason: stopReason,
-                    bridgeGeneration: bridgeGeneration
-                )
-            }
         }
         return true
     }
@@ -140,6 +143,8 @@ actor M1RetirementMaintenanceCoordinator {
         maintenanceTask = nil
         stopTask = nil
         activeBridgeGeneration = nil
+        activeTicket = nil
+        pendingTicket = nil
         isStopping = false
         return true
     }
@@ -153,15 +158,16 @@ actor M1RetirementMaintenanceCoordinator {
             return false
         }
         maintenanceTask = nil
+        activeTicket = nil
+        pendingTicket = nil
         return true
     }
 
-    private static func runMaintenanceLoop(
+    private func runMaintenanceLoop(
         initialTicket: UInt64,
         bridgeGeneration: UInt64,
-        access: any M1RetirementMaintenanceAccess,
-        timing: M1RetirementMaintenanceTiming
-    ) async -> M1RetirementStopReason? {
+        identifier: UInt64
+    ) async {
         var ticket = initialTicket
         var ticketStartedAt = await timing.nowNanoseconds()
 
@@ -169,10 +175,12 @@ actor M1RetirementMaintenanceCoordinator {
             do {
                 try await timing.sleep(timing.pollInterval)
             } catch {
-                return nil
+                _ = finishRun(identifier: identifier)
+                return
             }
             guard !Task.isCancelled else {
-                return nil
+                _ = finishRun(identifier: identifier)
+                return
             }
 
             let step = await access.performMaintenance(
@@ -180,34 +188,69 @@ actor M1RetirementMaintenanceCoordinator {
                 bridgeGeneration: bridgeGeneration
             )
             guard !Task.isCancelled else {
-                return nil
+                _ = finishRun(identifier: identifier)
+                return
             }
             switch step {
             case .waiting:
                 let now = await timing.nowNanoseconds()
                 guard !Task.isCancelled else {
-                    return nil
+                    _ = finishRun(identifier: identifier)
+                    return
                 }
                 let elapsed = now >= ticketStartedAt
                     ? now - ticketStartedAt
                     : UInt64.max
                 if elapsed >= timing.ticketDeadline {
-                    return .ticketTimedOut(ticket: ticket)
+                    let reason = M1RetirementStopReason.ticketTimedOut(
+                        ticket: ticket
+                    )
+                    guard finishRun(identifier: identifier) else { return }
+                    await access.requestRecoverableStop(
+                        reason: reason,
+                        bridgeGeneration: bridgeGeneration
+                    )
+                    return
                 }
 
-            case .completed, .bridgeGenerationChanged:
-                return nil
+            case .completed:
+                if let nextTicket = pendingTicket, nextTicket != ticket {
+                    pendingTicket = nil
+                    activeTicket = nextTicket
+                    ticket = nextTicket
+                    ticketStartedAt = await timing.nowNanoseconds()
+                } else {
+                    _ = finishRun(identifier: identifier)
+                    return
+                }
+
+            case .bridgeGenerationChanged:
+                _ = finishRun(identifier: identifier)
+                return
 
             case let .maintenanceRequired(newTicket):
                 if newTicket != ticket {
                     ticket = newTicket
+                    activeTicket = newTicket
+                    if pendingTicket == newTicket {
+                        pendingTicket = nil
+                    }
                     ticketStartedAt = await timing.nowNanoseconds()
                 }
 
             case let .failed(status):
-                return .maintenanceFailed(ticket: ticket, status: status)
+                let reason = M1RetirementStopReason.maintenanceFailed(
+                    ticket: ticket,
+                    status: status
+                )
+                guard finishRun(identifier: identifier) else { return }
+                await access.requestRecoverableStop(
+                    reason: reason,
+                    bridgeGeneration: bridgeGeneration
+                )
+                return
             }
         }
-        return nil
+        _ = finishRun(identifier: identifier)
     }
 }

@@ -282,6 +282,12 @@ actor M1ProductController {
         }
     }
 
+    func addGraphicEQ(before id: UUID? = nil, nodeID: UUID = UUID()) async throws {
+        try await updateEditingSession { session, effectsEnabled in
+            try session.addGraphicEQ(before: id, nodeID: nodeID, effectsEnabled: effectsEnabled)
+        }
+    }
+
     func deletePreamp(id: UUID) async throws {
         try await updateEditingSession { session, effectsEnabled in
             try session.deleteNode(id: id, effectsEnabled: effectsEnabled)
@@ -322,6 +328,17 @@ actor M1ProductController {
     func setGainDB(id: UUID, gainDB: Double) async throws {
         try await updateEditingSession { session, effectsEnabled in
             try session.setGainDB(id: id, gainDB: gainDB, effectsEnabled: effectsEnabled)
+        }
+    }
+
+    func setGraphicEQGainDB(id: UUID, bandIndex: Int, gainDB: Double) async throws {
+        try await updateEditingSession { session, effectsEnabled in
+            try session.setGraphicEQGainDB(
+                id: id,
+                bandIndex: bandIndex,
+                gainDB: gainDB,
+                effectsEnabled: effectsEnabled
+            )
         }
     }
 
@@ -906,6 +923,9 @@ actor M1ProductController {
                 self.completePendingApplication(pending, promoted: promoted)
             }
         } catch {
+            persistence = draft == saved ? .savedPendingStart : .modified
+            expectedDiagnostics = application.preparation.compiled?.diagnostics
+            expectedConfigurationGeneration = application.generation
             visibleError = String(describing: error)
             throw error
         }

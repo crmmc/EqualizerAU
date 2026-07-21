@@ -1,5 +1,6 @@
 #include "EAUM1Runtime.h"
 
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstddef>
@@ -13,13 +14,39 @@ namespace {
 
 std::atomic<uint64_t> preparedLiveCount{0};
 
+struct RuntimeStage {
+    EAUM1PreparedStage definition{};
+    double state1 = 0.0;
+    double state2 = 0.0;
+};
+
+struct ExecutionSlot {
+    std::vector<RuntimeStage> stages;
+    std::vector<uint32_t> channelOffsets;
+    uint32_t stageCount = 0;
+
+    explicit ExecutionSlot(uint32_t channelCount)
+        : stages(EAUM1_MAX_PREPARED_STAGE_COUNT),
+          channelOffsets(static_cast<size_t>(channelCount) + 1) {}
+};
+
 }  // namespace
 
 struct EAUM1PreparedState {
-    std::vector<float> linearGainsByChannel;
+    uint32_t channelCount;
+    uint64_t publicationGeneration;
+    std::vector<EAUM1PreparedStage> stages;
+    std::vector<uint32_t> channelOffsets;
 
-    explicit EAUM1PreparedState(std::vector<float> gains)
-        : linearGainsByChannel(std::move(gains)) {
+    EAUM1PreparedState(
+        uint32_t channels,
+        std::vector<EAUM1PreparedStage> preparedStages,
+        std::vector<uint32_t> offsets
+    )
+        : channelCount(channels),
+          publicationGeneration(0),
+          stages(std::move(preparedStages)),
+          channelOffsets(std::move(offsets)) {
         preparedLiveCount.fetch_add(1, std::memory_order_relaxed);
     }
 
@@ -34,14 +61,23 @@ struct EAUM1Runtime {
     EAUM1PreparedState *retiredPrepared;
     EAUM1PreparedState *pendingPrepared;
     uint64_t retirementTicket;
+    uint64_t nextPublicationGeneration;
+    std::atomic<uint64_t> requestedPublicationGeneration;
+    std::atomic<uint64_t> completedPublicationGeneration;
+    std::atomic<uint32_t> requestedSlotIndex;
+    uint64_t callbackPublicationGeneration;
     double sampleRate;
     uint32_t maximumFrameCount;
     uint32_t rampFrameCount;
     std::vector<uint32_t> channelCounts;
-    std::vector<double> transitionStartGains;
-    std::vector<double> transitionTargetGains;
-    std::vector<double> currentGains;
+    std::array<ExecutionSlot, 2> slots;
+    std::atomic<uint32_t> activeSlotIndex;
+    uint32_t transitionTargetSlotIndex;
     uint32_t transitionFrameIndex;
+    double effectsTransitionStart;
+    double effectsTransitionTarget;
+    double currentEffectsMix;
+    uint32_t effectsTransitionFrameIndex;
     std::atomic<bool> effectsEnabled;
     std::atomic<uint64_t> nonFiniteInputSampleCount;
     std::atomic<uint64_t> saturatedOutputSampleCount;
@@ -50,6 +86,7 @@ struct EAUM1Runtime {
 
     EAUM1Runtime(
         const EAUM1RuntimeDescription &description,
+        uint32_t totalChannelCount,
         uint32_t computedRampFrameCount,
         EAUM1PreparedState *prepared
     )
@@ -58,29 +95,28 @@ struct EAUM1Runtime {
           retiredPrepared(nullptr),
           pendingPrepared(nullptr),
           retirementTicket(0),
+          nextPublicationGeneration(0),
+          requestedPublicationGeneration(0),
+          completedPublicationGeneration(0),
+          requestedSlotIndex(0),
+          callbackPublicationGeneration(0),
           sampleRate(description.sampleRate),
           maximumFrameCount(description.maximumFrameCount),
           rampFrameCount(computedRampFrameCount),
           channelCounts(description.channelCounts, description.channelCounts + description.bufferCount),
-          transitionStartGains(prepared->linearGainsByChannel.size()),
-          transitionTargetGains(prepared->linearGainsByChannel.size()),
-          currentGains(prepared->linearGainsByChannel.size()),
+          slots{ExecutionSlot(totalChannelCount), ExecutionSlot(totalChannelCount)},
+          activeSlotIndex(0),
+          transitionTargetSlotIndex(0),
           transitionFrameIndex(computedRampFrameCount),
+          effectsTransitionStart(description.effectsEnabled != 0 ? 1.0 : 0.0),
+          effectsTransitionTarget(description.effectsEnabled != 0 ? 1.0 : 0.0),
+          currentEffectsMix(description.effectsEnabled != 0 ? 1.0 : 0.0),
+          effectsTransitionFrameIndex(computedRampFrameCount),
           effectsEnabled(description.effectsEnabled != 0),
           nonFiniteInputSampleCount(0),
           saturatedOutputSampleCount(0),
           invalidProcessCallCount(0),
-          overlappingCallbackCount(0) {
-        const bool initiallyEnabled = description.effectsEnabled != 0;
-        for (size_t index = 0; index < currentGains.size(); ++index) {
-            const double target = initiallyEnabled
-                ? static_cast<double>(prepared->linearGainsByChannel[index])
-                : 1.0;
-            transitionStartGains[index] = target;
-            transitionTargetGains[index] = target;
-            currentGains[index] = target;
-        }
-    }
+          overlappingCallbackCount(0) {}
 
     ~EAUM1Runtime() {
         delete activePrepared.load(std::memory_order_relaxed);
@@ -95,18 +131,50 @@ bool isValidTarget(float target) {
     return target == 0.0f || (target > 0.0f && std::isfinite(target) && std::isnormal(target));
 }
 
-float normalizedFloatGain(double gain) {
-    if (gain == 0.0) {
-        return 0.0f;
+bool isZeroOrNormal(double value) {
+    return value == 0.0 || (std::isfinite(value) && std::isnormal(value));
+}
+
+bool isStableBiquad(const EAUM1PreparedStage &stage) {
+    return isZeroOrNormal(stage.b0)
+        && isZeroOrNormal(stage.b1)
+        && isZeroOrNormal(stage.b2)
+        && isZeroOrNormal(stage.a1)
+        && isZeroOrNormal(stage.a2)
+        && std::abs(stage.a2) < 1.0
+        && 1.0 + stage.a1 + stage.a2 > 0.0
+        && 1.0 - stage.a1 + stage.a2 > 0.0;
+}
+
+bool validateStage(const EAUM1PreparedStage &stage) {
+    switch (stage.kind) {
+    case EAUM1PreparedStageGain:
+        return (stage.b0 == 0.0 || (stage.b0 > 0.0 && std::isnormal(stage.b0)))
+            && stage.b1 == 0.0
+            && stage.b2 == 0.0
+            && stage.a1 == 0.0
+            && stage.a2 == 0.0;
+    case EAUM1PreparedStageBiquad:
+        return isStableBiquad(stage);
+    default:
+        return false;
     }
-    if (std::abs(gain) < static_cast<double>(std::numeric_limits<float>::min())) {
-        return 0.0f;
+}
+
+std::vector<uint32_t> makeChannelOffsets(
+    const std::vector<EAUM1PreparedStage> &stages,
+    uint32_t channelCount
+) {
+    std::vector<uint32_t> offsets(static_cast<size_t>(channelCount) + 1);
+    uint32_t stageIndex = 0;
+    for (uint32_t channel = 0; channel < channelCount; ++channel) {
+        offsets[channel] = stageIndex;
+        while (stageIndex < stages.size() && stages[stageIndex].channelIndex == channel) {
+            ++stageIndex;
+        }
     }
-    const float converted = static_cast<float>(gain);
-    if (converted != 0.0f && !std::isnormal(converted)) {
-        return 0.0f;
-    }
-    return converted;
+    offsets[channelCount] = stageIndex;
+    return offsets;
 }
 
 bool allRequiredAtomicsAreLockFree() {
@@ -114,83 +182,189 @@ bool allRequiredAtomicsAreLockFree() {
     std::atomic<uint64_t> callbackState;
     std::atomic<bool> effectsEnabled;
     std::atomic<uint64_t> diagnosticCounter;
+    std::atomic<uint32_t> slotIndex;
     return preparedPointer.is_lock_free()
         && callbackState.is_lock_free()
         && effectsEnabled.is_lock_free()
-        && diagnosticCounter.is_lock_free();
+        && diagnosticCounter.is_lock_free()
+        && slotIndex.is_lock_free();
 }
 
-bool beginTargetTransitionIfNeeded(
-    EAUM1Runtime *runtime,
+void copyPreparedToSlot(
     const EAUM1PreparedState *prepared,
-    bool effectsEnabled
+    ExecutionSlot *slot
 ) {
-    bool changed = false;
-    for (size_t index = 0; index < runtime->transitionTargetGains.size(); ++index) {
-        const double target = effectsEnabled
-            ? static_cast<double>(prepared->linearGainsByChannel[index])
-            : 1.0;
-        if (runtime->transitionTargetGains[index] != target) {
-            changed = true;
-            break;
-        }
+    slot->stageCount = static_cast<uint32_t>(prepared->stages.size());
+    for (uint32_t index = 0; index < slot->stageCount; ++index) {
+        slot->stages[index].definition = prepared->stages[index];
+        slot->stages[index].state1 = 0.0;
+        slot->stages[index].state2 = 0.0;
     }
-    if (!changed) {
+    for (uint32_t index = 0; index <= prepared->channelCount; ++index) {
+        slot->channelOffsets[index] = prepared->channelOffsets[index];
+    }
+}
+
+bool executionPlanMatches(
+    const EAUM1PreparedState *prepared,
+    const ExecutionSlot &slot
+) {
+    if (prepared->stages.size() != slot.stageCount) {
         return false;
     }
-
-    runtime->transitionFrameIndex = 0;
-    for (size_t index = 0; index < runtime->currentGains.size(); ++index) {
-        runtime->transitionStartGains[index] = runtime->currentGains[index];
-        runtime->transitionTargetGains[index] = effectsEnabled
-            ? static_cast<double>(prepared->linearGainsByChannel[index])
-            : 1.0;
+    for (uint32_t index = 0; index < slot.stageCount; ++index) {
+        const EAUM1PreparedStage &left = prepared->stages[index];
+        const EAUM1PreparedStage &right = slot.stages[index].definition;
+        if (left.kind != right.kind
+            || left.channelIndex != right.channelIndex
+            || left.b0 != right.b0
+            || left.b1 != right.b1
+            || left.b2 != right.b2
+            || left.a1 != right.a1
+            || left.a2 != right.a2) {
+            return false;
+        }
     }
     return true;
 }
 
-void advanceTransition(EAUM1Runtime *runtime) {
-    if (runtime->transitionFrameIndex >= runtime->rampFrameCount) {
+void beginChainTransitionIfNeeded(EAUM1Runtime *runtime) {
+    const uint64_t requested = runtime->requestedPublicationGeneration.load(
+        std::memory_order_acquire
+    );
+    if (requested == runtime->callbackPublicationGeneration) {
         return;
     }
 
-    const uint32_t frame = runtime->transitionFrameIndex + 1;
-    for (size_t index = 0; index < runtime->currentGains.size(); ++index) {
-        double gain;
-        if (frame == runtime->rampFrameCount) {
-            gain = runtime->transitionTargetGains[index];
-        } else {
-            const double start = runtime->transitionStartGains[index];
-            gain = start
-                + (runtime->transitionTargetGains[index] - start)
-                    * static_cast<double>(frame)
-                    / static_cast<double>(runtime->rampFrameCount);
-        }
-        runtime->currentGains[index] = static_cast<double>(normalizedFloatGain(gain));
-    }
-    runtime->transitionFrameIndex = frame;
+    runtime->transitionTargetSlotIndex = runtime->requestedSlotIndex.load(
+        std::memory_order_relaxed
+    );
+    runtime->transitionFrameIndex = 0;
+    runtime->callbackPublicationGeneration = requested;
 }
 
-float processSample(EAUM1Runtime *runtime, float input, float gain) {
-    if (!std::isfinite(input)) {
-        runtime->nonFiniteInputSampleCount.fetch_add(1, std::memory_order_relaxed);
-        return 0.0f;
+void beginEffectsTransitionIfNeeded(EAUM1Runtime *runtime, bool enabled) {
+    const double target = enabled ? 1.0 : 0.0;
+    if (runtime->effectsTransitionTarget == target) {
+        return;
     }
-    if (gain == 1.0f) {
+    runtime->effectsTransitionStart = runtime->currentEffectsMix;
+    runtime->effectsTransitionTarget = target;
+    runtime->effectsTransitionFrameIndex = 0;
+}
+
+void advanceEffectsTransition(EAUM1Runtime *runtime) {
+    if (runtime->effectsTransitionFrameIndex >= runtime->rampFrameCount) {
+        return;
+    }
+    const uint32_t frame = runtime->effectsTransitionFrameIndex + 1;
+    if (frame == runtime->rampFrameCount) {
+        runtime->currentEffectsMix = runtime->effectsTransitionTarget;
+    } else {
+        runtime->currentEffectsMix = runtime->effectsTransitionStart
+            + (runtime->effectsTransitionTarget - runtime->effectsTransitionStart)
+                * static_cast<double>(frame)
+                / static_cast<double>(runtime->rampFrameCount);
+    }
+    runtime->effectsTransitionFrameIndex = frame;
+}
+
+float sanitizeInput(EAUM1Runtime *runtime, float input) {
+    if (std::isfinite(input)) {
         return input;
     }
+    runtime->nonFiniteInputSampleCount.fetch_add(1, std::memory_order_relaxed);
+    return 0.0f;
+}
 
-    const double product = static_cast<double>(input) * static_cast<double>(gain);
+double boundedDSPValue(EAUM1Runtime *runtime, double value) {
     const double maximum = static_cast<double>(std::numeric_limits<float>::max());
-    if (product > maximum) {
-        runtime->saturatedOutputSampleCount.fetch_add(1, std::memory_order_relaxed);
-        return std::numeric_limits<float>::max();
+    if (std::isfinite(value) && value <= maximum && value >= -maximum) {
+        return value;
     }
-    if (product < -maximum) {
-        runtime->saturatedOutputSampleCount.fetch_add(1, std::memory_order_relaxed);
-        return -std::numeric_limits<float>::max();
+    runtime->saturatedOutputSampleCount.fetch_add(1, std::memory_order_relaxed);
+    if (std::isnan(value)) {
+        return 0.0;
     }
-    return static_cast<float>(product);
+    return value < 0.0 ? -maximum : maximum;
+}
+
+float normalizedFloatSample(double value) {
+    const float converted = static_cast<float>(value);
+    if (converted != 0.0f && !std::isnormal(converted)) {
+        return 0.0f;
+    }
+    return converted;
+}
+
+float processChainSample(
+    EAUM1Runtime *runtime,
+    ExecutionSlot *slot,
+    uint32_t channelIndex,
+    float input
+) {
+    double value = static_cast<double>(input);
+    bool processed = false;
+    const uint32_t start = slot->channelOffsets[channelIndex];
+    const uint32_t end = slot->channelOffsets[channelIndex + 1];
+    for (uint32_t index = start; index < end; ++index) {
+        RuntimeStage &stage = slot->stages[index];
+        const EAUM1PreparedStage &definition = stage.definition;
+        if (definition.kind == EAUM1PreparedStageGain) {
+            if (definition.b0 == 1.0) {
+                continue;
+            }
+            processed = true;
+            value = boundedDSPValue(runtime, value * definition.b0);
+            continue;
+        }
+
+        processed = true;
+        const double output = boundedDSPValue(runtime, definition.b0 * value + stage.state1);
+        const double nextState1 = boundedDSPValue(
+            runtime,
+            definition.b1 * value - definition.a1 * output + stage.state2
+        );
+        const double nextState2 = boundedDSPValue(
+            runtime,
+            definition.b2 * value - definition.a2 * output
+        );
+        stage.state1 = nextState1 != 0.0 && !std::isnormal(nextState1) ? 0.0 : nextState1;
+        stage.state2 = nextState2 != 0.0 && !std::isnormal(nextState2) ? 0.0 : nextState2;
+        value = output;
+    }
+    return processed ? normalizedFloatSample(value) : input;
+}
+
+float mixSamples(EAUM1Runtime *runtime, float start, float target, double amount) {
+    if (amount <= 0.0) {
+        return start;
+    }
+    if (amount >= 1.0) {
+        return target;
+    }
+    return normalizedFloatSample(boundedDSPValue(
+        runtime,
+        static_cast<double>(start)
+            + (static_cast<double>(target) - static_cast<double>(start)) * amount
+    ));
+}
+
+void completeChainTransitionFrame(EAUM1Runtime *runtime) {
+    if (runtime->transitionFrameIndex >= runtime->rampFrameCount) {
+        return;
+    }
+    ++runtime->transitionFrameIndex;
+    if (runtime->transitionFrameIndex == runtime->rampFrameCount) {
+        runtime->activeSlotIndex.store(
+            runtime->transitionTargetSlotIndex,
+            std::memory_order_release
+        );
+        runtime->completedPublicationGeneration.store(
+            runtime->callbackPublicationGeneration,
+            std::memory_order_release
+        );
+    }
 }
 
 EAUM1Status validateProcessCall(
@@ -244,28 +418,41 @@ void clearPublicationOutcome(EAUM1PublicationOutcome *outcome) {
     outcome->reserved = 0;
 }
 
-void publishCandidate(
+EAUM1Status publishCandidate(
     EAUM1Runtime *runtime,
     EAUM1PreparedState *candidate,
     EAUM1PublicationOutcome *outcome
 ) {
-    EAUM1PreparedState *old = runtime->activePrepared.exchange(
-        candidate,
-        std::memory_order_seq_cst
-    );
-    outcome->flags |= EAUM1PublicationCandidatePublished;
-
-    const uint64_t observed = runtime->callbackState.load(std::memory_order_seq_cst);
-    if ((observed & 1u) == 0) {
+    if (runtime->nextPublicationGeneration == std::numeric_limits<uint64_t>::max()) {
+        return EAUM1StatusCapacityExceeded;
+    }
+    const uint64_t generation = ++runtime->nextPublicationGeneration;
+    candidate->publicationGeneration = generation;
+    const uint32_t activeSlot = runtime->activeSlotIndex.load(std::memory_order_acquire);
+    if (executionPlanMatches(candidate, runtime->slots[activeSlot])) {
+        EAUM1PreparedState *old = runtime->activePrepared.exchange(
+            candidate,
+            std::memory_order_release
+        );
         delete old;
-        outcome->flags |= EAUM1PublicationRetiredReclaimed;
-        return;
+        outcome->flags |= EAUM1PublicationCandidatePublished;
+        return EAUM1StatusOK;
     }
 
+    const uint32_t targetSlot = 1u - activeSlot;
+    copyPreparedToSlot(candidate, &runtime->slots[targetSlot]);
+    EAUM1PreparedState *old = runtime->activePrepared.exchange(
+        candidate,
+        std::memory_order_release
+    );
     runtime->retiredPrepared = old;
-    runtime->retirementTicket = observed;
-    outcome->retirementTicket = observed;
-    outcome->flags |= EAUM1PublicationMaintenanceRequired;
+    runtime->retirementTicket = generation;
+    runtime->requestedSlotIndex.store(targetSlot, std::memory_order_relaxed);
+    runtime->requestedPublicationGeneration.store(generation, std::memory_order_release);
+    outcome->retirementTicket = generation;
+    outcome->flags |= EAUM1PublicationCandidatePublished
+        | EAUM1PublicationMaintenanceRequired;
+    return EAUM1StatusOK;
 }
 
 }  // namespace
@@ -301,15 +488,87 @@ EAUM1Status EAUM1PreparedStateCreate(
     if (linearGainsByChannel == nullptr || channelCount == 0) {
         return EAUM1StatusInvalidArgument;
     }
-    for (uint32_t index = 0; index < channelCount; ++index) {
-        if (!isValidTarget(linearGainsByChannel[index])) {
+    if (channelCount > EAUM1_MAX_PREPARED_STAGE_COUNT) {
+        return EAUM1StatusCapacityExceeded;
+    }
+
+    std::vector<EAUM1PreparedStage> stages;
+    try {
+        stages.reserve(channelCount);
+        for (uint32_t index = 0; index < channelCount; ++index) {
+            if (!isValidTarget(linearGainsByChannel[index])) {
+                return EAUM1StatusInvalidArgument;
+            }
+            stages.push_back(EAUM1PreparedStage{
+                .kind = EAUM1PreparedStageGain,
+                .channelIndex = index,
+                .b0 = static_cast<double>(linearGainsByChannel[index]),
+                .b1 = 0.0,
+                .b2 = 0.0,
+                .a1 = 0.0,
+                .a2 = 0.0,
+            });
+        }
+        std::vector<uint32_t> offsets = makeChannelOffsets(stages, channelCount);
+        EAUM1PreparedState *prepared = new EAUM1PreparedState(
+            channelCount,
+            std::move(stages),
+            std::move(offsets)
+        );
+        *preparedOut = prepared;
+        return EAUM1StatusOK;
+    } catch (const std::bad_alloc &) {
+        return EAUM1StatusOutOfMemory;
+    } catch (...) {
+        return EAUM1StatusInvalidArgument;
+    }
+}
+
+EAUM1Status EAUM1PreparedStateCreateV2(
+    const EAUM1PreparedDescription *description,
+    EAUM1PreparedState **preparedOut
+) {
+    if (preparedOut == nullptr) {
+        return EAUM1StatusInvalidArgument;
+    }
+    *preparedOut = nullptr;
+    if (description == nullptr
+        || description->channelCount == 0
+        || description->stageCount > EAUM1_MAX_PREPARED_STAGE_COUNT
+        || (description->stageCount != 0 && description->stages == nullptr)) {
+        return EAUM1StatusInvalidArgument;
+    }
+
+    uint32_t previousChannel = 0;
+    uint32_t stagesForChannel = 0;
+    for (uint32_t index = 0; index < description->stageCount; ++index) {
+        const EAUM1PreparedStage &stage = description->stages[index];
+        if (stage.channelIndex >= description->channelCount
+            || (index != 0 && stage.channelIndex < previousChannel)
+            || !validateStage(stage)) {
             return EAUM1StatusInvalidArgument;
         }
+        if (index == 0 || stage.channelIndex != previousChannel) {
+            stagesForChannel = 1;
+        } else {
+            ++stagesForChannel;
+        }
+        if (stagesForChannel > EAUM1_MAX_STAGES_PER_CHANNEL) {
+            return EAUM1StatusCapacityExceeded;
+        }
+        previousChannel = stage.channelIndex;
     }
 
     try {
+        std::vector<EAUM1PreparedStage> stages;
+        if (description->stageCount != 0) {
+            stages.assign(description->stages, description->stages + description->stageCount);
+        }
+        std::vector<uint32_t> offsets = makeChannelOffsets(stages, description->channelCount);
         EAUM1PreparedState *prepared = new EAUM1PreparedState(
-            std::vector<float>(linearGainsByChannel, linearGainsByChannel + channelCount)
+            description->channelCount,
+            std::move(stages),
+            std::move(offsets)
         );
         *preparedOut = prepared;
         return EAUM1StatusOK;
@@ -358,7 +617,7 @@ EAUM1Status EAUM1RuntimeCreate(
             return EAUM1StatusInvalidArgument;
         }
     }
-    if (totalChannelCount != (*initialPreparedInOut)->linearGainsByChannel.size()) {
+    if (totalChannelCount != (*initialPreparedInOut)->channelCount) {
         return EAUM1StatusTopologyMismatch;
     }
 
@@ -372,9 +631,11 @@ EAUM1Status EAUM1RuntimeCreate(
     try {
         EAUM1Runtime *runtime = new EAUM1Runtime(
             *description,
+            static_cast<uint32_t>(totalChannelCount),
             static_cast<uint32_t>(rampFrames),
             *initialPreparedInOut
         );
+        copyPreparedToSlot(*initialPreparedInOut, &runtime->slots[0]);
         *initialPreparedInOut = nullptr;
         *runtimeOut = runtime;
         return EAUM1StatusOK;
@@ -396,8 +657,8 @@ EAUM1Status EAUM1RuntimePublishPrepared(
         || outcomeOut == nullptr) {
         return EAUM1StatusInvalidArgument;
     }
-    if ((*candidateInOut)->linearGainsByChannel.size()
-        != runtime->currentGains.size()) {
+    if ((*candidateInOut)->channelCount
+        != runtime->activePrepared.load(std::memory_order_acquire)->channelCount) {
         return EAUM1StatusTopologyMismatch;
     }
 
@@ -413,9 +674,11 @@ EAUM1Status EAUM1RuntimePublishPrepared(
         return EAUM1StatusOK;
     }
 
-    publishCandidate(runtime, candidate, outcomeOut);
-    *candidateInOut = nullptr;
-    return EAUM1StatusOK;
+    const EAUM1Status status = publishCandidate(runtime, candidate, outcomeOut);
+    if (status == EAUM1StatusOK) {
+        *candidateInOut = nullptr;
+    }
+    return status;
 }
 
 EAUM1Status EAUM1RuntimePerformMaintenance(
@@ -432,8 +695,10 @@ EAUM1Status EAUM1RuntimePerformMaintenance(
         return EAUM1StatusStaleRetirementTicket;
     }
 
-    const uint64_t observed = runtime->callbackState.load(std::memory_order_seq_cst);
-    if (observed == retirementTicket) {
+    const uint64_t completed = runtime->completedPublicationGeneration.load(
+        std::memory_order_acquire
+    );
+    if (completed != retirementTicket) {
         outcomeOut->retirementTicket = retirementTicket;
         outcomeOut->flags = EAUM1PublicationMaintenanceRequired;
         return EAUM1StatusOK;
@@ -447,7 +712,11 @@ EAUM1Status EAUM1RuntimePerformMaintenance(
     if (runtime->pendingPrepared != nullptr) {
         EAUM1PreparedState *pending = runtime->pendingPrepared;
         runtime->pendingPrepared = nullptr;
-        publishCandidate(runtime, pending, outcomeOut);
+        const EAUM1Status status = publishCandidate(runtime, pending, outcomeOut);
+        if (status != EAUM1StatusOK) {
+            runtime->pendingPrepared = pending;
+            return status;
+        }
     }
     return EAUM1StatusOK;
 }
@@ -469,7 +738,7 @@ EAUM1Status EAUM1RuntimeSetEffectsEnabled(EAUM1Runtime *runtime, uint8_t effects
     if (runtime == nullptr || effectsEnabled > 1) {
         return EAUM1StatusInvalidArgument;
     }
-    runtime->effectsEnabled.store(effectsEnabled != 0, std::memory_order_seq_cst);
+    runtime->effectsEnabled.store(effectsEnabled != 0, std::memory_order_release);
     return EAUM1StatusOK;
 }
 
@@ -507,21 +776,52 @@ EAUM1Status EAUM1RuntimeProcess(
         return validation;
     }
 
-    EAUM1PreparedState *prepared = runtime->activePrepared.load(std::memory_order_seq_cst);
-    const bool requestedEffectsEnabled = runtime->effectsEnabled.load(std::memory_order_seq_cst);
-    beginTargetTransitionIfNeeded(runtime, prepared, requestedEffectsEnabled);
+    beginChainTransitionIfNeeded(runtime);
+    beginEffectsTransitionIfNeeded(
+        runtime,
+        runtime->effectsEnabled.load(std::memory_order_acquire)
+    );
 
     for (uint32_t frame = 0; frame < frameCount; ++frame) {
-        advanceTransition(runtime);
-        size_t linearChannelIndex = 0;
+        advanceEffectsTransition(runtime);
+        const bool chainTransitionActive = runtime->transitionFrameIndex < runtime->rampFrameCount;
+        const double chainMix = chainTransitionActive
+            ? static_cast<double>(runtime->transitionFrameIndex + 1)
+                / static_cast<double>(runtime->rampFrameCount)
+            : 0.0;
+        uint32_t linearChannelIndex = 0;
         for (uint32_t bufferIndex = 0; bufferIndex < bufferCount; ++bufferIndex) {
             EAUM1AudioBuffer &buffer = buffers[bufferIndex];
             for (uint32_t channel = 0; channel < buffer.channelCount; ++channel) {
                 const size_t sampleIndex = static_cast<size_t>(frame) * buffer.channelCount + channel;
-                const float gain = static_cast<float>(runtime->currentGains[linearChannelIndex]);
-                buffer.samples[sampleIndex] = processSample(runtime, buffer.samples[sampleIndex], gain);
+                const float dry = sanitizeInput(runtime, buffer.samples[sampleIndex]);
+                const float activeWet = processChainSample(
+                    runtime,
+                    &runtime->slots[runtime->activeSlotIndex.load(std::memory_order_relaxed)],
+                    linearChannelIndex,
+                    dry
+                );
+                float wet = activeWet;
+                if (chainTransitionActive) {
+                    const float targetWet = processChainSample(
+                        runtime,
+                        &runtime->slots[runtime->transitionTargetSlotIndex],
+                        linearChannelIndex,
+                        dry
+                    );
+                    wet = mixSamples(runtime, activeWet, targetWet, chainMix);
+                }
+                buffer.samples[sampleIndex] = mixSamples(
+                    runtime,
+                    dry,
+                    wet,
+                    runtime->currentEffectsMix
+                );
                 ++linearChannelIndex;
             }
+        }
+        if (chainTransitionActive) {
+            completeChainTransitionFrame(runtime);
         }
     }
     runtime->callbackState.fetch_add(1, std::memory_order_seq_cst);
@@ -580,7 +880,7 @@ uint64_t callbackState(const EAUM1Runtime *runtime) {
 
 uintptr_t activePrepared(const EAUM1Runtime *runtime) {
     return reinterpret_cast<uintptr_t>(
-        runtime->activePrepared.load(std::memory_order_seq_cst)
+        runtime->activePrepared.load(std::memory_order_acquire)
     );
 }
 

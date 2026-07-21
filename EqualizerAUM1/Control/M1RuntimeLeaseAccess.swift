@@ -12,6 +12,70 @@ struct M1RuntimeCounters: Equatable, Sendable {
     let overlappingCallbacks: UInt64
 }
 
+enum M1RuntimePreparedStateFactory {
+    static func create(stagesByChannel: [[M1CompiledProcessingStage]]) throws -> OpaquePointer {
+        guard let channelCount = UInt32(exactly: stagesByChannel.count), channelCount > 0 else {
+            throw M1AudioIOError.invalidConfiguration("invalid Prepared channel count")
+        }
+        var stages: [EAUM1PreparedStage] = []
+        stages.reserveCapacity(stagesByChannel.reduce(0) { $0 + $1.count })
+        for (channelIndex, channelStages) in stagesByChannel.enumerated() {
+            guard channelStages.count <= Int(EAUM1_MAX_STAGES_PER_CHANNEL),
+                  let channel = UInt32(exactly: channelIndex)
+            else {
+                throw M1AudioIOError.invalidConfiguration("Prepared stage capacity exceeded")
+            }
+            for stage in channelStages {
+                switch stage {
+                case let .gain(_, linearGain):
+                    stages.append(
+                        EAUM1PreparedStage(
+                            kind: UInt32(EAUM1PreparedStageGain),
+                            channelIndex: channel,
+                            b0: linearGain,
+                            b1: 0,
+                            b2: 0,
+                            a1: 0,
+                            a2: 0
+                        )
+                    )
+                case let .biquad(_, _, coefficients):
+                    stages.append(
+                        EAUM1PreparedStage(
+                            kind: UInt32(EAUM1PreparedStageBiquad),
+                            channelIndex: channel,
+                            b0: coefficients.b0,
+                            b1: coefficients.b1,
+                            b2: coefficients.b2,
+                            a1: coefficients.a1,
+                            a2: coefficients.a2
+                        )
+                    )
+                }
+            }
+        }
+        guard stages.count <= Int(EAUM1_MAX_PREPARED_STAGE_COUNT),
+              let stageCount = UInt32(exactly: stages.count)
+        else {
+            throw M1AudioIOError.invalidConfiguration("Prepared total stage capacity exceeded")
+        }
+
+        var prepared: OpaquePointer?
+        let status = stages.withUnsafeBufferPointer { values in
+            var description = EAUM1PreparedDescription(
+                channelCount: channelCount,
+                stageCount: stageCount,
+                stages: values.baseAddress
+            )
+            return EAUM1PreparedStateCreateV2(&description, &prepared)
+        }
+        guard status == EAUM1StatusOK, let prepared else {
+            throw M1AudioIOError.invalidConfiguration("Prepared creation failed: \(status)")
+        }
+        return prepared
+    }
+}
+
 actor M1RuntimeLeaseAccess: M1RetirementMaintenanceAccess {
     typealias StopHandler = @Sendable (M1RetirementStopReason, UInt64) async -> Void
 
@@ -41,23 +105,16 @@ actor M1RuntimeLeaseAccess: M1RetirementMaintenanceAccess {
     }
 
     func publish(
-        linearGainsByChannel: [Float],
+        stagesByChannel: [[M1CompiledProcessingStage]],
         configurationGeneration: UInt64,
         bridgeGeneration: UInt64
     ) throws -> M1RuntimePreparedPublication {
         guard let retained = lease, retained.bridgeGeneration == bridgeGeneration else {
             throw M1AudioIOError.generationMismatch
         }
-        guard let count = UInt32(exactly: linearGainsByChannel.count), count > 0 else {
-            throw M1AudioIOError.invalidConfiguration("invalid Prepared channel count")
-        }
-        var prepared: OpaquePointer?
-        let createStatus = linearGainsByChannel.withUnsafeBufferPointer { values in
-            EAUM1PreparedStateCreate(values.baseAddress, count, &prepared)
-        }
-        guard createStatus == EAUM1StatusOK, prepared != nil else {
-            throw M1AudioIOError.invalidConfiguration("Prepared creation failed: \(createStatus)")
-        }
+        var prepared: OpaquePointer? = try M1RuntimePreparedStateFactory.create(
+            stagesByChannel: stagesByChannel
+        )
         var outcome = EAUM1PublicationOutcome()
         let status = EAUM1RuntimePublishPrepared(retained.pointer, &prepared, &outcome)
         if let prepared { EAUM1PreparedStateDestroy(prepared) }

@@ -31,11 +31,11 @@ struct M1EncodedNodeEnvelope: Equatable, Sendable {
 }
 
 enum M1NodeEnvelopeCodec {
-    static let schemaVersion = 2
+    static let schemaVersion = 3
     static let maximumDataSize = M1ConfigurationCodec.maximumDataSize
 
     static func encode(_ nodes: [M1ProcessingNode]) throws -> M1EncodedNodeEnvelope {
-        let nodes = M1ConfigurationMigration.normalizedV2Nodes(nodes)
+        let nodes = M1ConfigurationMigration.normalizedCurrentNodes(nodes)
         do {
             try M1ProcessingBuilder.validate(nodes: nodes)
         } catch let error as M1ProcessingBuildError {
@@ -77,6 +77,10 @@ enum M1NodeEnvelopeCodec {
                         try wire.nodes.map { try $0.node() }
                     )
                 )
+            case 2:
+                try M1JSONShapeValidator.validateNodeEnvelope(data, schemaVersion: 2)
+                let wire = try JSONDecoder().decode(M1NodeEnvelopeWire.self, from: data)
+                return try encode(try wire.nodes.map { try $0.node() })
             case schemaVersion:
                 try M1JSONShapeValidator.validateNodeEnvelope(data, schemaVersion: schemaVersion)
                 let wire = try JSONDecoder().decode(M1NodeEnvelopeWire.self, from: data)
@@ -266,6 +270,21 @@ struct M1EditingSession: Sendable {
         try replaceNodes(candidate, effectsEnabled: effectsEnabled)
     }
 
+    mutating func addGraphicEQ(
+        before id: UUID?,
+        nodeID: UUID,
+        effectsEnabled: Bool
+    ) throws {
+        var candidate = nodes
+        let node = M1ProcessingNode.graphicEQ(id: nodeID)
+        if let id, let index = candidate.firstIndex(where: { $0.id == id }) {
+            candidate.insert(node, at: index)
+        } else {
+            candidate.append(node)
+        }
+        try replaceNodes(candidate, effectsEnabled: effectsEnabled)
+    }
+
     mutating func deleteNode(id: UUID, effectsEnabled: Bool) throws {
         guard let index = nodes.firstIndex(where: { $0.id == id }) else {
             throw M1EditingSessionError.nodeNotFound
@@ -287,7 +306,9 @@ struct M1EditingSession: Sendable {
     }
 
     mutating func setNodeEnabled(id: UUID, enabled: Bool, effectsEnabled: Bool) throws {
-        guard nodes.first(where: { $0.id == id })?.kind == .preamp else {
+        guard let kind = nodes.first(where: { $0.id == id })?.kind,
+              kind == .preamp || kind == .graphicEQ
+        else {
             throw M1EditingSessionError.invalidNodeKind
         }
         try updateNode(id: id, effectsEnabled: effectsEnabled) { $0.isEnabled = enabled }
@@ -302,6 +323,27 @@ struct M1EditingSession: Sendable {
             effectsEnabled: effectsEnabled,
             coalescingGestureID: id
         ) { $0.gainDB = gainDB }
+    }
+
+    mutating func setGraphicEQGainDB(
+        id: UUID,
+        bandIndex: Int,
+        gainDB: Double,
+        effectsEnabled: Bool
+    ) throws {
+        guard let node = nodes.first(where: { $0.id == id }), node.kind == .graphicEQ,
+              node.graphicEQBands.indices.contains(bandIndex)
+        else {
+            throw M1EditingSessionError.invalidNodeKind
+        }
+        try updateNode(
+            id: id,
+            effectsEnabled: effectsEnabled,
+            coalescingGestureID: id
+        ) {
+            let step = M1GraphicEQContract.gainStepDB
+            $0.graphicEQBands[bandIndex].gainDB = (gainDB / step).rounded() * step
+        }
     }
 
     mutating func setChannels(
@@ -435,7 +477,7 @@ struct M1EditingSession: Sendable {
         coalescingGestureID: UUID? = nil
     ) throws {
         guard candidate != nodes else { return }
-        let normalized = M1ConfigurationMigration.normalizedV2Nodes(candidate)
+        let normalized = M1ConfigurationMigration.normalizedCurrentNodes(candidate)
         _ = try M1ConfigurationCodec.encode(
             M1ConfigurationSnapshot(effectsEnabled: effectsEnabled, nodes: normalized)
         )

@@ -24,9 +24,9 @@ M1.1 已完成版本化规范 JSON、`4 MiB` 预算、主文件与 previous 轮�
 Start/Stop、独立即时音效总开关、布局构建、Runtime 发布、基础状态诊断和有序 Quit 清理。
 M1.3 已完成多选与键盘选择、typed 剪贴板、组移动与 Option-copy、预算化 Undo/Redo、
 分代诊断和完整退出确认。M1.4 已完成并发压力、Repair 故障注入、实时静态审计、运行计数器、
-正式 `EqualizerAU` 产品身份和用户明确执行的真实音频验收。M1 已关闭。M2 前置基础已把
-配置升级为有序的 Channels/Preamp schema v2，并把主界面统一为 Processing 控制和通用节点行；
-Graphic EQ DSP 尚未开始。
+正式 `EqualizerAU` 产品身份和用户明确执行的真实音频验收。M1 已关闭。M2 已加入 schema v3
+的固定 15 段 Graphic EQ、有序 Channels/Preamp/Graphic EQ 编译、Runtime ABI v2 biquad chain、
+10 ms 双槽切换，以及通用节点行中的频段编辑器；真实音频和 hosted GUI 验收尚未执行。
 M0 的源码、测试和构建产物只作参考，不被 M1 复用。BlackHole 只作为未启用的后备路线，
 不是当前依赖，也无需安装。
 

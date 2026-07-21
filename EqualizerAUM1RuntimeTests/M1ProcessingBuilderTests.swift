@@ -1,6 +1,22 @@
 import XCTest
 
 final class M1ProcessingBuilderTests: XCTestCase {
+    func testSwiftBridgeCreatesPreparedV2FromCompiledGraphicEQStages() throws {
+        var equalizer = M1ProcessingNode.graphicEQ(id: UUID())
+        equalizer.graphicEQBands[8].gainDB = 6
+        let compiled = try M1ProcessingBuilder.build(
+            nodes: [equalizer],
+            layout: stereoLayout()
+        )
+
+        let prepared = try M1RuntimePreparedStateFactory.create(
+            stagesByChannel: compiled.stagesByChannel
+        )
+
+        XCTAssertNotNil(prepared)
+        EAUM1PreparedStateDestroy(prepared)
+    }
+
     func testEmptyChainBuildsTransparentTargetsWithoutDiagnostics() throws {
         let result = try M1ProcessingBuilder.build(nodes: [], layout: stereoLayout())
 
@@ -231,6 +247,8 @@ final class M1ProcessingBuilderTests: XCTestCase {
 
         XCTAssertEqual(grouped.linearGainsByChannel, [1, 1])
         XCTAssertEqual(interleaved.linearGainsByChannel, grouped.linearGainsByChannel)
+        XCTAssertEqual(grouped.stagesByChannel, [[], []])
+        XCTAssertEqual(interleaved.stagesByChannel, grouped.stagesByChannel)
         XCTAssertTrue(grouped.diagnostics.gainBoundaries.isEmpty)
         XCTAssertTrue(grouped.diagnostics.clippingRiskChannels.isEmpty)
     }
@@ -363,6 +381,149 @@ final class M1ProcessingBuilderTests: XCTestCase {
             result.diagnostics.unresolvedChannels,
             [M1UnresolvedChannelDiagnostic(nodeID: missingScopeID, identifiers: [missing])]
         )
+    }
+
+    func testGraphicEQCompilesOrderedScopedBiquadsAndOmitsFlatBands() throws {
+        let scopeID = UUID()
+        var eq = M1ProcessingNode.graphicEQ(id: UUID())
+        eq.graphicEQBands[0].gainDB = 3
+        eq.graphicEQBands[7].gainDB = -6
+        let result = try M1ProcessingBuilder.build(
+            nodes: [
+                .channels(id: scopeID, selection: .identifiers([identifier("L")])),
+                eq,
+            ],
+            layout: stereoLayout()
+        )
+
+        XCTAssertEqual(result.linearGainsByChannel, [1, 1])
+        XCTAssertEqual(result.stagesByChannel[0].count, 2)
+        XCTAssertTrue(result.stagesByChannel[1].isEmpty)
+        guard case let .biquad(firstID, firstBand, firstCoefficients) = result.stagesByChannel[0][0],
+              case let .biquad(secondID, secondBand, secondCoefficients) = result.stagesByChannel[0][1]
+        else {
+            return XCTFail("expected ordered biquad stages")
+        }
+        XCTAssertEqual(firstID, eq.id)
+        XCTAssertEqual(secondID, eq.id)
+        XCTAssertEqual([firstBand, secondBand], [0, 7])
+        XCTAssertTrue([firstCoefficients, secondCoefficients].allSatisfy {
+            [$0.b0, $0.b1, $0.b2, $0.a1, $0.a2].allSatisfy(\.isFinite)
+        })
+
+        let flat = try M1ProcessingBuilder.build(
+            nodes: [.graphicEQ()],
+            layout: stereoLayout()
+        )
+        XCTAssertEqual(flat.stagesByChannel, [[], []])
+    }
+
+    func testGraphicEQSkipsBandsAtOrAboveNyquistWithOwnedDiagnostic() throws {
+        var eq = M1ProcessingNode.graphicEQ(id: UUID())
+        eq.graphicEQBands[14].gainDB = 4
+        let layout = M1OutputLayoutSnapshot(
+            sampleRate: 32_000,
+            maximumFrameCount: 128,
+            bufferChannelCounts: [1],
+            semanticPositionsByChannelIndex: [.left]
+        )!
+
+        let result = try M1ProcessingBuilder.build(nodes: [eq], layout: layout)
+        XCTAssertTrue(result.stagesByChannel[0].isEmpty)
+        XCTAssertEqual(
+            result.diagnostics.unavailableGraphicEQBands,
+            [M1UnavailableGraphicEQBandDiagnostic(nodeID: eq.id, frequencyHz: 16_000)]
+        )
+    }
+
+    func testGraphicEQValidationRejectsInvalidBandShapeAndGain() {
+        let id = UUID()
+        var missingBand = M1ProcessingNode.graphicEQ(id: id)
+        missingBand.graphicEQBands.removeLast()
+        XCTAssertThrowsError(try M1ProcessingBuilder.validate(nodes: [missingBand])) {
+            XCTAssertEqual($0 as? M1ProcessingBuildError, .invalidGraphicEQBandCount(nodeID: id))
+        }
+
+        var nonFinite = M1ProcessingNode.graphicEQ(id: id)
+        nonFinite.graphicEQBands[2].gainDB = .nan
+        XCTAssertThrowsError(try M1ProcessingBuilder.validate(nodes: [nonFinite])) {
+            XCTAssertEqual(
+                $0 as? M1ProcessingBuildError,
+                .nonFiniteGraphicEQGain(nodeID: id, bandIndex: 2)
+            )
+        }
+    }
+
+    func testBuilderRejectsPreparedTotalStageCapacityBeforePublication() throws {
+        let equalizers = (0..<31).map { _ -> M1ProcessingNode in
+            var node = M1ProcessingNode.graphicEQ()
+            for index in node.graphicEQBands.indices {
+                node.graphicEQBands[index].gainDB = 1
+            }
+            return node
+        }
+        let layout = try XCTUnwrap(M1OutputLayoutSnapshot(
+            sampleRate: 48_000,
+            maximumFrameCount: 128,
+            bufferChannelCounts: [9],
+            semanticPositionsByChannelIndex: Array(repeating: nil, count: 9)
+        ))
+
+        XCTAssertThrowsError(try M1ProcessingBuilder.build(nodes: equalizers, layout: layout)) {
+            XCTAssertEqual($0 as? M1ProcessingBuildError, .totalStageCapacityExceeded)
+        }
+    }
+
+    func testCompiledScopedStagesProcessThroughRuntimeV2() throws {
+        let left = identifier("L")
+        let right = identifier("R")
+        var equalizer = M1ProcessingNode.graphicEQ()
+        equalizer.graphicEQBands[8].gainDB = 6
+        let compiled = try M1ProcessingBuilder.build(
+            nodes: [
+                .channels(selection: .identifiers([left])),
+                node(gainDB: -6, channels: .all),
+                equalizer,
+                .channels(selection: .identifiers([right])),
+                node(gainDB: 3, channels: .all),
+            ],
+            layout: stereoLayout()
+        )
+        guard case let .gain(_, leftGain) = compiled.stagesByChannel[0][0],
+              case let .biquad(_, _, coefficients) = compiled.stagesByChannel[0][1],
+              case let .gain(_, rightGain) = compiled.stagesByChannel[1][0]
+        else {
+            return XCTFail("expected scoped Gain/Biquad execution plan")
+        }
+
+        var prepared: OpaquePointer? = try M1RuntimePreparedStateFactory.create(
+            stagesByChannel: compiled.stagesByChannel
+        )
+        var runtime: OpaquePointer?
+        var channelCount: UInt32 = 2
+        let createStatus = withUnsafePointer(to: &channelCount) { channelCounts in
+            var description = EAUM1RuntimeDescription(
+                sampleRate: 48_000,
+                maximumFrameCount: 16,
+                bufferCount: 1,
+                channelCounts: channelCounts,
+                effectsEnabled: 1
+            )
+            return EAUM1RuntimeCreate(&description, &prepared, &runtime)
+        }
+        XCTAssertEqual(Int(createStatus), EAUM1StatusOK)
+        XCTAssertNil(prepared)
+        let retainedRuntime = try XCTUnwrap(runtime)
+        defer { EAUM1RuntimeDestroy(retainedRuntime) }
+
+        var samples: [Float] = [1, 1]
+        let status = samples.withUnsafeMutableBufferPointer { values in
+            var buffer = EAUM1AudioBuffer(samples: values.baseAddress, channelCount: 2)
+            return EAUM1RuntimeProcess(retainedRuntime, &buffer, 1, 1)
+        }
+        XCTAssertEqual(Int(status), EAUM1StatusOK)
+        XCTAssertEqual(samples[0], Float(leftGain * coefficients.b0), accuracy: 1e-6)
+        XCTAssertEqual(samples[1], Float(rightGain), accuracy: 1e-6)
     }
 
     private func stereoLayout() -> M1OutputLayoutSnapshot {
