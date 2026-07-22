@@ -29,7 +29,17 @@ M1.3 已完成多选与键盘选择、typed 剪贴板、组移动与 Option-copy
 10 ms 双槽切换，以及通用节点行中的频段编辑器。M3 已加入 schema v4 Convolution、严格 WAV
 IR sidecar、控制线程 SRC、Runtime ABI v3 zero-latency hybrid convolution 和安全链切换；M2/M3
 真实音频与 hosted GUI 验收尚未执行。M4 已加入设备与 sleep/wake 监听、持久 UID 复核、
-有界自动恢复、权限提示和恢复状态；真实系统变化与签名发布验收尚未执行。
+有界自动恢复、权限提示和恢复状态；人工验收发现音频恢复循环、单实例和单主窗口三个
+M4 收尾问题，音频恢复循环、单进程和单主窗口均已通过修复后人工复测。采样率切换恢复已完成
+稳定格式确认、近零点释放和跨代 muted Tap
+handover，并通过签名应用人工复测；第一版权限候选虽通过 275 项 hostless，但签名应用在撤权
+后冷启动 Start 时仍会静音。修订候选改为在实际路线 Tap 上完成启动前权限探测和 mute 转换，
+并在返回前台时复核同一 Tap；36 项聚焦与 278 项完整 hostless 测试、构建和静态门禁均已通过，
+签名应用冷启动拒权 T19-A 已通过；当前进程授权仍有效时路线和旁路继续正常工作的 T19-B 也
+符合平台预期，AUD-03 已关闭。
+其余延期生命周期行为保持明确记录。M5 将在完成本地源码
+探索和行为契约后对齐 EqualizerAPO 处理器编辑器；
+M6 将引入任意频率控制点 Graphic EQ。M5/M6 均尚未开始具体探索或实现。
 M0 的源码、测试和构建产物只作参考，不被 M1 复用。BlackHole 只作为未启用的后备路线，
 不是当前依赖，也无需安装。
 
@@ -107,6 +117,8 @@ flowchart TD
 | [`docs/milestones/M2-graphic-equalizer.md`](docs/milestones/M2-graphic-equalizer.md) | M2 Graphic EQ 范围、前置基础、验证计划和阶段证据 |
 | [`docs/milestones/M3-convolution.md`](docs/milestones/M3-convolution.md) | M3 Convolution 文件契约、DSP 边界、自动化证据和待验收范围 |
 | [`docs/milestones/M4-mvp-stabilization.md`](docs/milestones/M4-mvp-stabilization.md) | M4 设备/权限/睡眠恢复、资源所有权、自动化证据和发布待验收范围 |
+| [`docs/milestones/M5-equalizerapo-editor-parity.md`](docs/milestones/M5-equalizerapo-editor-parity.md) | M5 EqualizerAPO 编辑器对齐目标、探索门禁、范围与退出条件 |
+| [`docs/milestones/M6-arbitrary-point-graphic-equalizer.md`](docs/milestones/M6-arbitrary-point-graphic-equalizer.md) | M6 任意频率 Graphic EQ 目标、决策门禁、范围与退出条件 |
 | [`CONTEXT.md`](CONTEXT.md) | 产品与处理链的规范领域词汇 |
 | [`AGENTS.md`](AGENTS.md) | 编码 Agent 的仓库工作规范 |
 
