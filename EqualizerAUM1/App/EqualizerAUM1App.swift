@@ -72,6 +72,12 @@ final class M1AppModel: ObservableObject {
         }
     }
 
+    func applicationDidBecomeActive() {
+        perform {
+            await self.controller.handleApplicationActivation()
+        }
+    }
+
     func select(_ id: UUID?, mode: M1SelectionMode) {
         performEdit { await self.controller.selectNode(id, mode: mode) }
     }
@@ -370,6 +376,18 @@ private final class M1TerminationDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        restoreEditorWindow?()
+        return true
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        model?.applicationDidBecomeActive()
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let model else { return .terminateNow }
         guard !terminationPending else { return .terminateLater }
@@ -496,7 +514,7 @@ struct EqualizerAUM1App: App {
     }
 
     var body: some Scene {
-        WindowGroup("EqualizerAU", id: "editor") {
+        Window("EqualizerAU", id: "editor") {
             M1EditorView(model: model)
                 .onAppear {
                     appDelegate.model = model

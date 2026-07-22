@@ -389,8 +389,8 @@ struct M1SystemHALRouteOperations: M1HALRouteOperations, @unchecked Sendable {
     }
 
     func createProcessTap(_ request: M1ProcessTapRequest) throws -> UInt32 {
-        guard request.isPrivate, request.isMuted, !request.outputDeviceUID.isEmpty else {
-            throw M1AudioRouteError.invalidTap("production tap contract is incomplete")
+        guard request.isPrivate, !request.outputDeviceUID.isEmpty else {
+            throw M1AudioRouteError.invalidTap("process tap contract is incomplete")
         }
         let description = CATapDescription(
             excludingProcesses: [request.excludedProcessObjectID],
@@ -399,7 +399,7 @@ struct M1SystemHALRouteOperations: M1HALRouteOperations, @unchecked Sendable {
         )
         description.name = request.name
         description.isPrivate = true
-        description.muteBehavior = .muted
+        description.muteBehavior = request.isMuted ? .muted : .unmuted
         var objectID = AudioObjectID(kAudioObjectUnknown)
         let status = AudioHardwareCreateProcessTap(description, &objectID)
         if status == kAudioDevicePermissionsError {
@@ -412,6 +412,78 @@ struct M1SystemHALRouteOperations: M1HALRouteOperations, @unchecked Sendable {
             )
         }
         return objectID
+    }
+
+    func probeAndMuteProcessTap(_ objectID: UInt32) throws {
+        let description = try probeProcessTapDescription(objectID)
+        description.muteBehavior = .muted
+        try writeProcessTapDescription(
+            description,
+            objectID: objectID,
+            operation: "Mute process tap"
+        )
+    }
+
+    func verifyProcessTapCapturePermission(_ objectID: UInt32) throws {
+        _ = try probeProcessTapDescription(objectID)
+    }
+
+    private func probeProcessTapDescription(_ objectID: UInt32) throws -> CATapDescription {
+        let description = try readProcessTapDescription(objectID)
+        try writeProcessTapDescription(
+            description,
+            objectID: objectID,
+            operation: "Probe process tap capture permission"
+        )
+        return description
+    }
+
+    private func readProcessTapDescription(_ objectID: UInt32) throws -> CATapDescription {
+        do {
+            let retained: Unmanaged<CATapDescription>? = try reader.value(
+                objectID: objectID,
+                address: M1HALPropertyAddress(kAudioTapPropertyDescription),
+                initialValue: nil,
+                operation: "Read process tap description"
+            )
+            guard let retained else {
+                throw M1CoreAudioStatusError(
+                    operation: "Read process tap description",
+                    status: kAudio_ParamError
+                )
+            }
+            return retained.takeRetainedValue()
+        } catch let error as M1CoreAudioStatusError {
+            if error.status == kAudioDevicePermissionsError {
+                throw M1AudioRouteError.audioCapturePermissionDenied
+            }
+            throw error
+        }
+    }
+
+    private func writeProcessTapDescription(
+        _ value: CATapDescription,
+        objectID: UInt32,
+        operation: String
+    ) throws {
+        var address = M1HALPropertyAddress(kAudioTapPropertyDescription).rawValue
+        var value = value
+        let status = withUnsafeMutablePointer(to: &value) { pointer in
+            AudioObjectSetPropertyData(
+                objectID,
+                &address,
+                0,
+                nil,
+                UInt32(MemoryLayout<CATapDescription>.stride),
+                pointer
+            )
+        }
+        if status == kAudioDevicePermissionsError {
+            throw M1AudioRouteError.audioCapturePermissionDenied
+        }
+        guard status == noErr else {
+            throw M1CoreAudioStatusError(operation: operation, status: status)
+        }
     }
 
     func readProcessTap(_ objectID: UInt32) throws -> M1HALTapData {

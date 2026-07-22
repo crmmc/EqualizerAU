@@ -15,8 +15,11 @@ extension M1ConfigurationStore: M1ConfigurationStoring {}
 protocol M1ProductAudioControlling: Sendable {
     func state() async -> M1NativeAudioRouteState
     func start(configuration: M1ConfigurationSnapshot) async throws
+    func start(configuration: M1ConfigurationSnapshot, mode: M1AudioRouteStartMode) async throws
     func stop() async throws
-    func stop(bridgeGeneration: UInt64) async throws
+    func stopForOutputFormatRecovery(expectedOutput: M1MonitoredOutputIdentity) async throws
+    func stop(bridgeGeneration: UInt64) async throws -> Bool
+    func verifyCapturePermission() async throws -> Bool
     func outputLayout() async -> M1OutputLayoutSnapshot?
     func prepare(configuration: M1ConfigurationSnapshot) async throws -> M1AudioConfigurationPreparation
     func publish(
@@ -29,20 +32,113 @@ protocol M1ProductAudioControlling: Sendable {
     func diagnostics() async throws -> M1RealtimeDiagnostics?
 }
 
+extension M1ProductAudioControlling {
+    func start(configuration: M1ConfigurationSnapshot, mode: M1AudioRouteStartMode) async throws {
+        try await start(configuration: configuration)
+    }
+
+    func stopForOutputFormatRecovery(expectedOutput: M1MonitoredOutputIdentity) async throws {
+        try await stop()
+    }
+
+    func verifyCapturePermission() async throws -> Bool { false }
+}
+
 extension M1NativeAudioRouteCoordinator: M1ProductAudioControlling {}
 
 enum M1AudioLifecycleEvent: Equatable, Sendable {
     case routeChanged
+    case outputFormatChanged(M1MonitoredOutputIdentity)
     case systemAudioServicesChanged
     case monitoringFailed
     case willSleep
     case didWake
 }
 
+enum M1AudioDevicePropertyChange: Hashable, Sendable {
+    case alive
+    case outputFormat
+}
+
+enum M1AudioDevicePropertyEventClassifier {
+    static func event(
+        for changes: Set<M1AudioDevicePropertyChange>,
+        output: M1MonitoredOutputIdentity?
+    ) -> M1AudioLifecycleEvent? {
+        if changes.contains(.alive) {
+            return .routeChanged
+        }
+        if changes.contains(.outputFormat) {
+            return output.map(M1AudioLifecycleEvent.outputFormatChanged) ?? .routeChanged
+        }
+        return nil
+    }
+}
+
+struct M1MonitoredOutputIdentity: Equatable, Sendable {
+    let objectID: UInt32
+    let persistentUID: String
+}
+
+enum M1AudioSystemPropertyChange: Hashable, Sendable {
+    case defaultOutput
+    case deviceList
+}
+
+enum M1AudioLifecycleEventClassifier {
+    static func event(
+        for changes: Set<M1AudioSystemPropertyChange>,
+        previousOutput: M1MonitoredOutputIdentity?,
+        currentOutput: M1MonitoredOutputIdentity?
+    ) -> M1AudioLifecycleEvent? {
+        if changes.contains(.defaultOutput) {
+            return .routeChanged
+        }
+        if changes.contains(.deviceList), previousOutput != currentOutput {
+            return .systemAudioServicesChanged
+        }
+        return nil
+    }
+}
+
+struct M1AudioDeviceListChangeTracker: Sendable {
+    private var previousOutput: M1MonitoredOutputIdentity?
+    private var isPending = false
+
+    mutating func begin(previousOutput: M1MonitoredOutputIdentity?) {
+        self.previousOutput = previousOutput
+        isPending = true
+    }
+
+    mutating func finish(
+        currentOutput: M1MonitoredOutputIdentity?
+    ) -> M1AudioLifecycleEvent? {
+        guard isPending else { return nil }
+        let previousOutput = previousOutput
+        cancel()
+        return M1AudioLifecycleEventClassifier.event(
+            for: [.deviceList],
+            previousOutput: previousOutput,
+            currentOutput: currentOutput
+        )
+    }
+
+    mutating func cancel() {
+        previousOutput = nil
+        isPending = false
+    }
+}
+
 enum M1AudioRecoveryReason: Equatable, Sendable {
     case routeChanged
+    case outputFormatChanged(M1MonitoredOutputIdentity)
     case systemAudioServicesChanged
     case wake
+
+    var isOutputFormatChange: Bool {
+        if case .outputFormatChanged = self { return true }
+        return false
+    }
 }
 
 enum M1AudioRecoveryState: Equatable, Sendable {
@@ -598,7 +694,6 @@ actor M1ProductController {
         recoveryInProgress = false
         pendingRecoveryReason = nil
         audioRecovery = .inactive
-        guard audioState != .stopped else { return }
         let hadPendingApplication = pendingApplication != nil
         audioState = .stopping
         do {
@@ -619,11 +714,13 @@ actor M1ProductController {
         bridgeGeneration: UInt64,
         reason: M1RetirementStopReason
     ) async {
+        var stopAccepted = true
         do {
-            try await audio.stop(bridgeGeneration: bridgeGeneration)
+            stopAccepted = try await audio.stop(bridgeGeneration: bridgeGeneration)
         } catch {
             visibleError = String(describing: error)
         }
+        guard stopAccepted else { return }
         let currentState = Self.productAudioState(await audio.state())
         audioState = currentState
         guard currentState != .running else { return }
@@ -657,20 +754,81 @@ actor M1ProductController {
         case .routeChanged:
             guard !isSystemSleeping else { return }
             if audioState == .starting {
-                pendingRecoveryReason = .routeChanged
+                queueRecovery(reason: .routeChanged)
                 return
             }
             await recoverAudio(reason: .routeChanged)
+        case let .outputFormatChanged(output):
+            guard !isSystemSleeping else { return }
+            if audioState == .starting {
+                queueRecovery(reason: .outputFormatChanged(output))
+                return
+            }
+            await recoverAudio(reason: .outputFormatChanged(output))
         case .systemAudioServicesChanged:
             guard !isSystemSleeping else { return }
             if audioState == .starting {
-                pendingRecoveryReason = .systemAudioServicesChanged
+                queueRecovery(reason: .systemAudioServicesChanged)
                 return
             }
             await recoverAudio(reason: .systemAudioServicesChanged)
         case .monitoringFailed:
             audioRecovery = .waitingForRetry(reason: .systemAudioServicesChanged)
             visibleError = "Audio device monitoring is unavailable; waiting for a system device event."
+        }
+    }
+
+    func handleApplicationActivation() async {
+        guard audioState == .running,
+              automaticRecoveryDesired,
+              !recoveryInProgress,
+              !isSystemSleeping,
+              !terminating
+        else {
+            return
+        }
+        let token = recoveryToken
+        do {
+            _ = try await audio.verifyCapturePermission()
+        } catch {
+            guard token == recoveryToken,
+                  audioState == .running,
+                  !isSystemSleeping,
+                  !terminating
+            else {
+                return
+            }
+            await stopAfterCapturePermissionVerificationFailure(error)
+        }
+    }
+
+    private func stopAfterCapturePermissionVerificationFailure(_ verificationError: any Error) async {
+        recoveryToken &+= 1
+        let token = recoveryToken
+        automaticRecoveryDesired = false
+        recoveryInProgress = false
+        pendingRecoveryReason = nil
+        audioState = .stopping
+        do {
+            try await audio.stop()
+            guard token == recoveryToken else { return }
+            audioState = .stopped
+            clearAudioProjection()
+            if draft == saved { persistence = .savedPendingStart }
+            if verificationError as? M1AudioRouteError == .audioCapturePermissionDenied {
+                audioRecovery = .permissionRequired
+                visibleError = "System audio capture permission is required."
+            } else {
+                audioRecovery = .waitingForRetry(reason: .systemAudioServicesChanged)
+                visibleError = "Audio stopped because capture permission verification failed: \(verificationError)"
+            }
+        } catch {
+            guard token == recoveryToken else { return }
+            let currentState = Self.productAudioState(await audio.state())
+            guard token == recoveryToken else { return }
+            audioState = currentState
+            audioRecovery = .waitingForRetry(reason: .systemAudioServicesChanged)
+            visibleError = "Audio cleanup after capture permission verification failed: \(error)"
         }
     }
 
@@ -682,7 +840,6 @@ actor M1ProductController {
         pendingRecoveryReason = nil
         audioRecovery = .suspendedForSleep
         await invalidatePendingApplication()
-        guard audioState != .stopped else { return }
         audioState = .stopping
         do {
             try await audio.stop()
@@ -701,7 +858,7 @@ actor M1ProductController {
     private func recoverAudio(reason: M1AudioRecoveryReason) async {
         guard automaticRecoveryDesired, !isSystemSleeping, !terminating else { return }
         if recoveryInProgress {
-            pendingRecoveryReason = reason
+            queueRecovery(reason: reason)
             return
         }
         recoveryInProgress = true
@@ -725,7 +882,11 @@ actor M1ProductController {
         if audioState != .stopped {
             audioState = .stopping
             do {
-                try await audio.stop()
+                if case let .outputFormatChanged(output) = reason {
+                    try await audio.stopForOutputFormatRecovery(expectedOutput: output)
+                } else {
+                    try await audio.stop()
+                }
             } catch {
                 guard token == recoveryToken else { return }
                 audioState = Self.productAudioState(await audio.state())
@@ -751,7 +912,13 @@ actor M1ProductController {
             )
             visibleError = nil
             do {
-                try await audio.start(configuration: configuration)
+                let startMode: M1AudioRouteStartMode
+                if case let .outputFormatChanged(output) = reason {
+                    startMode = .outputFormatRecovery(expectedOutput: output)
+                } else {
+                    startMode = .normal
+                }
+                try await audio.start(configuration: configuration, mode: startMode)
                 guard token == recoveryToken, automaticRecoveryDesired, !terminating else {
                     try? await audio.stop()
                     return
@@ -767,16 +934,30 @@ actor M1ProductController {
                 guard token == recoveryToken else { return }
                 lastError = error
                 audioState = Self.productAudioState(await audio.state())
+                if error is CancellationError {
+                    automaticRecoveryDesired = false
+                    pendingRecoveryReason = nil
+                    let cleanupError = await stopAfterTerminalRecoveryFailure()
+                    audioRecovery = .waitingForRetry(reason: reason)
+                    visibleError = String(describing: cleanupError ?? error)
+                    return
+                }
                 if error as? M1AudioRouteError == .audioCapturePermissionDenied {
                     automaticRecoveryDesired = false
+                    if let cleanupError = await stopAfterTerminalRecoveryFailure() {
+                        audioRecovery = .waitingForRetry(reason: reason)
+                        visibleError = String(describing: cleanupError)
+                        return
+                    }
                     audioRecovery = .permissionRequired
                     visibleError = "System audio capture permission is required."
                     return
                 }
                 if audioState == .cleanupRequired {
                     automaticRecoveryDesired = false
+                    let cleanupError = await stopAfterTerminalRecoveryFailure()
                     audioRecovery = .waitingForRetry(reason: reason)
-                    visibleError = String(describing: error)
+                    visibleError = String(describing: cleanupError ?? error)
                     return
                 }
                 audioState = .stopped
@@ -784,18 +965,44 @@ actor M1ProductController {
                     do {
                         try await recoveryTiming.sleep(recoveryTiming.delayNanoseconds(attempt))
                     } catch {
+                        automaticRecoveryDesired = false
+                        pendingRecoveryReason = nil
+                        let cleanupError = await stopAfterTerminalRecoveryFailure()
+                        audioRecovery = .waitingForRetry(reason: reason)
+                        visibleError = String(describing: cleanupError ?? error)
                         return
                     }
                 }
             }
         }
         guard token == recoveryToken else { return }
-        audioState = .stopped
         automaticRecoveryDesired = false
         pendingRecoveryReason = nil
         audioRecovery = .waitingForRetry(reason: reason)
-        let failure = lastError.map { String(describing: $0) } ?? "unknown failure"
+        let cleanupError = await stopAfterTerminalRecoveryFailure()
+        let failure = (cleanupError ?? lastError).map { String(describing: $0) } ?? "unknown failure"
         visibleError = "Automatic audio recovery paused: \(failure)"
+    }
+
+    private func stopAfterTerminalRecoveryFailure() async -> (any Error)? {
+        do {
+            try await audio.stop()
+            audioState = Self.productAudioState(await audio.state())
+            return nil
+        } catch {
+            audioState = Self.productAudioState(await audio.state())
+            return error
+        }
+    }
+
+    private func queueRecovery(reason: M1AudioRecoveryReason) {
+        if reason.isOutputFormatChange,
+           let pendingRecoveryReason,
+           !pendingRecoveryReason.isOutputFormatChange
+        {
+            return
+        }
+        pendingRecoveryReason = reason
     }
 
     private func applyStartedConfiguration(

@@ -1,5 +1,22 @@
 import Foundation
 
+enum M1AudioRouteStartMode: Equatable, Sendable {
+    case normal
+    case outputFormatRecovery(expectedOutput: M1MonitoredOutputIdentity)
+}
+
+struct M1OutputFormatStabilityTiming: Sendable {
+    let maximumObservations: Int
+    let delayNanoseconds: UInt64
+    let sleep: @Sendable (UInt64) async throws -> Void
+
+    static let production = M1OutputFormatStabilityTiming(
+        maximumObservations: 6,
+        delayNanoseconds: 50_000_000,
+        sleep: { try await Task.sleep(nanoseconds: $0) }
+    )
+}
+
 protocol M1RuntimeCreating: Sendable {
     func createRuntime(
         bridgeGeneration: UInt64,
@@ -85,12 +102,18 @@ actor M1NativeAudioRouteCoordinator {
     private let runtimeAccess: M1RuntimeLeaseAccess
     private let retirementMaintenance: M1RetirementMaintenanceCoordinator
     private let irLoader: any M1ConvolutionIRLoading
+    private let outputFormatStabilityTiming: M1OutputFormatStabilityTiming
     private var current: RouteResources?
     private var nextGeneration: UInt64 = 0
     private var nextBridgeGeneration: UInt64 = 0
     private var operationInProgress = false
+    private var stopInProgress = false
     private var startInProgress = false
     private var startCancellationRequested = false
+    private var formatRecoveryGuard: M1ProcessTapResource?
+    private var formatRecoveryGuardBridgeGeneration: UInt64?
+    private var formatRecoveryGuardCleanupRequired = false
+    private var capturePermissionProbeInProgress = false
 
     init(
         routeResources: M1AudioRouteResourceController,
@@ -98,7 +121,8 @@ actor M1NativeAudioRouteCoordinator {
         runtimeFactory: any M1RuntimeCreating,
         runtimeAccess: M1RuntimeLeaseAccess,
         retirementMaintenance: M1RetirementMaintenanceCoordinator,
-        irLoader: any M1ConvolutionIRLoading = M1ConvolutionIRStore()
+        irLoader: any M1ConvolutionIRLoading = M1ConvolutionIRStore(),
+        outputFormatStabilityTiming: M1OutputFormatStabilityTiming = .production
     ) {
         self.routeResources = routeResources
         self.audioIO = audioIO
@@ -106,10 +130,17 @@ actor M1NativeAudioRouteCoordinator {
         self.runtimeAccess = runtimeAccess
         self.retirementMaintenance = retirementMaintenance
         self.irLoader = irLoader
+        precondition(outputFormatStabilityTiming.maximumObservations >= 2)
+        self.outputFormatStabilityTiming = outputFormatStabilityTiming
     }
 
     func state() -> M1NativeAudioRouteState {
-        guard let current else { return .stopped }
+        guard let current else {
+            if formatRecoveryGuardCleanupRequired, let formatRecoveryGuard {
+                return .cleanupRequired(generation: formatRecoveryGuard.descriptor.generation)
+            }
+            return .stopped
+        }
         switch current.phase {
         case .starting:
             return .starting(generation: current.generation)
@@ -128,6 +159,10 @@ actor M1NativeAudioRouteCoordinator {
     }
 
     func start(configuration: M1ConfigurationSnapshot) async throws {
+        try await start(configuration: configuration, mode: .normal)
+    }
+
+    func start(configuration: M1ConfigurationSnapshot, mode: M1AudioRouteStartMode) async throws {
         guard current == nil, !operationInProgress else {
             throw M1AudioIOError.invalidState("route is already active or changing")
         }
@@ -153,12 +188,17 @@ actor M1NativeAudioRouteCoordinator {
         current = resources
 
         do {
-            let output = try await routeResources.discoverOutput(generation: resources.generation)
+            let discovery = try await discoverOutput(generation: resources.generation, mode: mode)
+            let output = discovery.output
             resources.output = output
+            if !discovery.usesFormatRecoveryRelease {
+                try await destroyFormatRecoveryGuard()
+            }
             try checkStartCancellation()
             let tap = try await routeResources.createTap(
                 generation: resources.generation,
-                output: output
+                output: output,
+                handoverGuard: discovery.usesFormatRecoveryRelease ? formatRecoveryGuard : nil
             )
             resources.tap = tap
             try checkStartCancellation()
@@ -199,9 +239,15 @@ actor M1NativeAudioRouteCoordinator {
                 bridgeGeneration: resources.bridgeGeneration,
                 aggregate: aggregate,
                 output: output,
-                runtime: runtime
+                runtime: runtime,
+                startupSilentFrames: try startupSilentFrames(
+                    for: output,
+                    usesFormatRecoveryRelease: discovery.usesFormatRecoveryRelease
+                )
             )
             resources.io = io
+            try checkStartCancellation()
+            try await routeResources.prepareTapForCapture(tap)
             try checkStartCancellation()
             try await audioIO.startCapture(io)
             try checkStartCancellation()
@@ -209,11 +255,64 @@ actor M1NativeAudioRouteCoordinator {
             try checkStartCancellation()
             try await audioIO.startOutput(io)
             try checkStartCancellation()
+            try await destroyFormatRecoveryGuard()
+            try checkStartCancellation()
             resources.phase = .running
         } catch {
-            try? await cleanup(resources)
-            throw error
+            let startError = error
+            do {
+                try await cleanup(resources)
+            } catch {
+                throw error
+            }
+            if startError is CancellationError {
+                try await destroyFormatRecoveryGuard()
+            }
+            throw startError
         }
+    }
+
+    private func discoverOutput(
+        generation: M1AudioRouteGeneration,
+        mode: M1AudioRouteStartMode
+    ) async throws -> (output: M1OutputDeviceSnapshot, usesFormatRecoveryRelease: Bool) {
+        guard case let .outputFormatRecovery(expectedOutput) = mode else {
+            return (try await routeResources.discoverOutput(generation: generation), false)
+        }
+        var previous: M1OutputDeviceSnapshot?
+        for observation in 1...outputFormatStabilityTiming.maximumObservations {
+            try checkStartCancellation()
+            let current = try await routeResources.discoverOutput(generation: generation)
+            guard current.objectID == expectedOutput.objectID,
+                  current.uid == expectedOutput.persistentUID
+            else {
+                return (current, false)
+            }
+            if let previous,
+               previous.objectID == current.objectID,
+               previous.uid == current.uid,
+               previous.layout == current.layout
+            {
+                return (current, true)
+            }
+            previous = current
+            if observation < outputFormatStabilityTiming.maximumObservations {
+                try await outputFormatStabilityTiming.sleep(outputFormatStabilityTiming.delayNanoseconds)
+            }
+        }
+        throw M1AudioRouteError.invalidOutputDevice("output format did not stabilize")
+    }
+
+    private func startupSilentFrames(
+        for output: M1OutputDeviceSnapshot,
+        usesFormatRecoveryRelease: Bool
+    ) throws -> Int {
+        guard usesFormatRecoveryRelease else { return 0 }
+        let frames = ceil(output.layout.sampleRate * 0.050)
+        guard frames.isFinite, frames > 0, frames <= Double(UInt32.max) else {
+            throw M1AudioRouteError.invalidOutputDevice("startup silence frame count is invalid")
+        }
+        return Int(frames)
     }
 
     func outputLayout() -> M1OutputLayoutSnapshot? {
@@ -376,18 +475,87 @@ actor M1NativeAudioRouteCoordinator {
                 await Task.yield()
             }
         }
-        guard let current else { return }
+        while capturePermissionProbeInProgress {
+            await Task.yield()
+        }
+        while stopInProgress {
+            await Task.yield()
+        }
         guard !operationInProgress else {
             throw M1AudioIOError.invalidState("route operation is already in progress")
         }
         operationInProgress = true
-        defer { operationInProgress = false }
-        try await cleanup(current)
+        stopInProgress = true
+        defer {
+            stopInProgress = false
+            operationInProgress = false
+        }
+        var firstError: (any Error)?
+        if let current {
+            do {
+                try await cleanup(current)
+            } catch {
+                firstError = error
+            }
+        }
+        do {
+            try await destroyFormatRecoveryGuard()
+        } catch {
+            if firstError == nil { firstError = error }
+        }
+        if let firstError { throw firstError }
     }
 
-    func stop(bridgeGeneration: UInt64) async throws {
-        guard current?.bridgeGeneration == bridgeGeneration else { return }
+    func stopForOutputFormatRecovery(expectedOutput: M1MonitoredOutputIdentity) async throws {
+        while capturePermissionProbeInProgress {
+            await Task.yield()
+        }
+        guard let current,
+              current.output?.objectID == expectedOutput.objectID,
+              current.output?.uid == expectedOutput.persistentUID
+        else {
+            try await stop()
+            return
+        }
+        guard !operationInProgress, formatRecoveryGuard == nil else {
+            throw M1AudioIOError.invalidState("route operation is already in progress")
+        }
+        operationInProgress = true
+        stopInProgress = true
+        defer {
+            stopInProgress = false
+            operationInProgress = false
+        }
+        try await cleanup(current, preserveTapAsFormatRecoveryGuard: true)
+    }
+
+    func verifyCapturePermission() async throws -> Bool {
+        guard !operationInProgress,
+              !startInProgress,
+              !capturePermissionProbeInProgress,
+              let current,
+              current.phase == .running,
+              let tap = current.tap
+        else {
+            return false
+        }
+        capturePermissionProbeInProgress = true
+        defer { capturePermissionProbeInProgress = false }
+        try await routeResources.verifyCapturePermission(using: tap)
+        return true
+    }
+
+    func stop(bridgeGeneration: UInt64) async throws -> Bool {
+        if let current, current.bridgeGeneration == bridgeGeneration {
+            if operationInProgress, current.phase == .stopping {
+                return false
+            }
+            try await stop()
+            return true
+        }
+        guard formatRecoveryGuardBridgeGeneration == bridgeGeneration else { return false }
         try await stop()
+        return true
     }
 
     private func checkStartCancellation() throws {
@@ -397,7 +565,10 @@ actor M1NativeAudioRouteCoordinator {
         }
     }
 
-    private func cleanup(_ resources: RouteResources) async throws {
+    private func cleanup(
+        _ resources: RouteResources,
+        preserveTapAsFormatRecoveryGuard: Bool = false
+    ) async throws {
         resources.phase = .stopping
         var firstError: (any Error)?
         _ = await retirementMaintenance.stop(bridgeGeneration: resources.bridgeGeneration)
@@ -443,6 +614,12 @@ actor M1NativeAudioRouteCoordinator {
             if let firstError { throw firstError }
             return
         }
+        if preserveTapAsFormatRecoveryGuard, let tap = resources.tap {
+            formatRecoveryGuard = tap
+            formatRecoveryGuardBridgeGeneration = resources.bridgeGeneration
+            formatRecoveryGuardCleanupRequired = false
+            resources.tap = nil
+        }
         if let tap = resources.tap {
             do {
                 try await routeResources.destroyTap(tap)
@@ -464,6 +641,19 @@ actor M1NativeAudioRouteCoordinator {
             resources.phase = .cleanupRequired
         }
         if let firstError { throw firstError }
+    }
+
+    private func destroyFormatRecoveryGuard() async throws {
+        guard let guardResource = formatRecoveryGuard else { return }
+        do {
+            try await routeResources.destroyTap(guardResource)
+            formatRecoveryGuard = nil
+            formatRecoveryGuardBridgeGeneration = nil
+            formatRecoveryGuardCleanupRequired = false
+        } catch {
+            formatRecoveryGuardCleanupRequired = true
+            throw error
+        }
     }
 }
 

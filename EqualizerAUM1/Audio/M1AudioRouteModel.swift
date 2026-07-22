@@ -130,6 +130,8 @@ protocol M1HALRouteOperations: Sendable {
     func readDefaultOutputDevice() throws -> M1HALOutputDeviceData
     func readCurrentProcessObjectID() throws -> UInt32
     func createProcessTap(_ request: M1ProcessTapRequest) throws -> UInt32
+    func probeAndMuteProcessTap(_ objectID: UInt32) throws
+    func verifyProcessTapCapturePermission(_ objectID: UInt32) throws
     func readProcessTap(_ objectID: UInt32) throws -> M1HALTapData
     func readProcessTapUID(_ objectID: UInt32) throws -> String
     func destroyProcessTap(_ objectID: UInt32) throws
@@ -182,10 +184,24 @@ actor M1AudioRouteResourceController {
 
     func createTap(
         generation: M1AudioRouteGeneration,
-        output: M1OutputDeviceSnapshot
+        output: M1OutputDeviceSnapshot,
+        handoverGuard: M1ProcessTapResource? = nil
     ) throws -> M1ProcessTapResource {
         guard generation == output.generation else { throw M1AudioRouteError.generationMismatch }
-        guard activeTapTokens.isEmpty, pendingTapTokens.isEmpty else {
+        guard pendingTapTokens.isEmpty else {
+            throw M1AudioRouteError.staleResource
+        }
+        if let handoverGuard {
+            guard activeTapTokens.count == 1,
+                  handoverGuard.descriptor.kind == .processTap,
+                  handoverGuard.descriptor.generation != generation,
+                  handoverGuard.outputDeviceUID == output.uid,
+                  activeTapTokens[handoverGuard.descriptor.objectID]
+                    == handoverGuard.descriptor.ownershipToken
+            else {
+                throw M1AudioRouteError.staleResource
+            }
+        } else if !activeTapTokens.isEmpty {
             throw M1AudioRouteError.staleResource
         }
         let processObjectID = try operations.readCurrentProcessObjectID()
@@ -199,7 +215,7 @@ actor M1AudioRouteResourceController {
             outputStreamIndex: 0,
             excludedProcessObjectID: processObjectID,
             isPrivate: true,
-            isMuted: true
+            isMuted: false
         )
         let objectID = try operations.createProcessTap(request)
         guard objectID != 0 else { throw M1AudioRouteError.invalidTap("HAL returned object 0") }
@@ -251,6 +267,29 @@ actor M1AudioRouteResourceController {
             }
             throw error
         }
+    }
+
+    func prepareTapForCapture(_ routeTap: M1ProcessTapResource) throws {
+        guard routeTap.descriptor.kind == .processTap,
+              pendingTapTokens.isEmpty,
+              activeTapTokens[routeTap.descriptor.objectID]
+                == routeTap.descriptor.ownershipToken
+        else {
+            throw M1AudioRouteError.staleResource
+        }
+        try operations.probeAndMuteProcessTap(routeTap.descriptor.objectID)
+    }
+
+    func verifyCapturePermission(using routeTap: M1ProcessTapResource) throws {
+        guard routeTap.descriptor.kind == .processTap,
+              activeTapTokens.count == 1,
+              pendingTapTokens.isEmpty,
+              activeTapTokens[routeTap.descriptor.objectID]
+                == routeTap.descriptor.ownershipToken
+        else {
+            throw M1AudioRouteError.staleResource
+        }
+        try operations.verifyProcessTapCapturePermission(routeTap.descriptor.objectID)
     }
 
     func createAggregate(

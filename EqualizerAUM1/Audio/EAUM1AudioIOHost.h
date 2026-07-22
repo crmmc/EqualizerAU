@@ -24,6 +24,7 @@ typedef struct EAUM1AudioIOHostDescription {
     uint32_t ringCapacityFrames;
     uint32_t primeFrames;
     uint32_t targetBacklogFrames;
+    uint32_t startupSilentFrames;
 } EAUM1AudioIOHostDescription;
 
 typedef struct EAUM1AudioIOHostDiagnostics {

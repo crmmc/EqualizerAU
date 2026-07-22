@@ -39,7 +39,8 @@ HostFixture makeHost(
     uint32_t maximumFrames = 4,
     uint32_t ringFrames = 8,
     uint32_t primeFrames = 0,
-    uint32_t backlogFrames = 4
+    uint32_t backlogFrames = 4,
+    uint32_t startupSilentFrames = 0
 ) {
     HostFixture fixture;
     const float targets[] = {1.0f, 1.0f};
@@ -67,6 +68,7 @@ HostFixture makeHost(
         .ringCapacityFrames = ringFrames,
         .primeFrames = primeFrames,
         .targetBacklogFrames = backlogFrames,
+        .startupSilentFrames = startupSilentFrames,
     };
     XCTAssertEqual(EAUM1AudioIOHostCreate(&hostDescription, &fixture.host), EAUM1StatusOK);
     return fixture;
@@ -246,6 +248,140 @@ AudioBufferList outputList(float *samples, uint32_t frames) {
         XCTAssertEqualWithAccuracy(second[index], secondExpected[index], 1e-6f);
     }
     XCTAssertEqual(EAUM1AudioIOHostIsFadeComplete(fixture.host), 1);
+}
+
+- (void)testStartupSilenceConsumesAndProcessesBeforeCommonZeroCrossingRelease {
+    HostFixture fixture = makeHost(4, 12, 0, 4, 4);
+    float gatedLeft[] = {1, 1, 1, 1};
+    float gatedRight[] = {1, 1, 1, 1};
+    TwoBufferList gatedCapture = captureList(gatedLeft, gatedRight, 4);
+    XCTAssertEqual(
+        EAUM1AudioIOHostCapture(
+            fixture.host,
+            reinterpret_cast<AudioBufferList *>(&gatedCapture),
+            4
+        ),
+        EAUM1StatusOK
+    );
+    float output[8] = {};
+    AudioBufferList outputABL = outputList(output, 4);
+    AudioUnitRenderActionFlags flags = 0;
+    XCTAssertEqual(EAUM1AudioIOHostRender(fixture.host, &flags, &outputABL, 4), EAUM1StatusOK);
+    for (float sample : output) { XCTAssertEqual(sample, 0.0f); }
+    XCTAssertNotEqual(flags & kAudioUnitRenderAction_OutputIsSilence, 0u);
+
+    float releaseLeft[] = {1.0f, 0.5f, -0.25f, 0.75f};
+    float releaseRight[] = {1.0f, 0.25f, -0.5f, 0.75f};
+    TwoBufferList releaseCapture = captureList(releaseLeft, releaseRight, 4);
+    XCTAssertEqual(
+        EAUM1AudioIOHostCapture(
+            fixture.host,
+            reinterpret_cast<AudioBufferList *>(&releaseCapture),
+            4
+        ),
+        EAUM1StatusOK
+    );
+    std::fill(std::begin(output), std::end(output), 9.0f);
+    XCTAssertEqual(EAUM1AudioIOHostRender(fixture.host, &flags, &outputABL, 4), EAUM1StatusOK);
+    const float expected[] = {0, 0, 0, 0, -0.25f, -0.5f, 0.75f, 0.75f};
+    XCTAssertEqual(std::memcmp(output, expected, sizeof(expected)), 0);
+}
+
+- (void)testStartupReleaseFallsBackToLowestAllChannelMagnitudeInOneBlock {
+    HostFixture fixture = makeHost(4, 12, 0, 4, 4);
+    float gatedLeft[] = {1, 1, 1, 1};
+    float gatedRight[] = {1, 1, 1, 1};
+    TwoBufferList gatedCapture = captureList(gatedLeft, gatedRight, 4);
+    XCTAssertEqual(
+        EAUM1AudioIOHostCapture(
+            fixture.host,
+            reinterpret_cast<AudioBufferList *>(&gatedCapture),
+            4
+        ),
+        EAUM1StatusOK
+    );
+    float output[8] = {};
+    AudioBufferList outputABL = outputList(output, 4);
+    AudioUnitRenderActionFlags flags = 0;
+    XCTAssertEqual(EAUM1AudioIOHostRender(fixture.host, &flags, &outputABL, 4), EAUM1StatusOK);
+
+    float releaseLeft[] = {0.9f, 0.4f, 0.2f, 0.3f};
+    float releaseRight[] = {0.8f, 0.7f, 0.6f, 0.1f};
+    TwoBufferList releaseCapture = captureList(releaseLeft, releaseRight, 4);
+    XCTAssertEqual(
+        EAUM1AudioIOHostCapture(
+            fixture.host,
+            reinterpret_cast<AudioBufferList *>(&releaseCapture),
+            4
+        ),
+        EAUM1StatusOK
+    );
+    XCTAssertEqual(EAUM1AudioIOHostRender(fixture.host, &flags, &outputABL, 4), EAUM1StatusOK);
+    const float expected[] = {0, 0, 0, 0, 0, 0, 0.3f, 0.1f};
+    XCTAssertEqual(std::memcmp(output, expected, sizeof(expected)), 0);
+}
+
+- (void)testStartupSilenceAdvancesAcrossPartialUnderrun {
+    HostFixture fixture = makeHost(4, 12, 0, 4, 4);
+    float partialLeft[] = {1, 1};
+    float partialRight[] = {1, 1};
+    TwoBufferList partialCapture = captureList(partialLeft, partialRight, 2);
+    XCTAssertEqual(
+        EAUM1AudioIOHostCapture(
+            fixture.host,
+            reinterpret_cast<AudioBufferList *>(&partialCapture),
+            2
+        ),
+        EAUM1StatusOK
+    );
+    float output[8] = {};
+    AudioBufferList outputABL = outputList(output, 4);
+    AudioUnitRenderActionFlags flags = 0;
+    XCTAssertEqual(EAUM1AudioIOHostRender(fixture.host, &flags, &outputABL, 4), EAUM1StatusOK);
+    for (float sample : output) { XCTAssertEqual(sample, 0.0f); }
+
+    float releaseLeft[] = {1.0f, 0.5f, -0.25f, 0.75f};
+    float releaseRight[] = {1.0f, 0.25f, -0.5f, 0.75f};
+    TwoBufferList releaseCapture = captureList(releaseLeft, releaseRight, 4);
+    XCTAssertEqual(
+        EAUM1AudioIOHostCapture(
+            fixture.host,
+            reinterpret_cast<AudioBufferList *>(&releaseCapture),
+            4
+        ),
+        EAUM1StatusOK
+    );
+    XCTAssertEqual(EAUM1AudioIOHostRender(fixture.host, &flags, &outputABL, 4), EAUM1StatusOK);
+    const float expected[] = {0, 0, 0, 0, -0.25f, -0.5f, 0.75f, 0.75f};
+    XCTAssertEqual(std::memcmp(output, expected, sizeof(expected)), 0);
+}
+
+- (void)testStartupSilenceProcessesDroppedBacklogBeforeRelease {
+    HostFixture fixture = makeHost(4, 12, 0, 4, 4);
+    float left[] = {1, 1, 1, 1, 1, 1, 1, 1, 1, -0.25f, 0.5f, 0.75f};
+    float right[] = {1, 1, 1, 1, 1, 1, 1, 1, 1, -0.5f, 0.25f, 0.75f};
+    for (uint32_t offset = 0; offset < 12; offset += 4) {
+        TwoBufferList capture = captureList(left + offset, right + offset, 4);
+        XCTAssertEqual(
+            EAUM1AudioIOHostCapture(
+                fixture.host,
+                reinterpret_cast<AudioBufferList *>(&capture),
+                4
+            ),
+            EAUM1StatusOK
+        );
+    }
+
+    float output[8] = {};
+    AudioBufferList outputABL = outputList(output, 4);
+    AudioUnitRenderActionFlags flags = 0;
+    XCTAssertEqual(EAUM1AudioIOHostRender(fixture.host, &flags, &outputABL, 4), EAUM1StatusOK);
+    const float expected[] = {0, 0, -0.25f, -0.5f, 0.5f, 0.25f, 0.75f, 0.75f};
+    XCTAssertEqual(std::memcmp(output, expected, sizeof(expected)), 0);
+
+    EAUM1AudioIOHostDiagnostics diagnostics = {};
+    XCTAssertEqual(EAUM1AudioIOHostCopyDiagnostics(fixture.host, &diagnostics), EAUM1StatusOK);
+    XCTAssertEqual(diagnostics.droppedBacklogFrameCount, 8u);
 }
 
 - (void)testRenderOverlapClearsOutputWithoutConsumingRing {

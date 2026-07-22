@@ -23,7 +23,8 @@ struct M1SystemAudioIOOperations: M1AudioIOOperations, @unchecked Sendable {
               let maximumFrames = UInt32(exactly: configuration.maximumFrameCount),
               let ringCapacity = UInt32(exactly: configuration.ringCapacityFrames),
               let primeFrames = UInt32(exactly: configuration.primeFrames),
-              let targetBacklog = UInt32(exactly: configuration.targetBacklogFrames)
+              let targetBacklog = UInt32(exactly: configuration.targetBacklogFrames),
+              let startupSilentFrames = UInt32(exactly: configuration.startupSilentFrames)
         else {
             throw M1AudioIOError.invalidConfiguration("host dimensions exceed the ABI")
         }
@@ -38,7 +39,8 @@ struct M1SystemAudioIOOperations: M1AudioIOOperations, @unchecked Sendable {
                 maximumFrameCount: maximumFrames,
                 ringCapacityFrames: ringCapacity,
                 primeFrames: primeFrames,
-                targetBacklogFrames: targetBacklog
+                targetBacklogFrames: targetBacklog,
+                startupSilentFrames: startupSilentFrames
             )
             return EAUM1AudioIOHostCreate(&description, &pointer)
         }

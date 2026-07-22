@@ -57,8 +57,11 @@ struct EAUM1AudioIOHost {
     uint32_t ringCapacityFrames;
     uint32_t primeFrames;
     uint32_t targetBacklogFrames;
+    uint32_t startupSilentFramesRemaining;
+    bool startupReleasePending;
     std::vector<float> ring;
     std::vector<float> renderScratch;
+    std::vector<float> previousReleaseSamples;
     std::atomic<uint64_t> writeFrame{0};
     std::atomic<uint64_t> readFrame{0};
     std::atomic<uint64_t> callbacksInFlight{0};
@@ -245,8 +248,13 @@ EAUM1Status EAUM1AudioIOHostCreate(
             description->ringCapacityFrames,
             description->primeFrames,
             description->targetBacklogFrames,
+            description->startupSilentFrames,
+            description->startupSilentFrames > 0,
             std::vector<float>(ringSamples),
             std::vector<float>(scratchSamples),
+            std::vector<float>(
+                description->startupSilentFrames > 0 ? description->channelCount : 0
+            ),
         };
         *hostOut = host;
         return EAUM1StatusOK;
@@ -359,6 +367,46 @@ EAUM1Status EAUM1AudioIOHostRender(
     }
 
     uint64_t available = availableFrames(host);
+    auto processStartupFrames = [&](uint64_t frames) {
+        EAUM1Status status = EAUM1StatusOK;
+        while (frames > 0) {
+            const uint32_t chunkFrames = static_cast<uint32_t>(
+                std::min<uint64_t>(frames, host->maximumFrameCount)
+            );
+            const uint64_t read = host->readFrame.load(std::memory_order_relaxed);
+            for (uint32_t frame = 0; frame < chunkFrames; ++frame) {
+                const uint32_t ringFrame =
+                    static_cast<uint32_t>((read + frame) % host->ringCapacityFrames);
+                std::memcpy(
+                    &host->renderScratch[static_cast<size_t>(frame) * host->channelCount],
+                    &host->ring[static_cast<size_t>(ringFrame) * host->channelCount],
+                    host->channelCount * sizeof(float)
+                );
+            }
+            host->readFrame.store(read + chunkFrames, std::memory_order_release);
+            EAUM1AudioBuffer buffer{host->renderScratch.data(), host->channelCount};
+            const EAUM1Status chunkStatus = EAUM1RuntimeProcess(
+                host->runtime,
+                &buffer,
+                1,
+                chunkFrames
+            );
+            if (status == EAUM1StatusOK && chunkStatus != EAUM1StatusOK) {
+                status = chunkStatus;
+            }
+            const uint32_t gatedFrames =
+                std::min(host->startupSilentFramesRemaining, chunkFrames);
+            host->startupSilentFramesRemaining -= gatedFrames;
+            const size_t lastFrameOffset =
+                static_cast<size_t>(chunkFrames - 1) * host->channelCount;
+            for (uint32_t channel = 0; channel < host->channelCount; ++channel) {
+                host->previousReleaseSamples[channel] =
+                    host->renderScratch[lastFrameOffset + channel];
+            }
+            frames -= chunkFrames;
+        }
+        return status;
+    };
     if (host->priming.load(std::memory_order_acquire)) {
         if (available < host->primeFrames) {
             clearOutput(outputData, host->channelCount, frameCount);
@@ -368,16 +416,26 @@ EAUM1Status EAUM1AudioIOHostRender(
         host->priming.store(false, std::memory_order_release);
     }
     if (available < frameCount) {
-        host->readFrame.fetch_add(available, std::memory_order_release);
+        EAUM1Status partialProcessStatus = EAUM1StatusOK;
+        if (host->startupReleasePending && available > 0) {
+            partialProcessStatus = processStartupFrames(available);
+        } else {
+            host->readFrame.fetch_add(available, std::memory_order_release);
+        }
         host->priming.store(true, std::memory_order_release);
         host->underrunBlockCount.fetch_add(1, std::memory_order_relaxed);
         clearOutput(outputData, host->channelCount, frameCount);
         setSilenceFlag(actionFlags, true);
-        return EAUM1StatusOK;
+        return partialProcessStatus;
     }
+    EAUM1Status backlogProcessStatus = EAUM1StatusOK;
     if (available > static_cast<uint64_t>(host->targetBacklogFrames) + frameCount) {
         const uint64_t drop = available - host->targetBacklogFrames;
-        host->readFrame.fetch_add(drop, std::memory_order_release);
+        if (host->startupReleasePending) {
+            backlogProcessStatus = processStartupFrames(drop);
+        } else {
+            host->readFrame.fetch_add(drop, std::memory_order_release);
+        }
         host->droppedBacklogFrameCount.fetch_add(drop, std::memory_order_relaxed);
         available -= drop;
     }
@@ -396,6 +454,55 @@ EAUM1Status EAUM1AudioIOHostRender(
     EAUM1AudioBuffer runtimeBuffer{host->renderScratch.data(), host->channelCount};
     const EAUM1Status processStatus = EAUM1RuntimeProcess(host->runtime, &runtimeBuffer, 1, frameCount);
     float *destination = static_cast<float *>(outputData->mBuffers[0].mData);
+
+    uint32_t releaseFrame = 0;
+    if (host->startupReleasePending) {
+        const uint32_t gatedFrames = std::min(host->startupSilentFramesRemaining, frameCount);
+        host->startupSilentFramesRemaining -= gatedFrames;
+        releaseFrame = gatedFrames;
+        for (uint32_t frame = 0; frame < gatedFrames; ++frame) {
+            for (uint32_t channel = 0; channel < host->channelCount; ++channel) {
+                host->previousReleaseSamples[channel] =
+                    host->renderScratch[static_cast<size_t>(frame) * host->channelCount + channel];
+            }
+        }
+        if (host->startupSilentFramesRemaining == 0 && releaseFrame < frameCount) {
+            uint32_t fallbackFrame = releaseFrame;
+            float fallbackMagnitude = std::numeric_limits<float>::infinity();
+            bool foundCrossing = false;
+            for (uint32_t frame = releaseFrame; frame < frameCount; ++frame) {
+                float maximumMagnitude = 0.0f;
+                bool allChannelsCross = true;
+                for (uint32_t channel = 0; channel < host->channelCount; ++channel) {
+                    const float previous = host->previousReleaseSamples[channel];
+                    const float current =
+                        host->renderScratch[static_cast<size_t>(frame) * host->channelCount + channel];
+                    maximumMagnitude = std::max(maximumMagnitude, std::fabs(current));
+                    allChannelsCross = allChannelsCross
+                        && (previous == 0.0f || current == 0.0f
+                            || std::signbit(previous) != std::signbit(current));
+                }
+                if (maximumMagnitude < fallbackMagnitude) {
+                    fallbackMagnitude = maximumMagnitude;
+                    fallbackFrame = frame;
+                }
+                if (allChannelsCross) {
+                    releaseFrame = frame;
+                    foundCrossing = true;
+                    break;
+                }
+                for (uint32_t channel = 0; channel < host->channelCount; ++channel) {
+                    host->previousReleaseSamples[channel] =
+                        host->renderScratch[static_cast<size_t>(frame) * host->channelCount + channel];
+                }
+            }
+            if (!foundCrossing) {
+                releaseFrame = fallbackFrame;
+            }
+            host->startupReleasePending = false;
+        }
+    }
+
     bool silent = true;
     const uint64_t loadedFadeState = host->fadeState.load(std::memory_order_seq_cst);
     const uint32_t fadeTotal = static_cast<uint32_t>(loadedFadeState >> 32);
@@ -412,7 +519,7 @@ EAUM1Status EAUM1AudioIOHostRender(
         }
         for (uint32_t channel = 0; channel < host->channelCount; ++channel) {
             const size_t index = static_cast<size_t>(frame) * host->channelCount + channel;
-            const float value = host->renderScratch[index] * fade;
+            const float value = frame < releaseFrame ? 0.0f : host->renderScratch[index] * fade;
             destination[index] = value;
             silent = silent && value == 0.0f;
         }
@@ -427,7 +534,7 @@ EAUM1Status EAUM1AudioIOHostRender(
     );
     host->renderedFrameCount.fetch_add(frameCount, std::memory_order_relaxed);
     setSilenceFlag(actionFlags, silent);
-    return processStatus;
+    return processStatus == EAUM1StatusOK ? backlogProcessStatus : processStatus;
 }
 
 EAUM1Status EAUM1AudioIOHostCopyDiagnostics(

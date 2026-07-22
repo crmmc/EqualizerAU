@@ -44,6 +44,7 @@ struct M1AudioIOHostConfiguration: Equatable, Sendable {
     let ringCapacityFrames: Int
     let primeFrames: Int
     let targetBacklogFrames: Int
+    let startupSilentFrames: Int
 }
 
 struct M1OutputHostDiagnostics: Equatable, Sendable {
@@ -182,7 +183,8 @@ actor M1AudioIOController {
         bridgeGeneration: UInt64,
         aggregate: M1AggregateResource,
         output: M1OutputDeviceSnapshot,
-        runtime: M1RuntimeHandleLease
+        runtime: M1RuntimeHandleLease,
+        startupSilentFrames: Int = 0
     ) throws -> M1AudioIOResource {
         guard generation == aggregate.descriptor.generation,
               generation == output.generation,
@@ -192,6 +194,7 @@ actor M1AudioIOController {
         }
         let channelCount = output.layout.channels.count
         guard channelCount > 0,
+              startupSilentFrames >= 0,
               aggregate.format.channelCount == UInt32(channelCount),
               aggregate.format.sampleRate == output.layout.sampleRate,
               aggregate.maximumFrameCount >= output.layout.maximumFrameCount
@@ -210,7 +213,8 @@ actor M1AudioIOController {
             maximumFrameCount: maximumFrames,
             ringCapacityFrames: ringCapacity,
             primeFrames: primeFrames,
-            targetBacklogFrames: max(maximumFrames, primeFrames)
+            targetBacklogFrames: max(maximumFrames, primeFrames),
+            startupSilentFrames: startupSilentFrames
         )
         let host = try operations.createHost(configuration: configuration, runtime: runtime)
         do {

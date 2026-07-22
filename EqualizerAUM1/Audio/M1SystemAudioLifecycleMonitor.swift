@@ -8,21 +8,42 @@ protocol M1AudioLifecycleMonitoring: AnyObject {
 }
 
 final class M1SystemAudioLifecycleMonitor: M1AudioLifecycleMonitoring, @unchecked Sendable {
+    private final class DeviceListenerActivation: @unchecked Sendable {
+        var isActive = false
+    }
+
+    private final class DeviceListenerRegistration: @unchecked Sendable {
+        let deviceID: AudioObjectID
+        let listener: AudioObjectPropertyListenerBlock
+        let activation: DeviceListenerActivation
+        var selectors: [AudioObjectPropertySelector] = []
+
+        init(
+            deviceID: AudioObjectID,
+            listener: @escaping AudioObjectPropertyListenerBlock,
+            activation: DeviceListenerActivation
+        ) {
+            self.deviceID = deviceID
+            self.listener = listener
+            self.activation = activation
+        }
+    }
+
     private let queue = DispatchQueue(label: "com.ruimingchen.EqualizerAU.audio-lifecycle")
     private let queueKey = DispatchSpecificKey<UInt8>()
     private var handler: (@Sendable (M1AudioLifecycleEvent) -> Void)?
     private var currentDeviceID = AudioObjectID(kAudioObjectUnknown)
     private var currentDeviceUID = ""
+    private var currentDeviceRegistration: DeviceListenerRegistration?
+    private var retiredDeviceRegistrations: [DeviceListenerRegistration] = []
     private var workspaceObservers: [NSObjectProtocol] = []
     private var isStarted = false
     private var rebindAttempt = 0
     private var rebindGeneration: UInt64 = 0
+    private var deviceListChangeTracker = M1AudioDeviceListChangeTracker()
 
     private lazy var systemListener: AudioObjectPropertyListenerBlock = { [weak self] count, addresses in
         self?.handleSystemProperties(count: count, addresses: addresses)
-    }
-    private lazy var deviceListener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-        self?.handler?(.routeChanged)
     }
 
     init() {
@@ -74,25 +95,67 @@ final class M1SystemAudioLifecycleMonitor: M1AudioLifecycleMonitoring, @unchecke
         count: UInt32,
         addresses: UnsafePointer<AudioObjectPropertyAddress>
     ) {
-        var event: M1AudioLifecycleEvent?
+        var changes: Set<M1AudioSystemPropertyChange> = []
         for index in 0..<Int(count) {
             switch addresses[index].mSelector {
             case kAudioHardwarePropertyDefaultOutputDevice:
-                rebindAttempt = 0
-                rebindDefaultOutputDevice()
-                event = .routeChanged
+                changes.insert(.defaultOutput)
             case kAudioHardwarePropertyDevices:
-                rebindAttempt = 0
-                rebindDefaultOutputDevice()
-                event = .systemAudioServicesChanged
+                changes.insert(.deviceList)
             default:
                 break
             }
         }
-        if let event { handler?(event) }
+        guard !changes.isEmpty else { return }
+        rebindAttempt = 0
+        if changes.contains(.defaultOutput) {
+            deviceListChangeTracker.cancel()
+            rebindDefaultOutputDevice()
+            handler?(.routeChanged)
+        } else {
+            deviceListChangeTracker.begin(previousOutput: monitoredOutputIdentity)
+            rebindDefaultOutputDevice()
+        }
+    }
+
+    private func handleDeviceProperties(
+        count: UInt32,
+        addresses: UnsafePointer<AudioObjectPropertyAddress>,
+        output: M1MonitoredOutputIdentity
+    ) {
+        var changes: Set<M1AudioDevicePropertyChange> = []
+        for index in 0..<Int(count) {
+            switch addresses[index].mSelector {
+            case kAudioDevicePropertyDeviceIsAlive:
+                changes.insert(.alive)
+            case kAudioDevicePropertyNominalSampleRate,
+                 kAudioDevicePropertyStreamConfiguration,
+                 kAudioDevicePropertyPreferredChannelLayout:
+                changes.insert(.outputFormat)
+            default:
+                break
+            }
+        }
+        if let event = M1AudioDevicePropertyEventClassifier.event(
+            for: changes,
+            output: output
+        ) {
+            handler?(event)
+        }
+    }
+
+    private var monitoredOutputIdentity: M1MonitoredOutputIdentity? {
+        guard currentDeviceID != AudioObjectID(kAudioObjectUnknown), !currentDeviceUID.isEmpty else {
+            return nil
+        }
+        return M1MonitoredOutputIdentity(
+            objectID: UInt32(currentDeviceID),
+            persistentUID: currentDeviceUID
+        )
     }
 
     private func bindDefaultOutputDevice() throws {
+        retryRetiredDeviceListeners()
         var address = propertyAddress(kAudioHardwarePropertyDefaultOutputDevice)
         var deviceID = AudioObjectID(kAudioObjectUnknown)
         var size = UInt32(MemoryLayout<AudioObjectID>.size)
@@ -108,35 +171,50 @@ final class M1SystemAudioLifecycleMonitor: M1AudioLifecycleMonitoring, @unchecke
             throw M1CoreAudioStatusError(operation: "Monitor default output device", status: status)
         }
         if deviceID == AudioObjectID(kAudioObjectUnknown) {
-            removeDeviceListeners(deviceID: currentDeviceID)
+            retireCurrentDeviceRegistration()
             currentDeviceID = deviceID
             currentDeviceUID = ""
             return
         }
         let deviceUID = try readDeviceUID(deviceID)
         guard deviceID != currentDeviceID || deviceUID != currentDeviceUID else { return }
-        if deviceID == currentDeviceID {
-            removeDeviceListeners(deviceID: currentDeviceID)
+        let outputIdentity = M1MonitoredOutputIdentity(
+            objectID: UInt32(deviceID),
+            persistentUID: deviceUID
+        )
+        let activation = DeviceListenerActivation()
+        let newDeviceListener: AudioObjectPropertyListenerBlock = { [weak self] count, addresses in
+            guard activation.isActive else { return }
+            self?.handleDeviceProperties(
+                count: count,
+                addresses: addresses,
+                output: outputIdentity
+            )
         }
+        let registration = DeviceListenerRegistration(
+            deviceID: deviceID,
+            listener: newDeviceListener,
+            activation: activation
+        )
         for selector in Self.deviceSelectors {
             var address = propertyAddress(selector, scope: Self.scope(for: selector))
             let addStatus = AudioObjectAddPropertyListenerBlock(
                 deviceID,
                 &address,
                 queue,
-                deviceListener
+                registration.listener
             )
             guard addStatus == noErr else {
-                removeDeviceListeners(deviceID: deviceID)
+                retainIfRemovalFails(registration)
                 throw M1CoreAudioStatusError(operation: "Monitor output device", status: addStatus)
             }
+            registration.selectors.append(selector)
         }
-        let previousDeviceID = currentDeviceID
+        registration.activation.isActive = true
+        retireCurrentDeviceRegistration()
         currentDeviceID = deviceID
         currentDeviceUID = deviceUID
-        if previousDeviceID != deviceID {
-            removeDeviceListeners(deviceID: previousDeviceID)
-        }
+        currentDeviceRegistration = registration
     }
 
     private func rebindDefaultOutputDevice() {
@@ -144,6 +222,11 @@ final class M1SystemAudioLifecycleMonitor: M1AudioLifecycleMonitoring, @unchecke
             try bindDefaultOutputDevice()
             rebindAttempt = 0
             rebindGeneration &+= 1
+            if let event = deviceListChangeTracker.finish(
+                currentOutput: monitoredOutputIdentity
+            ) {
+                handler?(event)
+            }
         } catch {
             scheduleRebind()
         }
@@ -151,6 +234,7 @@ final class M1SystemAudioLifecycleMonitor: M1AudioLifecycleMonitoring, @unchecke
 
     private func scheduleRebind() {
         guard rebindAttempt < Self.maximumRebindAttempts else {
+            deviceListChangeTracker.cancel()
             handler?(.monitoringFailed)
             return
         }
@@ -205,7 +289,9 @@ final class M1SystemAudioLifecycleMonitor: M1AudioLifecycleMonitoring, @unchecke
     private func removeRegisteredListeners() {
         rebindGeneration &+= 1
         rebindAttempt = 0
-        removeDeviceListeners(deviceID: currentDeviceID)
+        deviceListChangeTracker.cancel()
+        retireCurrentDeviceRegistration()
+        retryRetiredDeviceListeners()
         currentDeviceID = AudioObjectID(kAudioObjectUnknown)
         currentDeviceUID = ""
         for selector in [
@@ -225,12 +311,32 @@ final class M1SystemAudioLifecycleMonitor: M1AudioLifecycleMonitoring, @unchecke
         workspaceObservers.removeAll()
     }
 
-    private func removeDeviceListeners(deviceID: AudioObjectID) {
-        guard deviceID != AudioObjectID(kAudioObjectUnknown) else { return }
-        for selector in Self.deviceSelectors {
+    private func retireCurrentDeviceRegistration() {
+        guard let registration = currentDeviceRegistration else { return }
+        currentDeviceRegistration = nil
+        registration.activation.isActive = false
+        retainIfRemovalFails(registration)
+    }
+
+    private func retainIfRemovalFails(_ registration: DeviceListenerRegistration) {
+        registration.selectors = registration.selectors.filter { selector in
             var address = propertyAddress(selector, scope: Self.scope(for: selector))
-            AudioObjectRemovePropertyListenerBlock(deviceID, &address, queue, deviceListener)
+            return AudioObjectRemovePropertyListenerBlock(
+                registration.deviceID,
+                &address,
+                queue,
+                registration.listener
+            ) != noErr
         }
+        if !registration.selectors.isEmpty {
+            retiredDeviceRegistrations.append(registration)
+        }
+    }
+
+    private func retryRetiredDeviceListeners() {
+        let registrations = retiredDeviceRegistrations
+        retiredDeviceRegistrations.removeAll(keepingCapacity: true)
+        registrations.forEach(retainIfRemovalFails)
     }
 
     private func propertyAddress(

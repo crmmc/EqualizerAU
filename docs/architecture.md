@@ -42,7 +42,8 @@ Runtime ABI v3 的 Convolution stage 引用 Prepared 中的 planar taps。每个
 命名空间内的遗留临时文件，并区分主文件损坏、缺失和 I/O 失败；从 previous 成功恢复会
 保留显式恢复来源。主文件替换后的最终目录同步失败会保留唯一候选和代次，bootstrap 使用
 代次 `0`，不确定结果继续携带首次建立或 previous 恢复来源，且只允许对同代次执行目录同步
-Retry。应用进程只装配一个 production store，不提供多实例或跨进程写盘仲裁。
+Retry。应用进程只装配一个 production store，不提供跨进程写盘仲裁；产品 Info.plist 禁止
+LaunchServices 多实例，SwiftUI 使用唯一 `Window` scene，重复打开只激活或恢复主编辑窗口。
 
 `M1ProductController` actor 是 M1 的产品控制边界。它分别维护草稿修订、配置提交代次和
 音频桥接代次；编辑只改变会话草稿，Save 先针对一次发现得到的真实布局在 actor 外构建，
@@ -53,7 +54,10 @@ Retry。应用进程只装配一个 production store，不提供多实例或跨�
 `M1SystemAudioLifecycleMonitor` 在独立串行队列监听默认输出、设备列表、当前默认设备的
 alive/sample-rate/stream-layout 属性以及系统 sleep/wake。默认设备监听以临时
 `AudioObjectID` 和持久 UID 联合标识，重绑定在新监听完整建立后才移除旧监听；失败按
-250 ms、1 s、1 s 最多重试三次，耗尽后向产品层发布明确的 monitoring failure。产品恢复
+250 ms、1 s、1 s 最多重试三次，耗尽后向产品层发布明确的 monitoring failure。设备列表
+变化只有在默认输出联合身份实际变化后才成为恢复事件；Tap/Aggregate 生命周期导致的
+默认输出身份不变的列表变化不会触发自恢复。首次重绑定失败会保留旧身份，待重试成功后
+再完成分类。产品恢复
 保留显式 Start/Stop 与配置提交语义：只有先前运行意图存在时自动恢复，每批最多三次，
 恢复中事件合并为一次后继恢复，睡眠期间禁止启动，权限错误和预算耗尽会停止自动重试。
 
@@ -120,8 +124,9 @@ flowchart LR
     A --> B --> C --> D --> E --> F --> G --> H --> I --> J
 ```
 
-捕获必须先创建并启动，之后才创建输出 Audio Unit。这是自排除拓扑的功能条件，
-不是性能优化。
+启动构建期间，实际路线 Tap 先以 `.unmuted` 创建；捕获 IOProc 注册后，在同一 Tap 上完成权限
+探测并切换为 `.muted`，之后才启动捕获。捕获必须先启动，之后才创建输出 Audio Unit。这是
+权限失败时保留原声及自排除拓扑的功能条件，不是性能优化。
 
 ## 3. 模块职责
 
@@ -146,7 +151,7 @@ flowchart TD
 
 | 模块 | 当前职责 |
 |---|---|
-| `EqualizerAUApp`、`ContentView` | 展示 Save、Processing、通用可展开节点行、上下文状态和高级诊断入口，不直接拥有 Core Audio 对象 |
+| `EqualizerAUApp`、`ContentView` | 提供单一主窗口，展示 Save、Processing、通用可展开节点行、上下文状态和高级诊断入口，不直接拥有 Core Audio 对象 |
 | `AppModel` | 把用户命令转换为生命周期操作，发布状态和错误，阻止互相冲突的操作 |
 | `M1SystemAudioLifecycleMonitor` | 监听系统设备、当前默认输出属性和 sleep/wake，以持久 UID 复核监听身份并执行有界重绑 |
 | `CoreAudioHAL` 与发现类型 | 集中读写 HAL 属性，区分持久 UID 与临时 `AudioObjectID`，解析有界格式 |
@@ -169,9 +174,12 @@ sequenceDiagram
     participant I as AudioIOController
     participant O as DefaultOutput
 
-    P->>T: 创建 .muted 自排除 Tap
+    P->>T: 创建 provisional .unmuted 自排除 Tap
     P->>A: 创建仅含 Tap 的 Aggregate
     P->>I: 创建桥接和捕获注册
+    P->>T: 读取并同值写回实际 Tap description
+    T-->>P: 捕获权限已验证
+    P->>T: 将同一 Tap 切换为 .muted
     P->>I: startCapture()
     I-->>P: 捕获已运行
     P->>I: createOutput()
@@ -203,7 +211,25 @@ sequenceDiagram
 重新发现和启动。一次恢复最多尝试三次；恢复中的重复事件只形成一次后继恢复。显式 Stop、
 Quit 或 sleep 通过 generation token 使在途 Start、output-layout 读取和退避失效，旧操作不得
 重新发布 running 投影。sleep 只停止，wake 才恢复；捕获权限被拒绝时不自动重试，并展示
-系统设置入口。
+系统设置入口。系统设备列表变化先重新读取默认输出联合身份，身份未变时不重建路线，避免
+应用自身创建或销毁 Aggregate 形成恢复反馈环。
+
+当前输出的 nominal sample rate、stream configuration 或 preferred channel layout 变化使用独立
+的格式恢复路径。停止旧路线后最多读取输出快照 6 次、间隔 50 ms；只有连续两次临时 ID、
+持久 UID、采样率、布局和最大帧容量全部一致才创建 Tap。若事件携带的设备身份已不是当前
+默认输出，则降级为普通路线恢复，不把格式恢复策略套用到新设备。同一输出身份的格式恢复
+在销毁旧 Aggregate 后保留旧 `.muted` Tap 作为跨代 mute guard；新 Tap、捕获和输出启动后才
+按持久 UID 销毁 guard。取消、显式 Stop、sleep、Quit、权限失败或恢复预算耗尽会执行终态
+清理；guard 销毁失败保留所有权并进入 cleanup-required。具体决策见
+[`ADR 0011`](adr/0011-stable-format-recovery-release.md)。
+
+每次 Start/恢复都会在实际路线 Tap 保持 unmuted 时创建 Aggregate 和捕获 IOProc，但不启动
+捕获；随后读取并同值写回该 Tap description，成功后再把同一对象切换为 `.muted`。任一 Tap
+属性操作失败都不会启动捕获或输出，并按依赖顺序回滚。应用从其他应用返回前台且路线稳定运行
+时，在既有路线 Tap 上再次执行 description 读取和同值写回，不创建临时 Tap，也不改变其
+`.muted` 状态。权限拒绝或其他复核错误都会先执行普通路线清理，再进入 permission、waiting
+或 cleanup-required 状态。该机制不轮询、不读取私有 TCC，也不根据静音内容推断权限，详见
+[`ADR 0012`](adr/0012-runtime-capture-permission-verification.md)。
 
 ## 5. 实时数据面
 
@@ -254,6 +280,7 @@ flowchart LR
 | 尚未达到预热阈值 | 输出完整静音块 |
 | SPSC 欠载 | 整块静音，不输出残留或半块旧数据 |
 | SPSC 积压 | 执行有界、可观测的积压修正 |
+| 格式恢复的新输出 | priming 后固定静音 50 ms，期间继续消费 SPSC 并推进 DSP；随后在当前块的共同跨零点或有界最小幅值帧释放 |
 | 输出回调 | 以 `inNumberFrames` 为准，不以缓冲容量推导工作量 |
 | 捕获与输出格式不匹配 | 当前 M0 路线拒绝启动，不做实时采样率转换 |
 
@@ -282,6 +309,9 @@ stateDiagram-v2
   旧代次的本地所有权记录，不销毁新对象。若 UID 无法读取则保留所有权并允许重试。
 - Tap 创建后若首次 UID 读取和立即回滚销毁同时失败，会保留 unknown-identity pending
   ownership；后续不得仅凭临时 ID 销毁该对象。
+- 普通路线仍只允许一个 active Tap；同一输出身份的格式恢复只允许“一个已验证旧 guard +
+  一个后继代次 Tap”的受限重叠。guard 同时记录来源 bridge generation，使迟到维护回调只能
+  清理其拥有的 guard，不能停止已接管的新路线。
 - 创建成功但校验失败时，控制器保留按令牌标识的待清理资源。
 - 每个 IO 资源使用操作状态阻止重入的创建、启动、停止和销毁。
 - 异步诊断返回前重新校验运行代次和所有权；停止期间的旧快照返回空值。
@@ -339,8 +369,10 @@ flowchart LR
   音频验收。
 - M3 Convolution 已完成 hostless 文件、SRC、数值、容量、发布和产品层验证，但尚未执行 hosted
   文件选择器、GUI 或真实音频验收；sidecar 当前不执行自动垃圾回收。
-- M4 已完成设备/服务事件监听、有界恢复、sleep/wake、权限提示和持久 UID 所有权复核的
-  hostless 实现；签名发布、真实设备切换、权限、睡眠和服务重启验收尚未执行。
+- M4 已完成设备/服务事件监听、有界恢复、格式稳定确认与恢复输出释放、启动及运行期权限门禁、
+  sleep/wake、权限提示和持久 UID 所有权复核的 hostless 实现；格式恢复听感已通过人工复测，
+  冷启动拒权已通过人工复测；系统设置未使当前进程授权失效时，运行路线保持正常也已按平台
+  行为验收。设备切换、sleep/wake 和服务重启仍以对应 milestone 的人工证据为准。
 - 用户已按 M1.4 完整人工脚本报告真实音频、重复启停、持久恢复和 30 秒实时计数增量验收通过；
   该报告是整体结论，未附设备型号或逐项原始计数。
 - 应用退出后处理停止。

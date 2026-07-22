@@ -2,6 +2,15 @@ import Foundation
 import XCTest
 
 final class M1AudioIOControllerTests: XCTestCase {
+    func testCreatePassesStartupSilenceToPreallocatedHostConfiguration() async throws {
+        let operations = TestAudioIOOperations()
+        let controller = M1AudioIOController(operations: operations, timing: testTiming())
+
+        _ = try await makeIOResource(controller: controller, startupSilentFrames: 2_400)
+
+        XCTAssertEqual(operations.hostConfigurations.map(\.startupSilentFrames), [2_400])
+    }
+
     func testDiagnosticsPropagateHostCountersForOwnedResource() async throws {
         let operations = TestAudioIOOperations()
         let controller = M1AudioIOController(operations: operations, timing: testTiming())
@@ -165,7 +174,10 @@ private struct IOFixture {
     let resource: M1AudioIOResource
 }
 
-private func makeIOResource(controller: M1AudioIOController) async throws -> IOFixture {
+private func makeIOResource(
+    controller: M1AudioIOController,
+    startupSilentFrames: Int = 0
+) async throws -> IOFixture {
     let generation = M1AudioRouteGeneration(rawValue: 1)
     let layout = M1OutputLayoutSnapshot(
         sampleRate: 48_000,
@@ -216,7 +228,8 @@ private func makeIOResource(controller: M1AudioIOController) async throws -> IOF
         bridgeGeneration: 11,
         aggregate: aggregate,
         output: output,
-        runtime: runtime
+        runtime: runtime,
+        startupSilentFrames: startupSilentFrames
     )
     return IOFixture(resource: resource)
 }
@@ -238,6 +251,7 @@ private func testTiming() -> M1AudioIOControlTiming {
 
 private final class TestAudioIOOperations: M1AudioIOOperations, @unchecked Sendable {
     var calls: [String] = []
+    var hostConfigurations: [M1AudioIOHostConfiguration] = []
     var stopOutputFailuresRemaining = 0
     var destroyOutputFailuresRemaining = 0
     var creationDiagnosticsAreInvalid = false
@@ -251,6 +265,7 @@ private final class TestAudioIOOperations: M1AudioIOOperations, @unchecked Senda
         runtime: M1RuntimeHandleLease
     ) throws -> M1AudioIOHostHandle {
         calls.append("createHost")
+        hostConfigurations.append(configuration)
         return M1AudioIOHostHandle()
     }
 

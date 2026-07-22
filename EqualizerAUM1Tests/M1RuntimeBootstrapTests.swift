@@ -18,4 +18,11 @@ final class M1RuntimeBootstrapTests: XCTestCase {
         XCTAssertTrue(node.isEnabled)
         XCTAssertEqual(node.channels, .all)
     }
+
+    func testAppProhibitsMultipleLaunchServicesInstances() {
+        XCTAssertEqual(
+            Bundle.main.object(forInfoDictionaryKey: "LSMultipleInstancesProhibited") as? Bool,
+            true
+        )
+    }
 }

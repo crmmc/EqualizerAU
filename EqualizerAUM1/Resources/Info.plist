@@ -22,6 +22,8 @@
 	<string>public.app-category.utilities</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<key>LSMultipleInstancesProhibited</key>
+	<true/>
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>EqualizerAU captures system audio so it can process and play it through the selected output device.</string>
 	<key>NSHighResolutionCapable</key>
