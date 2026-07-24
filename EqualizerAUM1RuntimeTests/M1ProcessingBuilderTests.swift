@@ -357,6 +357,18 @@ final class M1ProcessingBuilderTests: XCTestCase {
         XCTAssertEqual(configuredNode.channels, .identifiers([left]))
     }
 
+    func testNumericIdentifiersRemainPhysicalChannelAliasesForSemanticLayouts() throws {
+        let configuredNode = node(gainDB: 6, channels: .identifiers([identifier("1")]))
+        let result = try M1ProcessingBuilder.build(
+            nodes: [configuredNode],
+            layout: stereoLayout()
+        )
+
+        XCTAssertGreaterThan(result.linearGainsByChannel[0], 1)
+        XCTAssertEqual(result.linearGainsByChannel[1], 1)
+        XCTAssertTrue(result.diagnostics.unresolvedChannels.isEmpty)
+    }
+
     func testChannelsNodesScopeFollowingEffectsAndAttachUnresolvedDiagnosticsToScope() throws {
         let leftScopeID = UUID()
         let missingScopeID = UUID()
@@ -381,6 +393,21 @@ final class M1ProcessingBuilderTests: XCTestCase {
             result.diagnostics.unresolvedChannels,
             [M1UnresolvedChannelDiagnostic(nodeID: missingScopeID, identifiers: [missing])]
         )
+    }
+
+    func testDisabledChannelsNodeDoesNotChangeFollowingScope() throws {
+        let left = identifier("L")
+        let result = try M1ProcessingBuilder.build(
+            nodes: [
+                .channels(selection: .identifiers([left])),
+                .channels(isEnabled: false, selection: .identifiers([identifier("R")])),
+                node(gainDB: 6, channels: .all),
+            ],
+            layout: stereoLayout()
+        )
+
+        XCTAssertGreaterThan(result.linearGainsByChannel[0], 1)
+        XCTAssertEqual(result.linearGainsByChannel[1], 1)
     }
 
     func testGraphicEQCompilesOrderedScopedBiquadsAndOmitsFlatBands() throws {

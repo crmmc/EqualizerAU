@@ -2,6 +2,19 @@ import Foundation
 import XCTest
 
 final class M1AudioRouteResourceControllerTests: XCTestCase {
+    func testPassiveOutputLayoutDiscoveryDoesNotCreateRouteResources() async {
+        let hal = TestHALRouteOperations()
+        let coordinator = makeWorkingRouteCoordinator(hal: hal)
+
+        let layout = await coordinator.discoverOutputLayout()
+        let state = await coordinator.state()
+
+        XCTAssertEqual(layout?.channels.map(\.identifier.rawValue), ["L", "R"])
+        XCTAssertTrue(hal.tapRequests.isEmpty)
+        XCTAssertTrue(hal.aggregateRequests.isEmpty)
+        XCTAssertEqual(state, .stopped)
+    }
+
     func testProvisionalTapAndAggregateRequestsAndReadbacksAreStrict() async throws {
         let hal = TestHALRouteOperations()
         let controller = M1AudioRouteResourceController(operations: hal)

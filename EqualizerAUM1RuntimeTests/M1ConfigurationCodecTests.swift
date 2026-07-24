@@ -70,10 +70,10 @@ final class M1ConfigurationCodecTests: XCTestCase {
     func testUnsupportedSchemaAndUnknownNodeAreRejected() {
         let id = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
         let unsupported = Data(
-            "{\"schemaVersion\":5,\"effectsEnabled\":true,\"nodes\":[]}".utf8
+            "{\"schemaVersion\":6,\"effectsEnabled\":true,\"nodes\":[]}".utf8
         )
         XCTAssertThrowsError(try M1ConfigurationCodec.decode(unsupported)) { error in
-            XCTAssertEqual(error as? M1ConfigurationCodecError, .unsupportedSchema(5))
+            XCTAssertEqual(error as? M1ConfigurationCodecError, .unsupportedSchema(6))
         }
 
         let unknown = Data(
@@ -97,12 +97,12 @@ final class M1ConfigurationCodecTests: XCTestCase {
         XCTAssertEqual(first.snapshot.nodes.map(\.kind), [.channels, .preamp])
         XCTAssertEqual(first.snapshot.nodes[1].id, id)
         let text = try XCTUnwrap(String(data: first.data, encoding: .utf8))
-        XCTAssertTrue(text.contains("\"schemaVersion\" : 4"))
+        XCTAssertTrue(text.contains("\"schemaVersion\" : 5"))
         XCTAssertTrue(text.contains("\"type\" : \"channels\""))
         XCTAssertFalse(text.contains("\"channels\" : \"all\""))
     }
 
-    func testVersionTwoDecodesAndCanonicalizesToVersionThree() throws {
+    func testVersionTwoDecodesAndCanonicalizesToVersionFive() throws {
         let id = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
         let source = Data(
             "{\"schemaVersion\":2,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"preamp\",\"isEnabled\":true,\"gainDB\":-2}]}".utf8
@@ -110,10 +110,10 @@ final class M1ConfigurationCodecTests: XCTestCase {
 
         let decoded = try M1ConfigurationCodec.decode(source)
         XCTAssertEqual(decoded.snapshot.nodes.map(\.kind), [.preamp])
-        XCTAssertTrue(String(decoding: decoded.data, as: UTF8.self).contains("\"schemaVersion\" : 4"))
+        XCTAssertTrue(String(decoding: decoded.data, as: UTF8.self).contains("\"schemaVersion\" : 5"))
     }
 
-    func testVersionThreeDecodesAndCanonicalizesToVersionFour() throws {
+    func testVersionThreeDecodesAndCanonicalizesToVersionFive() throws {
         let id = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
         let source = Data(
             "{\"schemaVersion\":3,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"preamp\",\"isEnabled\":true,\"gainDB\":-2}]}".utf8
@@ -121,10 +121,42 @@ final class M1ConfigurationCodecTests: XCTestCase {
 
         let decoded = try M1ConfigurationCodec.decode(source)
         XCTAssertEqual(decoded.snapshot.nodes.map(\.kind), [.preamp])
-        XCTAssertTrue(String(decoding: decoded.data, as: UTF8.self).contains("\"schemaVersion\" : 4"))
+        XCTAssertTrue(String(decoding: decoded.data, as: UTF8.self).contains("\"schemaVersion\" : 5"))
     }
 
-    func testConvolutionVersionFourRoundTripHasExactTypedShapeWithoutReadingResource() throws {
+    func testVersionFourChannelsMigrateEnabledAndVersionFiveRequiresExplicitState() throws {
+        let id = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
+        let versionFour = Data(
+            "{\"schemaVersion\":4,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"channels\",\"channels\":[\"L\"]}]}".utf8
+        )
+
+        let migrated = try M1ConfigurationCodec.decode(versionFour)
+        XCTAssertTrue(try XCTUnwrap(migrated.snapshot.nodes.first).isEnabled)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: migrated.data) as? [String: Any]
+        )
+        let node = try XCTUnwrap((object["nodes"] as? [[String: Any]])?.first)
+        XCTAssertEqual(Set(node.keys), ["id", "type", "isEnabled", "channels"])
+        XCTAssertEqual(node["isEnabled"] as? Bool, true)
+
+        let disabledCurrent = Data(
+            "{\"schemaVersion\":5,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"channels\",\"isEnabled\":false,\"channels\":\"all\"}]}".utf8
+        )
+        XCTAssertFalse(try XCTUnwrap(
+            M1ConfigurationCodec.decode(disabledCurrent).snapshot.nodes.first
+        ).isEnabled)
+
+        let missingCurrentState = Data(
+            "{\"schemaVersion\":5,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"channels\",\"channels\":\"all\"}]}".utf8
+        )
+        XCTAssertThrowsError(try M1ConfigurationCodec.decode(missingCurrentState))
+        let unexpectedLegacyState = Data(
+            "{\"schemaVersion\":4,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"channels\",\"isEnabled\":false,\"channels\":\"all\"}]}".utf8
+        )
+        XCTAssertThrowsError(try M1ConfigurationCodec.decode(unexpectedLegacyState))
+    }
+
+    func testConvolutionVersionFiveRoundTripHasExactTypedShapeWithoutReadingResource() throws {
         let reference = M1ConvolutionIRReference(
             storageID: UUID(uuidString: "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC")!,
             originalFileName: "Hall IR.wav",

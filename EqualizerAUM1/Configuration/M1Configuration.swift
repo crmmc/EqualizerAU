@@ -1,7 +1,7 @@
 import Foundation
 
 struct M1ConfigurationSnapshot: Equatable, Sendable {
-    static let schemaVersion = 4
+    static let schemaVersion = 5
 
     var effectsEnabled: Bool
     var nodes: [M1ProcessingNode]
@@ -104,6 +104,10 @@ enum M1ConfigurationCodec {
             try M1JSONShapeValidator.validateConfiguration(data, schemaVersion: 3)
             let wire = try JSONDecoder().decode(M1ConfigurationWire.self, from: data)
             snapshot = try wire.snapshot(expectedSchemaVersion: 3)
+        case 4:
+            try M1JSONShapeValidator.validateConfiguration(data, schemaVersion: 4)
+            let wire = try JSONDecoder().decode(M1ConfigurationWire.self, from: data)
+            snapshot = try wire.snapshot(expectedSchemaVersion: 4)
         case M1ConfigurationSnapshot.schemaVersion:
             try M1JSONShapeValidator.validateConfiguration(
                 data,
@@ -164,7 +168,9 @@ enum M1JSONShapeValidator {
             } else {
                 switch type {
                 case M1ProcessingNodeKind.channels.rawValue:
-                    allowedKeys = ["id", "type", "channels"]
+                    allowedKeys = schemaVersion >= 5
+                        ? ["id", "type", "isEnabled", "channels"]
+                        : ["id", "type", "channels"]
                 case M1ProcessingNodeKind.preamp.rawValue:
                     allowedKeys = ["id", "type", "isEnabled", "gainDB"]
                 case M1ProcessingNodeKind.graphicEQ.rawValue where schemaVersion >= 3:
@@ -324,7 +330,7 @@ private struct M1ConfigurationWire: Codable {
         }
         let snapshot = M1ConfigurationSnapshot(
             effectsEnabled: effectsEnabled,
-            nodes: try nodes.map { try $0.node() }
+            nodes: try nodes.map { try $0.node(schemaVersion: expectedSchemaVersion) }
         )
         do {
             try M1ProcessingBuilder.validate(nodes: snapshot.nodes)
@@ -366,7 +372,7 @@ struct M1ProcessingNodeWire: Codable {
         type = node.kind.rawValue
         switch node.kind {
         case .channels:
-            isEnabled = nil
+            isEnabled = node.isEnabled
             gainDB = nil
             channels = M1ChannelSelectionWire(node.channels)
             bands = nil
@@ -392,13 +398,21 @@ struct M1ProcessingNodeWire: Codable {
         }
     }
 
-    func node() throws -> M1ProcessingNode {
+    func node(schemaVersion: Int) throws -> M1ProcessingNode {
         switch type {
         case M1ProcessingNodeKind.channels.rawValue:
-            guard let channels, isEnabled == nil, gainDB == nil, bands == nil, ir == nil else {
+            guard let channels, gainDB == nil, bands == nil, ir == nil else {
                 throw M1ConfigurationCodecError.invalidJSON
             }
-            return .channels(id: id, selection: try channels.selection())
+            let enabled: Bool
+            if schemaVersion >= 5 {
+                guard let isEnabled else { throw M1ConfigurationCodecError.invalidJSON }
+                enabled = isEnabled
+            } else {
+                guard isEnabled == nil else { throw M1ConfigurationCodecError.invalidJSON }
+                enabled = true
+            }
+            return .channels(id: id, isEnabled: enabled, selection: try channels.selection())
         case M1ProcessingNodeKind.preamp.rawValue:
             guard let isEnabled, let gainDB, channels == nil, bands == nil, ir == nil else {
                 throw M1ConfigurationCodecError.invalidJSON
@@ -544,8 +558,14 @@ enum M1ConfigurationMigration {
         for node in nodes {
             switch node.kind {
             case .channels:
-                currentScope = node.channels
-                result.append(.channels(id: node.id, selection: node.channels))
+                if node.isEnabled { currentScope = node.channels }
+                result.append(
+                    .channels(
+                        id: node.id,
+                        isEnabled: node.isEnabled,
+                        selection: node.channels
+                    )
+                )
             case .preamp:
                 if node.channels != .all, node.channels != currentScope {
                     currentScope = node.channels

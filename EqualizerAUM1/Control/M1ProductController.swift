@@ -21,6 +21,7 @@ protocol M1ProductAudioControlling: Sendable {
     func stop(bridgeGeneration: UInt64) async throws -> Bool
     func verifyCapturePermission() async throws -> Bool
     func outputLayout() async -> M1OutputLayoutSnapshot?
+    func discoverOutputLayout() async -> M1OutputLayoutSnapshot?
     func prepare(configuration: M1ConfigurationSnapshot) async throws -> M1AudioConfigurationPreparation
     func publish(
         preparation: M1AudioConfigurationPreparation,
@@ -42,6 +43,7 @@ extension M1ProductAudioControlling {
     }
 
     func verifyCapturePermission() async throws -> Bool { false }
+    func discoverOutputLayout() async -> M1OutputLayoutSnapshot? { await outputLayout() }
 }
 
 extension M1NativeAudioRouteCoordinator: M1ProductAudioControlling {}
@@ -191,6 +193,7 @@ struct M1ProductSnapshot: Equatable, Sendable {
     let audio: M1ProductAudioState
     let audioRecovery: M1AudioRecoveryState
     let outputLayout: M1OutputLayoutSnapshot?
+    let availableOutputLayout: M1OutputLayoutSnapshot?
     let activeDiagnostics: M1ProcessingBuildDiagnostics?
     let expectedDiagnostics: M1ProcessingBuildDiagnostics?
     let activeConfigurationGeneration: UInt64?
@@ -265,6 +268,7 @@ actor M1ProductController {
     private var audioState: M1ProductAudioState = .stopped
     private var audioRecovery: M1AudioRecoveryState = .inactive
     private var layout: M1OutputLayoutSnapshot?
+    private var availableLayout: M1OutputLayoutSnapshot?
     private var activeDiagnostics: M1ProcessingBuildDiagnostics?
     private var expectedDiagnostics: M1ProcessingBuildDiagnostics?
     private var activeConfigurationGeneration: UInt64?
@@ -336,6 +340,7 @@ actor M1ProductController {
             persistence = .uncertain(generation: generation)
         }
         editingSession = M1EditingSession(nodes: draft.nodes)
+        availableLayout = await audio.discoverOutputLayout()
         bootstrapped = true
     }
 
@@ -354,6 +359,7 @@ actor M1ProductController {
             audio: audioState,
             audioRecovery: audioRecovery,
             outputLayout: layout,
+            availableOutputLayout: availableLayout,
             activeDiagnostics: activeDiagnostics,
             expectedDiagnostics: expectedDiagnostics,
             activeConfigurationGeneration: activeConfigurationGeneration,
@@ -397,6 +403,11 @@ actor M1ProductController {
     func moveSelectionFocus(by offset: Int, extending: Bool) {
         guard snapshot().canEdit else { return }
         editingSession.moveFocus(by: offset, extending: extending)
+    }
+
+    func selectFocusedNode(toggling: Bool) {
+        guard snapshot().canEdit else { return }
+        editingSession.selectFocused(toggling: toggling)
     }
 
     func beginEditGesture(_ id: UUID) {
@@ -472,6 +483,26 @@ actor M1ProductController {
         let ids = (0..<copyCount).map { _ in UUID() }
         try await updateEditingSession { session, effectsEnabled in
             try session.moveSelection(
+                to: destination,
+                operation: operation,
+                copiedIDs: ids,
+                effectsEnabled: effectsEnabled
+            )
+        }
+    }
+
+    func moveDraggedPreamps(
+        startingAt id: UUID,
+        to destination: Int,
+        operation: M1NodeDragOperation
+    ) async throws {
+        let selectionCount = editingSession.selectedNodeIDs.contains(id)
+            ? editingSession.selectedNodeIDs.count
+            : 1
+        let ids = operation == .copy ? (0..<selectionCount).map { _ in UUID() } : []
+        try await updateEditingSession { session, effectsEnabled in
+            try session.moveDragSelection(
+                startingAt: id,
                 to: destination,
                 operation: operation,
                 copiedIDs: ids,
@@ -583,6 +614,7 @@ actor M1ProductController {
         }
         let captured = draft
         let preparation = try await audio.prepare(configuration: captured)
+        if audioState == .stopped { availableLayout = preparation.layout }
         try Task.checkCancellation()
         try await persist(
             captured,
@@ -700,6 +732,7 @@ actor M1ProductController {
             try await audio.stop()
             audioState = .stopped
             clearAudioProjection()
+            availableLayout = await audio.discoverOutputLayout()
             if hadPendingApplication {
                 persistence = draft == saved ? .savedPendingStart : .modified
             }
@@ -753,6 +786,10 @@ actor M1ProductController {
             await recoverAudio(reason: .wake)
         case .routeChanged:
             guard !isSystemSleeping else { return }
+            if audioState == .stopped {
+                availableLayout = await audio.discoverOutputLayout()
+                return
+            }
             if audioState == .starting {
                 queueRecovery(reason: .routeChanged)
                 return
@@ -760,6 +797,10 @@ actor M1ProductController {
             await recoverAudio(reason: .routeChanged)
         case let .outputFormatChanged(output):
             guard !isSystemSleeping else { return }
+            if audioState == .stopped {
+                availableLayout = await audio.discoverOutputLayout()
+                return
+            }
             if audioState == .starting {
                 queueRecovery(reason: .outputFormatChanged(output))
                 return
@@ -767,6 +808,10 @@ actor M1ProductController {
             await recoverAudio(reason: .outputFormatChanged(output))
         case .systemAudioServicesChanged:
             guard !isSystemSleeping else { return }
+            if audioState == .stopped {
+                availableLayout = await audio.discoverOutputLayout()
+                return
+            }
             if audioState == .starting {
                 queueRecovery(reason: .systemAudioServicesChanged)
                 return
@@ -779,6 +824,10 @@ actor M1ProductController {
     }
 
     func handleApplicationActivation() async {
+        if audioState == .stopped, !isSystemSleeping, !terminating {
+            availableLayout = await audio.discoverOutputLayout()
+            return
+        }
         guard audioState == .running,
               automaticRecoveryDesired,
               !recoveryInProgress,
@@ -1025,6 +1074,7 @@ actor M1ProductController {
             runtimeBaseline = configuration
             appliedEffectsEnabled = configuration.effectsEnabled
             layout = startedLayout
+            availableLayout = startedLayout
             activeDiagnostics = diagnostics
             if diagnostics != nil { activeConfigurationGeneration = commitGeneration }
             expectedConfigurationGeneration = nil

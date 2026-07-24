@@ -87,11 +87,15 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
         convolutionIR = nil
     }
 
-    static func channels(id: UUID = UUID(), selection: M1ChannelSelection) -> Self {
+    static func channels(
+        id: UUID = UUID(),
+        isEnabled: Bool = true,
+        selection: M1ChannelSelection
+    ) -> Self {
         Self(
             id: id,
             kind: .channels,
-            isEnabled: true,
+            isEnabled: isEnabled,
             gainDB: 0,
             channels: selection,
             graphicEQBands: [],
@@ -152,7 +156,7 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
     func copied(id: UUID) -> Self {
         switch kind {
         case .channels:
-            return .channels(id: id, selection: channels)
+            return .channels(id: id, isEnabled: isEnabled, selection: channels)
         case .preamp:
             return Self(
                 id: id,
@@ -178,7 +182,7 @@ enum M1ProcessingScopeResolver {
         var current: M1ChannelSelection = .all
         for node in nodes {
             if node.kind == .channels {
-                current = node.channels
+                if node.isEnabled { current = node.channels }
             } else {
                 result[node.id] = node.channels == .all ? current : node.channels
             }

@@ -320,6 +320,17 @@ actor M1NativeAudioRouteCoordinator {
         return current?.output?.layout
     }
 
+    func discoverOutputLayout() async -> M1OutputLayoutSnapshot? {
+        if let output = current?.output { return output.layout }
+        guard !operationInProgress, nextGeneration < UInt64.max else { return nil }
+        do {
+            let generation = M1AudioRouteGeneration(rawValue: nextGeneration + 1)
+            return try await routeResources.discoverOutput(generation: generation).layout
+        } catch {
+            return nil
+        }
+    }
+
     func diagnostics() async throws -> M1RealtimeDiagnostics? {
         guard let current, current.phase == .running, let io = current.io else { return nil }
         let ioCounters: M1AudioIOHostCounters

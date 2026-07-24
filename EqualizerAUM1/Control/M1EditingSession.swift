@@ -31,7 +31,7 @@ struct M1EncodedNodeEnvelope: Equatable, Sendable {
 }
 
 enum M1NodeEnvelopeCodec {
-    static let schemaVersion = 4
+    static let schemaVersion = 5
     static let maximumDataSize = M1ConfigurationCodec.maximumDataSize
 
     static func encode(_ nodes: [M1ProcessingNode]) throws -> M1EncodedNodeEnvelope {
@@ -80,15 +80,21 @@ enum M1NodeEnvelopeCodec {
             case 2:
                 try M1JSONShapeValidator.validateNodeEnvelope(data, schemaVersion: 2)
                 let wire = try JSONDecoder().decode(M1NodeEnvelopeWire.self, from: data)
-                return try encode(try wire.nodes.map { try $0.node() })
+                return try encode(try wire.nodes.map { try $0.node(schemaVersion: 2) })
             case 3:
                 try M1JSONShapeValidator.validateNodeEnvelope(data, schemaVersion: 3)
                 let wire = try JSONDecoder().decode(M1NodeEnvelopeWire.self, from: data)
-                return try encode(try wire.nodes.map { try $0.node() })
+                return try encode(try wire.nodes.map { try $0.node(schemaVersion: 3) })
+            case 4:
+                try M1JSONShapeValidator.validateNodeEnvelope(data, schemaVersion: 4)
+                let wire = try JSONDecoder().decode(M1NodeEnvelopeWire.self, from: data)
+                return try encode(try wire.nodes.map { try $0.node(schemaVersion: 4) })
             case schemaVersion:
                 try M1JSONShapeValidator.validateNodeEnvelope(data, schemaVersion: schemaVersion)
                 let wire = try JSONDecoder().decode(M1NodeEnvelopeWire.self, from: data)
-                return try encode(try wire.nodes.map { try $0.node() })
+                return try encode(
+                    try wire.nodes.map { try $0.node(schemaVersion: schemaVersion) }
+                )
             default:
                 throw M1EditingSessionError.unsupportedClipboardSchema(version.schemaVersion)
             }
@@ -231,6 +237,16 @@ struct M1EditingSession: Sendable {
         }
     }
 
+    mutating func selectFocused(toggling: Bool) {
+        guard let focusedNodeID else { return }
+        if toggling {
+            select(focusedNodeID, mode: .toggling)
+        } else if !selectedNodeIDs.contains(focusedNodeID) {
+            selectedNodeIDs.insert(focusedNodeID)
+            selectionAnchorNodeID = focusedNodeID
+        }
+    }
+
     mutating func beginGesture(_ id: UUID) {
         guard activeGestureID != id else { return }
         activeGestureID = id
@@ -326,11 +342,7 @@ struct M1EditingSession: Sendable {
     }
 
     mutating func setNodeEnabled(id: UUID, enabled: Bool, effectsEnabled: Bool) throws {
-        guard let kind = nodes.first(where: { $0.id == id })?.kind,
-              kind == .preamp || kind == .graphicEQ || kind == .convolution
-        else {
-            throw M1EditingSessionError.invalidNodeKind
-        }
+        guard nodes.contains(where: { $0.id == id }) else { throw M1EditingSessionError.nodeNotFound }
         try updateNode(id: id, effectsEnabled: effectsEnabled) { $0.isEnabled = enabled }
     }
 
@@ -422,6 +434,27 @@ struct M1EditingSession: Sendable {
         selectedNodeIDs = Set(inserted.map(\.id))
         focusedNodeID = inserted.first?.id
         selectionAnchorNodeID = focusedNodeID
+    }
+
+    mutating func moveDragSelection(
+        startingAt id: UUID,
+        to destination: Int,
+        operation: M1NodeDragOperation,
+        copiedIDs: [UUID],
+        effectsEnabled: Bool
+    ) throws {
+        guard nodes.contains(where: { $0.id == id }) else {
+            throw M1EditingSessionError.nodeNotFound
+        }
+        if !selectedNodeIDs.contains(id) {
+            select(id, mode: .replacing)
+        }
+        try moveSelection(
+            to: destination,
+            operation: operation,
+            copiedIDs: copiedIDs,
+            effectsEnabled: effectsEnabled
+        )
     }
 
     mutating func moveNode(id: UUID, to destination: Int, effectsEnabled: Bool) throws {

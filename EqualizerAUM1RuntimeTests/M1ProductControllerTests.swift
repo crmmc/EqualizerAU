@@ -2,6 +2,18 @@ import Foundation
 import XCTest
 
 final class M1ProductControllerTests: XCTestCase {
+    func testBootstrapDiscoversAvailableOutputWithoutStartingAudio() async {
+        let fixture = makeFixture()
+
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+
+        let snapshot = await fixture.controller.snapshot()
+        let calls = await fixture.audio.calls
+        XCTAssertNil(snapshot.outputLayout)
+        XCTAssertEqual(snapshot.availableOutputLayout?.channels.map(\.identifier.rawValue), ["L", "R"])
+        XCTAssertTrue(calls.isEmpty)
+    }
+
     func testDraftEditingHasNoPersistenceOrAudioSideEffects() async throws {
         let fixture = makeFixture()
         await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
@@ -1742,6 +1754,10 @@ private actor ProductAudioFake: M1ProductAudioControlling {
         calls.append("layout")
         await layoutGate?.wait()
         return running ? layout : nil
+    }
+
+    func discoverOutputLayout() -> M1OutputLayoutSnapshot? {
+        outputAvailable ? layout : nil
     }
 
     func prepare(configuration: M1ConfigurationSnapshot) async throws -> M1AudioConfigurationPreparation {

@@ -130,7 +130,8 @@ final class M1SystemAudioLifecycleMonitor: M1AudioLifecycleMonitoring, @unchecke
                 changes.insert(.alive)
             case kAudioDevicePropertyNominalSampleRate,
                  kAudioDevicePropertyStreamConfiguration,
-                 kAudioDevicePropertyPreferredChannelLayout:
+                 kAudioDevicePropertyPreferredChannelLayout,
+                 kAudioDevicePropertyPreferredChannelsForStereo:
                 changes.insert(.outputFormat)
             default:
                 break
@@ -370,12 +371,18 @@ final class M1SystemAudioLifecycleMonitor: M1AudioLifecycleMonitoring, @unchecke
         kAudioDevicePropertyNominalSampleRate,
         kAudioDevicePropertyStreamConfiguration,
         kAudioDevicePropertyPreferredChannelLayout,
+        kAudioDevicePropertyPreferredChannelsForStereo,
     ]
     private static let maximumRebindAttempts = 3
 
     private static func scope(for selector: AudioObjectPropertySelector) -> AudioObjectPropertyScope {
-        selector == kAudioDevicePropertyStreamConfiguration
-            ? kAudioObjectPropertyScopeOutput
-            : kAudioObjectPropertyScopeGlobal
+        switch selector {
+        case kAudioDevicePropertyStreamConfiguration,
+             kAudioDevicePropertyPreferredChannelLayout,
+             kAudioDevicePropertyPreferredChannelsForStereo:
+            kAudioObjectPropertyScopeOutput
+        default:
+            kAudioObjectPropertyScopeGlobal
+        }
     }
 }

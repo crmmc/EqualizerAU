@@ -24,6 +24,19 @@
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>LSMultipleInstancesProhibited</key>
 	<true/>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>EqualizerAU Processor Node Drag</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.ruimingchen.equalizerau.preamp-node-drag</string>
+		</dict>
+	</array>
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>EqualizerAU captures system audio so it can process and play it through the selected output device.</string>
 	<key>NSHighResolutionCapable</key>

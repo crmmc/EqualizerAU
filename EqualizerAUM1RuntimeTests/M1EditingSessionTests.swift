@@ -34,6 +34,20 @@ final class M1EditingSessionTests: XCTestCase {
         XCTAssertEqual(session.orderedSelection, Array(ids[0...3]))
     }
 
+    func testSpaceSelectionAddsOrTogglesFocusedNode() {
+        var session = M1EditingSession(nodes: nodes(4))
+        session.select(ids[0], mode: .replacing)
+        session.moveFocus(by: 2, extending: false)
+
+        session.selectFocused(toggling: false)
+        XCTAssertEqual(session.orderedSelection, [ids[0], ids[2]])
+        session.selectFocused(toggling: false)
+        XCTAssertEqual(session.orderedSelection, [ids[0], ids[2]])
+
+        session.selectFocused(toggling: true)
+        XCTAssertEqual(session.orderedSelection, [ids[0]])
+    }
+
     func testAddDoesNotChangeSelectionAndDeleteSelectionIsOneUndoStep() throws {
         var session = M1EditingSession(nodes: nodes(4))
         session.select(ids[1], mode: .replacing)
@@ -85,6 +99,41 @@ final class M1EditingSessionTests: XCTestCase {
         XCTAssertEqual(session.nodes.map(\.id), [ids[0], ids[3], ids[4], ids[1], ids[2]])
         XCTAssertEqual(session.nodes[1].gainDB, -7)
         XCTAssertEqual(session.orderedSelection, [ids[3], ids[4]])
+    }
+
+    func testDragFromUnselectedNodeAtomicallyReplacesSelectionBeforeMove() throws {
+        var session = M1EditingSession(nodes: nodes(4))
+        session.select(ids[0], mode: .replacing)
+        session.select(ids[2], mode: .toggling)
+
+        try session.moveDragSelection(
+            startingAt: ids[1],
+            to: 4,
+            operation: .move,
+            copiedIDs: [],
+            effectsEnabled: true
+        )
+
+        XCTAssertEqual(session.nodes.map(\.id), [ids[0], ids[2], ids[3], ids[1]])
+        XCTAssertEqual(session.orderedSelection, [ids[1]])
+        XCTAssertEqual(session.focusedNodeID, ids[1])
+    }
+
+    func testDragFromSelectedNodeMovesWholeSelection() throws {
+        var session = M1EditingSession(nodes: nodes(5))
+        session.select(ids[1], mode: .replacing)
+        session.select(ids[3], mode: .toggling)
+
+        try session.moveDragSelection(
+            startingAt: ids[3],
+            to: 5,
+            operation: .move,
+            copiedIDs: [],
+            effectsEnabled: true
+        )
+
+        XCTAssertEqual(session.nodes.map(\.id), [ids[0], ids[2], ids[4], ids[1], ids[3]])
+        XCTAssertEqual(session.orderedSelection, [ids[1], ids[3]])
     }
 
     func testGestureCoalescesContinuousGainChangesIntoOneUndo() throws {
@@ -170,9 +219,9 @@ final class M1EditingSessionTests: XCTestCase {
     }
 
     func testClipboardRejectsUnsupportedSchemaMalformedAndOversizedData() {
-        let unsupported = Data("{\"nodes\":[],\"schemaVersion\":5}\n".utf8)
+        let unsupported = Data("{\"nodes\":[],\"schemaVersion\":6}\n".utf8)
         XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(unsupported)) {
-            XCTAssertEqual($0 as? M1EditingSessionError, .unsupportedClipboardSchema(5))
+            XCTAssertEqual($0 as? M1EditingSessionError, .unsupportedClipboardSchema(6))
         }
         XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(Data("nope".utf8)))
         XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(Data(
@@ -190,12 +239,14 @@ final class M1EditingSessionTests: XCTestCase {
     func testChannelsNodeClipboardAndOptionCopyPreserveExplicitScope() throws {
         let channels = M1ProcessingNode.channels(
             id: ids[0],
+            isEnabled: false,
             selection: .identifiers([M1ChannelIdentifier("L")!])
         )
         let preamp = M1PreampNode(id: ids[1], isEnabled: true, gainDB: -3, channels: .all)
         let envelope = try M1NodeEnvelopeCodec.encode([channels, preamp])
         let decoded = try M1NodeEnvelopeCodec.decode(envelope.data)
         XCTAssertEqual(decoded.nodes.map(\.kind), [.channels, .preamp])
+        XCTAssertFalse(decoded.nodes[0].isEnabled)
 
         var session = M1EditingSession(nodes: decoded.nodes)
         session.selectAll()
@@ -207,6 +258,7 @@ final class M1EditingSessionTests: XCTestCase {
         )
         XCTAssertEqual(session.nodes.map(\.kind), [.channels, .preamp, .channels, .preamp])
         XCTAssertEqual(session.nodes[2].channels, channels.channels)
+        XCTAssertFalse(session.nodes[2].isEnabled)
     }
 
     func testNodeKindSpecificEditsRejectWrongNodeKinds() throws {
@@ -217,13 +269,18 @@ final class M1EditingSessionTests: XCTestCase {
         XCTAssertThrowsError(try session.setGainDB(id: channels.id, gainDB: 2, effectsEnabled: true)) {
             XCTAssertEqual($0 as? M1EditingSessionError, .invalidNodeKind)
         }
-        XCTAssertThrowsError(try session.setNodeEnabled(id: channels.id, enabled: false, effectsEnabled: true)) {
-            XCTAssertEqual($0 as? M1EditingSessionError, .invalidNodeKind)
-        }
+        try session.setNodeEnabled(id: channels.id, enabled: false, effectsEnabled: true)
+        XCTAssertFalse(session.nodes[0].isEnabled)
+        try session.undo(effectsEnabled: true)
+        XCTAssertTrue(session.nodes[0].isEnabled)
+        try session.redo(effectsEnabled: true)
+        XCTAssertFalse(session.nodes[0].isEnabled)
         XCTAssertThrowsError(try session.setChannels(id: preamp.id, channels: .all, effectsEnabled: true)) {
             XCTAssertEqual($0 as? M1EditingSessionError, .invalidNodeKind)
         }
-        XCTAssertEqual(session.nodes, [channels, preamp])
+        var disabledChannels = channels
+        disabledChannels.isEnabled = false
+        XCTAssertEqual(session.nodes, [disabledChannels, preamp])
     }
 
     func testGraphicEQClipboardCopyAndGesturePreserveTypedBands() throws {
@@ -248,7 +305,7 @@ final class M1EditingSessionTests: XCTestCase {
         )
     }
 
-    func testClipboardDecodesVersionsOneThroughFourAndPreservesVersionThreeGraphicEQ() throws {
+    func testClipboardDecodesVersionsOneThroughFiveAndPreservesVersionThreeGraphicEQ() throws {
         let preampID = ids[0]
         let v1 = Data(
             "{\"schemaVersion\":1,\"nodes\":[{\"id\":\"\(preampID)\",\"type\":\"preamp\",\"isEnabled\":true,\"gainDB\":-2,\"channels\":\"all\"}]}".utf8
@@ -263,14 +320,20 @@ final class M1EditingSessionTests: XCTestCase {
             "{\"schemaVersion\":3,\"nodes\":[{\"id\":\"\(ids[1])\",\"type\":\"graphicEQ\",\"isEnabled\":true,\"bands\":[\(bands)]}]}".utf8
         )
         let ir = convolutionIR(storageID: ids[2])
-        let v4 = try M1NodeEnvelopeCodec.encode([.convolution(id: ids[3], ir: ir)]).data
+        let v4 = Data(
+            "{\"schemaVersion\":4,\"nodes\":[{\"id\":\"\(ids[3])\",\"type\":\"channels\",\"channels\":[\"L\"]}]}".utf8
+        )
+        let v5 = try M1NodeEnvelopeCodec.encode([.convolution(id: ids[3], ir: ir)]).data
 
         XCTAssertEqual(try M1NodeEnvelopeCodec.decode(v1).nodes.map(\.kind), [.preamp])
         XCTAssertEqual(try M1NodeEnvelopeCodec.decode(v2).nodes.map(\.kind), [.preamp])
         XCTAssertEqual(try M1NodeEnvelopeCodec.decode(v3).nodes.map(\.kind), [.graphicEQ])
-        XCTAssertEqual(try M1NodeEnvelopeCodec.decode(v4).nodes.map(\.kind), [.convolution])
+        let migratedV4 = try M1NodeEnvelopeCodec.decode(v4)
+        XCTAssertEqual(migratedV4.nodes.map(\.kind), [.channels])
+        XCTAssertTrue(try XCTUnwrap(migratedV4.nodes.first).isEnabled)
+        XCTAssertEqual(try M1NodeEnvelopeCodec.decode(v5).nodes.map(\.kind), [.convolution])
         XCTAssertTrue(String(decoding: try M1NodeEnvelopeCodec.decode(v3).data, as: UTF8.self)
-            .contains("\"schemaVersion\" : 4"))
+            .contains("\"schemaVersion\" : 5"))
     }
 
     func testConvolutionClipboardRoundTripAndCopyPreserveImmutableIRWithNewNodeIdentity() throws {

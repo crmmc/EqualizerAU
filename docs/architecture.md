@@ -13,14 +13,22 @@ bundle ID 为 `com.ruimingchen.EqualizerAU`。M1 正常构建产物位于 config
 
 `EqualizerAUM1Runtime` 提供正式 C ABI v3、有限值 Gain/Biquad/Convolution chain、10 ms 双槽切换、Prepared
 发布和退休回收；`EqualizerAUM1` 独立拥有原生 Tap、Aggregate、捕获、输出和代次生命周期。
-配置层使用有序的 typed processing-node 快照以及版本化规范 JSON。schema v4 当前包含
-非 DSP 的 Channels 作用域节点，以及 Preamp、固定 15 段 Graphic EQ 和 Convolution 效果节点：Channels
-选择后续效果的目标声道，直到下一个 Channels 节点覆盖；效果节点不重复保存声道字段。
+配置层使用有序的 typed processing-node 快照以及版本化规范 JSON。schema v5 当前包含
+非 DSP 的 Channels 作用域节点，以及 Preamp、固定 15 段 Graphic EQ 和 Convolution 效果节点：启用的
+Channels 选择后续效果的目标声道，直到下一个启用的 Channels 节点覆盖；停用的 Channels 不改变
+作用域，所有节点的 `isEnabled` 均由 typed 字段持久化，效果节点不重复保存声道字段。
 schema v1 读取时按有效作用域
 变化确定性插入 Channels 节点，保留原 Preamp UUID/顺序，并以确定性加盐避开任何已有 UUID；
-下一次 Save 写出 v4；schema v2/v3 也会在读取后规范化为 v4。编码结果按键排序、可读格式、
+下一次 Save 写出 v5；schema v2/v3/v4 也会在读取后规范化为 v5，其中旧版 Channels 缺省迁移为
+启用。编码结果按键排序、可读格式、
 保留 slash 并以 LF 结尾，最终 UTF-8
 数据上限为 `4 MiB`。设备无关校验不依赖输出布局。
+
+输出声道标识优先采用设备 `preferred channel layout` 的标准 speaker labels；布局未标注的声道再由
+`preferred channels for stereo` 明确指定的设备声道补充 `L`/`R`，其余保持稳定的 1-based 数字标识，
+界面显示为 `Channel N`。DSP resolver 始终接受 1-based 数字作为同一物理声道的兼容别名，避免
+布局语义变完整后使旧配置失效；不根据总声道数推断 5.1/7.1 顺序。应用启动、停止、保存及重新激活时可
+被动刷新默认输出布局，此发现不创建 Tap/Aggregate 或启动音频。
 
 Convolution 配置只引用应用数据目录中的不可变 WAV sidecar，不保存外部路径或 WAV bytes。
 导入接受最大 `32 MiB`、最长 2 秒、1...64 声道、8...768 kHz 的 RIFF/WAVE linear PCM 8/16/24/32 或
@@ -214,7 +222,8 @@ Quit 或 sleep 通过 generation token 使在途 Start、output-layout 读取和
 系统设置入口。系统设备列表变化先重新读取默认输出联合身份，身份未变时不重建路线，避免
 应用自身创建或销毁 Aggregate 形成恢复反馈环。
 
-当前输出的 nominal sample rate、stream configuration 或 preferred channel layout 变化使用独立
+当前输出的 nominal sample rate、stream configuration、preferred channel layout 或 preferred stereo
+channels 变化使用独立
 的格式恢复路径。停止旧路线后最多读取输出快照 6 次、间隔 50 ms；只有连续两次临时 ID、
 持久 UID、采样率、布局和最大帧容量全部一致才创建 Tap。若事件携带的设备身份已不是当前
 默认输出，则降级为普通路线恢复，不把格式恢复策略套用到新设备。同一输出身份的格式恢复

@@ -24,6 +24,24 @@ final class M1ProcessingModelTests: XCTestCase {
         )
     }
 
+    func testDisabledChannelsDoNotReplaceEffectiveScope() {
+        let left = M1ProcessingNode.channels(
+            selection: .identifiers([M1ChannelIdentifier("L")!])
+        )
+        let disabledRight = M1ProcessingNode.channels(
+            isEnabled: false,
+            selection: .identifiers([M1ChannelIdentifier("R")!])
+        )
+        let preamp = M1PreampNode(id: UUID(), isEnabled: true, gainDB: 0, channels: .all)
+
+        XCTAssertEqual(
+            M1ProcessingScopeResolver.effectiveSelections(
+                nodes: [left, disabledRight, preamp]
+            )[preamp.id],
+            left.channels
+        )
+    }
+
     func testGraphicEQFactoryUsesFixedReferenceBandsAndCopiesPayload() {
         var node = M1ProcessingNode.graphicEQ(id: UUID())
         node.graphicEQBands[7].gainDB = 3.5

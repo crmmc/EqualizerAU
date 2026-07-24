@@ -1,0 +1,812 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EqualizerAU M5 Editor Prototype</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --canvas: #e7e9ec;
+      --window: #f7f8f9;
+      --surface: #ffffff;
+      --surface-muted: #f1f3f5;
+      --surface-hover: #edf3f8;
+      --line: #cbd0d5;
+      --line-soft: #dfe3e6;
+      --text: #17191b;
+      --text-secondary: #626970;
+      --accent: #1769a8;
+      --accent-soft: #dcecf8;
+      --accent-line: #70a8d1;
+      --success: #247348;
+      --warning: #a65f0c;
+      --danger: #b33131;
+      --focus: #1d75b8;
+      --shadow: 0 18px 50px rgba(28, 35, 42, 0.18), 0 2px 8px rgba(28, 35, 42, 0.08);
+      --radius: 7px;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --canvas: #1c1e21;
+        --window: #26292d;
+        --surface: #2c3034;
+        --surface-muted: #24272a;
+        --surface-hover: #303b45;
+        --line: #4c5157;
+        --line-soft: #3b4045;
+        --text: #f0f2f4;
+        --text-secondary: #abb1b7;
+        --accent: #67afe0;
+        --accent-soft: #263f52;
+        --accent-line: #5795be;
+        --success: #63ba87;
+        --warning: #e8a955;
+        --danger: #ef7777;
+        --focus: #79bdea;
+        --shadow: 0 18px 50px rgba(0, 0, 0, 0.36), 0 2px 8px rgba(0, 0, 0, 0.3);
+      }
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body { min-height: 100%; }
+
+    body {
+      margin: 0;
+      min-height: 100dvh;
+      padding: 24px;
+      background: var(--canvas);
+      color: var(--text);
+      font-size: 13px;
+      letter-spacing: 0;
+    }
+
+    button, input { font: inherit; }
+
+    button {
+      color: inherit;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    button:focus-visible,
+    input:focus-visible,
+    [tabindex]:focus-visible {
+      outline: 2px solid var(--focus);
+      outline-offset: 2px;
+    }
+
+    .app-window {
+      width: min(1120px, 100%);
+      min-height: min(720px, calc(100dvh - 48px));
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--window);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+
+    .titlebar {
+      min-height: 42px;
+      display: grid;
+      grid-template-columns: 88px 1fr 88px;
+      align-items: center;
+      padding: 0 14px;
+      background: var(--surface-muted);
+      border-bottom: 1px solid var(--line);
+      user-select: none;
+    }
+
+    .traffic-lights { display: flex; gap: 8px; }
+    .traffic-light { width: 12px; height: 12px; border-radius: 50%; border: 1px solid rgba(0,0,0,.14); }
+    .traffic-light.close { background: #ff5f57; }
+    .traffic-light.minimize { background: #febc2e; }
+    .traffic-light.zoom { background: #28c840; }
+
+    .window-title {
+      overflow: hidden;
+      text-align: center;
+      font-weight: 600;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .toolbar {
+      min-height: 58px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--line);
+      position: relative;
+      z-index: 4;
+    }
+
+    .toolbar-group { display: flex; align-items: center; gap: 4px; }
+    .toolbar-spacer { flex: 1; min-width: 12px; }
+    .toolbar-divider { width: 1px; height: 26px; background: var(--line-soft); margin: 0 3px; }
+
+    .icon-button,
+    .compact-button,
+    .power-button,
+    .drag-handle {
+      border: 1px solid transparent;
+      background: transparent;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: default;
+    }
+
+    .icon-button {
+      width: 34px;
+      height: 32px;
+      border-radius: 5px;
+    }
+
+    .icon-button:hover:not(:disabled),
+    .power-button:hover,
+    .drag-handle:hover { background: var(--surface-hover); border-color: var(--line-soft); }
+    .icon-button:active:not(:disabled), .compact-button:active, .power-button:active { transform: translateY(1px); }
+    .icon-button:disabled { opacity: .38; }
+
+    .icon { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .icon.small { width: 14px; height: 14px; }
+
+    .processing-control {
+      height: 34px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: var(--surface);
+      font-weight: 600;
+      cursor: default;
+    }
+
+    .processing-control input { position: absolute; opacity: 0; pointer-events: none; }
+    .switch-track { width: 30px; height: 18px; padding: 2px; border-radius: 9px; background: #8a9096; transition: background .15s ease; }
+    .switch-thumb { width: 14px; height: 14px; border-radius: 50%; background: #fff; transform: translateX(0); transition: transform .15s ease; box-shadow: 0 1px 2px rgba(0,0,0,.3); }
+    .processing-control input:checked + .switch-track { background: var(--success); }
+    .processing-control input:checked + .switch-track .switch-thumb { transform: translateX(12px); }
+
+    .add-wrap { position: relative; }
+    .add-button {
+      height: 34px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: var(--surface);
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    .add-button:hover { background: var(--surface-hover); }
+
+    .add-menu {
+      position: absolute;
+      top: 39px;
+      left: 0;
+      width: 210px;
+      padding: 5px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface);
+      box-shadow: 0 12px 30px rgba(18, 24, 30, .2);
+    }
+
+    .add-menu[hidden] { display: none; }
+    .add-menu button { width: 100%; height: 31px; display: flex; align-items: center; gap: 9px; padding: 0 8px; border: 0; border-radius: 4px; background: transparent; color: inherit; text-align: left; }
+    .add-menu button:hover, .add-menu button:focus-visible { background: var(--accent-soft); }
+
+    .route-status { min-width: 176px; display: grid; grid-template-columns: 8px auto; align-items: center; justify-content: end; gap: 4px 8px; color: var(--text-secondary); }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); grid-row: 1 / 3; }
+    .route-status strong { color: var(--text); font-size: 12px; font-weight: 600; }
+    .route-status span:last-child { font-size: 11px; }
+
+    .chain-header {
+      min-height: 38px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 14px;
+      background: var(--surface-muted);
+      border-bottom: 1px solid var(--line-soft);
+      color: var(--text-secondary);
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    .chain-list {
+      flex: 1;
+      min-height: 340px;
+      overflow: auto;
+      background: var(--surface);
+      outline: none;
+    }
+
+    .empty-state { min-height: 280px; display: grid; place-items: center; color: var(--text-secondary); }
+
+    .processor-row {
+      position: relative;
+      display: grid;
+      grid-template-columns: 32px 34px 126px minmax(260px, 1fr) 38px;
+      align-items: center;
+      min-height: 82px;
+      padding: 9px 10px 9px 4px;
+      border-bottom: 1px solid var(--line-soft);
+      background: var(--surface);
+      user-select: none;
+    }
+
+    .processor-row:hover { background: color-mix(in srgb, var(--surface-hover) 52%, var(--surface)); }
+    .processor-row.selected { background: var(--accent-soft); }
+    .processor-row.focused { box-shadow: inset 3px 0 var(--accent); }
+    .processor-row.disabled .processor-content { opacity: .52; }
+    .processor-row.dragging { opacity: .46; }
+    .processor-row.drop-before::before,
+    .processor-row.drop-after::after {
+      content: "";
+      position: absolute;
+      left: 6px;
+      right: 6px;
+      height: 3px;
+      z-index: 3;
+      border-radius: 2px;
+      background: var(--accent);
+      pointer-events: none;
+    }
+    .processor-row.drop-before::before { top: -2px; }
+    .processor-row.drop-after::after { bottom: -2px; }
+
+    .row-index { text-align: center; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+    .drag-handle { width: 28px; height: 34px; padding: 0; border-radius: 4px; color: var(--text-secondary); cursor: grab; }
+    .drag-handle:active { cursor: grabbing; }
+
+    .processor-label { min-width: 0; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 8px; align-items: center; }
+    .power-button { width: 28px; height: 28px; padding: 0; border-radius: 4px; color: var(--success); }
+    .power-button[aria-pressed="false"] { color: var(--text-secondary); }
+    .processor-name { min-width: 0; }
+    .processor-name strong { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; }
+    .processor-name span { display: block; margin-top: 2px; overflow: hidden; color: var(--text-secondary); font-size: 11px; white-space: nowrap; text-overflow: ellipsis; }
+
+    .processor-content { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+    .delete-button:hover { color: var(--danger); }
+
+    .compact-button {
+      min-height: 29px;
+      padding: 0 9px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--surface);
+      white-space: nowrap;
+    }
+    .compact-button:hover { background: var(--surface-hover); }
+
+    .knob-wrap { display: flex; align-items: center; gap: 9px; }
+    .knob {
+      --angle: 0deg;
+      width: 42px;
+      height: 42px;
+      position: relative;
+      flex: 0 0 auto;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      background: var(--surface-muted);
+      box-shadow: inset 0 0 0 4px var(--surface);
+      cursor: ns-resize;
+    }
+    .knob::after {
+      content: "";
+      position: absolute;
+      left: calc(50% - 1px);
+      top: 4px;
+      width: 2px;
+      height: 10px;
+      border-radius: 1px;
+      background: var(--accent);
+      transform-origin: 1px 17px;
+      transform: rotate(var(--angle));
+    }
+
+    .number-field { display: flex; align-items: center; gap: 5px; }
+    .number-field input {
+      width: 70px;
+      height: 30px;
+      padding: 0 7px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--surface);
+      color: var(--text);
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+    .unit, .meta { color: var(--text-secondary); }
+
+    .channel-pills { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 5px; overflow: hidden; }
+    .channel-pill { min-width: 27px; padding: 4px 7px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-muted); text-align: center; font-size: 11px; }
+
+    .eq-preview { width: min(210px, 28vw); height: 44px; display: flex; align-items: center; gap: 3px; padding: 4px 7px; border-left: 1px solid var(--line-soft); border-right: 1px solid var(--line-soft); }
+    .eq-bar { width: 5px; height: var(--bar); position: relative; background: var(--accent-line); border-radius: 1px; }
+    .eq-bar::after { content: ""; position: absolute; left: -2px; right: -2px; top: 50%; border-top: 1px solid var(--line); }
+
+    .file-summary { min-width: 0; display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 8px; align-items: center; }
+    .file-summary .icon { color: var(--accent); }
+    .file-copy { min-width: 0; }
+    .file-copy strong { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; }
+    .file-copy span { display: block; margin-top: 3px; color: var(--text-secondary); font-size: 11px; white-space: nowrap; }
+
+    .statusbar {
+      min-height: 36px;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 0 12px;
+      border-top: 1px solid var(--line);
+      background: var(--surface-muted);
+      color: var(--text-secondary);
+      font-size: 11px;
+    }
+    .statusbar .dirty-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--warning); }
+    .statusbar.saved .dirty-dot { background: var(--success); }
+    .statusbar-spacer { flex: 1; }
+
+    dialog {
+      width: min(440px, calc(100vw - 32px));
+      padding: 0;
+      color: var(--text);
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+    dialog::backdrop { background: rgba(14, 18, 22, .35); }
+    .dialog-header { padding: 16px 18px 12px; border-bottom: 1px solid var(--line-soft); }
+    .dialog-header h2 { margin: 0; font-size: 15px; }
+    .dialog-body { padding: 16px 18px; }
+    .dialog-footer { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line-soft); background: var(--surface-muted); }
+    .dialog-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 12px; }
+    .check-option { min-height: 34px; display: flex; align-items: center; gap: 7px; padding: 0 8px; border: 1px solid var(--line-soft); border-radius: 4px; }
+    .custom-channel { display: flex; gap: 8px; margin-top: 14px; }
+    .custom-channel input { flex: 1; min-width: 0; height: 32px; padding: 0 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--text); }
+    .primary-button { color: #fff; background: #1769a8; border-color: #1769a8; }
+    .primary-button:hover { background: #125b93; }
+    .alert-copy { display: grid; grid-template-columns: 36px 1fr; gap: 12px; align-items: start; }
+    .alert-copy .icon { width: 28px; height: 28px; color: var(--warning); }
+    .alert-copy p { margin: 3px 0 0; color: var(--text-secondary); line-height: 1.45; }
+
+    @media (max-width: 720px) {
+      body { padding: 0; }
+      .app-window { min-height: 100dvh; border: 0; border-radius: 0; box-shadow: none; }
+      .titlebar { grid-template-columns: 72px 1fr 72px; }
+      .toolbar { flex-wrap: wrap; gap: 6px; }
+      .toolbar-spacer { display: none; }
+      .route-status { width: 100%; min-width: 0; grid-template-columns: 8px 1fr auto; justify-content: stretch; padding: 4px 3px 0; border-top: 1px solid var(--line-soft); }
+      .route-status .status-dot { grid-row: auto; }
+      .route-status span:last-child { text-align: right; }
+      .processor-row { grid-template-columns: 28px 30px minmax(0, 1fr) 34px; align-items: start; padding: 10px 7px 10px 2px; }
+      .row-index, .drag-handle { grid-row: 1 / 3; align-self: center; }
+      .processor-label { grid-column: 3; grid-row: 1; }
+      .processor-content { grid-column: 3 / 5; grid-row: 2; justify-content: flex-start; flex-wrap: wrap; padding-top: 9px; }
+      .delete-button { grid-column: 4; grid-row: 1; }
+      .eq-preview { width: min(230px, 65vw); }
+      .file-summary { flex: 1 1 190px; }
+      .dialog-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <!-- Inline sprite uses Lucide icon geometry (ISC License). -->
+  <svg width="0" height="0" aria-hidden="true" style="position:absolute">
+    <symbol id="i-save" viewBox="0 0 24 24"><path d="M15.2 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8.8z"/><path d="M17 21v-8H7v8M7 3v5h8"/></symbol>
+    <symbol id="i-undo" viewBox="0 0 24 24"><path d="m9 14-5-5 5-5"/><path d="M4 9h11a6 6 0 0 1 0 12h-3"/></symbol>
+    <symbol id="i-redo" viewBox="0 0 24 24"><path d="m15 14 5-5-5-5"/><path d="M20 9H9a6 6 0 0 0 0 12h3"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-grip" viewBox="0 0 24 24"><circle cx="9" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="18" r="1"/></symbol>
+    <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v5M14 11v5"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v1H5a2 2 0 0 0-2 2z"/><path d="m3 12 2 7h14l2-9H5a2 2 0 0 0-2 2"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.7 2.2 18a2 2 0 0 0 1.7 3h16.2a2 2 0 0 0 1.7-3L13.7 3.7a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></symbol>
+    <symbol id="i-channels" viewBox="0 0 24 24"><path d="M6 17V7M12 20V4M18 15V9"/></symbol>
+    <symbol id="i-wave" viewBox="0 0 24 24"><path d="M2 12h2l2-7 4 14 4-14 4 14 2-7h2"/></symbol>
+    <symbol id="i-file-audio" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6"/><path d="M9 18v-5l6-1v5M9 18a1 1 0 1 1-2 0 1 1 0 0 1 2 0ZM15 17a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z"/></symbol>
+  </svg>
+
+  <main class="app-window" aria-label="EqualizerAU editor prototype">
+    <header class="titlebar">
+      <div class="traffic-lights" aria-hidden="true">
+        <span class="traffic-light close"></span><span class="traffic-light minimize"></span><span class="traffic-light zoom"></span>
+      </div>
+      <div class="window-title">EqualizerAU</div>
+      <div></div>
+    </header>
+
+    <nav class="toolbar" aria-label="Editor commands">
+      <div class="toolbar-group">
+        <button class="icon-button" id="saveButton" type="button" title="Save" aria-label="Save">
+          <svg class="icon"><use href="#i-save"></use></svg>
+        </button>
+        <button class="icon-button" id="undoButton" type="button" title="Undo" aria-label="Undo" disabled>
+          <svg class="icon"><use href="#i-undo"></use></svg>
+        </button>
+        <button class="icon-button" id="redoButton" type="button" title="Redo" aria-label="Redo" disabled>
+          <svg class="icon"><use href="#i-redo"></use></svg>
+        </button>
+      </div>
+      <span class="toolbar-divider" aria-hidden="true"></span>
+      <label class="processing-control">
+        <span>Processing</span>
+        <input id="processingToggle" type="checkbox" checked>
+        <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+      </label>
+      <div class="add-wrap">
+        <button class="add-button" id="addButton" type="button" aria-haspopup="menu" aria-expanded="false">
+          <svg class="icon small"><use href="#i-plus"></use></svg><span>Add</span><svg class="icon small"><use href="#i-chevron"></use></svg>
+        </button>
+        <div class="add-menu" id="addMenu" role="menu" hidden>
+          <button type="button" role="menuitem" data-add="preamp"><svg class="icon"><use href="#i-sliders"></use></svg>Preamp</button>
+          <button type="button" role="menuitem" data-add="channels"><svg class="icon"><use href="#i-channels"></use></svg>Channels</button>
+          <button type="button" role="menuitem" data-add="equalizer"><svg class="icon"><use href="#i-wave"></use></svg>Graphic EQ</button>
+          <button type="button" role="menuitem" data-add="convolution"><svg class="icon"><use href="#i-file-audio"></use></svg>Convolution</button>
+        </div>
+      </div>
+      <span class="toolbar-spacer"></span>
+      <div class="route-status" aria-label="Audio route active">
+        <span class="status-dot"></span><strong>Built-in Output</strong><span>2 ch · 48,000 Hz</span>
+      </div>
+    </nav>
+
+    <div class="chain-header"><span>Processing chain</span><span id="processorCount">4 processors</span></div>
+    <section class="chain-list" id="chainList" tabindex="0" aria-label="Processing chain"></section>
+    <footer class="statusbar" id="statusbar"><span class="dirty-dot"></span><span id="draftStatus">Draft has changes</span><span class="statusbar-spacer"></span><span id="selectionStatus">No selection</span></footer>
+  </main>
+
+  <dialog id="channelDialog">
+    <form method="dialog" id="channelForm">
+      <div class="dialog-header"><h2>Selected channels</h2></div>
+      <div class="dialog-body">
+        <label class="check-option"><input type="checkbox" id="channelAll"> All channels</label>
+        <div class="dialog-grid" id="knownChannels">
+          <label class="check-option"><input type="checkbox" name="channel" value="L"> L</label>
+          <label class="check-option"><input type="checkbox" name="channel" value="R"> R</label>
+          <label class="check-option"><input type="checkbox" name="channel" value="C"> C</label>
+          <label class="check-option"><input type="checkbox" name="channel" value="LFE"> LFE</label>
+          <label class="check-option"><input type="checkbox" name="channel" value="SL"> SL</label>
+          <label class="check-option"><input type="checkbox" name="channel" value="SR"> SR</label>
+        </div>
+        <div class="custom-channel"><input id="customChannel" type="text" maxlength="12" placeholder="Custom channel"><button class="compact-button" id="addCustomChannel" type="button">Add</button></div>
+      </div>
+      <div class="dialog-footer"><button class="compact-button" value="cancel">Cancel</button><button class="compact-button primary-button" id="confirmChannels" value="default">Apply</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="alertDialog">
+    <form method="dialog">
+      <div class="dialog-header"><h2>Impulse response could not be imported</h2></div>
+      <div class="dialog-body alert-copy">
+        <svg class="icon"><use href="#i-alert"></use></svg>
+        <div><strong id="alertReason">Unsupported file format</strong><p>The current impulse response was not changed.</p></div>
+      </div>
+      <div class="dialog-footer"><button class="compact-button primary-button" value="default">OK</button></div>
+    </form>
+  </dialog>
+
+  <input id="irFileInput" type="file" accept=".wav,audio/wav" hidden>
+
+  <script>
+    const icon = name => `<svg class="icon"><use href="#i-${name}"></use></svg>`;
+    const makeId = () => globalThis.crypto?.randomUUID?.() ?? `node-${Date.now()}-${Math.random()}`;
+
+    const templates = {
+      preamp: () => ({ id: makeId(), kind: "preamp", enabled: true, gain: 0 }),
+      channels: () => ({ id: makeId(), kind: "channels", enabled: true, channels: ["L", "R"] }),
+      equalizer: () => ({ id: makeId(), kind: "equalizer", enabled: true }),
+      convolution: () => ({ id: makeId(), kind: "convolution", enabled: true, file: "Studio Room.wav", rate: "48 kHz", channels: "2 ch", duration: "240 ms" })
+    };
+
+    let nodes = [templates.channels(), templates.preamp(), templates.equalizer(), templates.convolution()];
+    let selected = new Set();
+    let focusedId = null;
+    let anchorId = null;
+    let undoStack = [];
+    let redoStack = [];
+    let savedSnapshot = JSON.stringify(nodes);
+    let draggedIds = [];
+    let pendingIRNode = null;
+    let editingChannelNode = null;
+    let knobDrag = null;
+
+    const chainList = document.querySelector("#chainList");
+    const statusbar = document.querySelector("#statusbar");
+    const draftStatus = document.querySelector("#draftStatus");
+    const selectionStatus = document.querySelector("#selectionStatus");
+    const undoButton = document.querySelector("#undoButton");
+    const redoButton = document.querySelector("#redoButton");
+
+    function cloneNodes(value = nodes) { return JSON.parse(JSON.stringify(value)); }
+    function snapshot() { return JSON.stringify(nodes); }
+
+    function pushHistory() {
+      undoStack.push(cloneNodes());
+      if (undoStack.length > 30) undoStack.shift();
+      redoStack = [];
+    }
+
+    function updateChrome() {
+      const dirty = snapshot() !== savedSnapshot;
+      statusbar.classList.toggle("saved", !dirty);
+      draftStatus.textContent = dirty ? "Draft has changes" : "Saved";
+      selectionStatus.textContent = selected.size ? `${selected.size} selected` : "No selection";
+      document.querySelector("#processorCount").textContent = `${nodes.length} processor${nodes.length === 1 ? "" : "s"}`;
+      undoButton.disabled = undoStack.length === 0;
+      redoButton.disabled = redoStack.length === 0;
+    }
+
+    function rowLabel(node) {
+      if (node.kind === "preamp") return ["Preamp", "All channels"];
+      if (node.kind === "channels") return ["Channels", node.channels?.includes("ALL") ? "All channels" : node.channels?.join(", ") || "No channels"];
+      if (node.kind === "equalizer") return ["Graphic EQ", "15-band compatibility"];
+      return ["Convolution", "All channels"];
+    }
+
+    function preampContent(node) {
+      const angle = Math.max(-135, Math.min(135, node.gain / 20 * 135));
+      return `<div class="knob-wrap"><div class="knob" role="slider" tabindex="0" aria-label="Preamp gain" aria-valuemin="-100" aria-valuemax="100" aria-valuenow="${node.gain}" data-id="${node.id}" style="--angle:${angle}deg"></div><label class="number-field"><input type="number" min="-100" max="100" step="0.1" value="${node.gain.toFixed(1)}" data-gain="${node.id}" aria-label="Preamp gain in decibels"><span class="unit">dB</span></label></div>`;
+    }
+
+    function channelContent(node) {
+      const channels = node.channels?.length ? node.channels : ["ALL"];
+      return `<div class="channel-pills">${channels.slice(0, 6).map(value => `<span class="channel-pill">${value}</span>`).join("")}</div><button class="compact-button" type="button" data-change-channels="${node.id}">Change…</button>`;
+    }
+
+    function equalizerContent() {
+      const bars = [18, 24, 29, 34, 30, 22, 17, 21, 27, 33, 28, 20, 16, 22, 25];
+      return `<span class="meta">15 bands</span><div class="eq-preview" aria-label="Graphic equalizer preview">${bars.map(height => `<span class="eq-bar" style="--bar:${height}px"></span>`).join("")}</div>`;
+    }
+
+    function convolutionContent(node) {
+      return `<div class="file-summary" title="${node.file}">${icon("file-audio")}<div class="file-copy"><strong>${node.file}</strong><span>${node.rate} · ${node.channels} · ${node.duration}</span></div></div><button class="compact-button" type="button" data-replace-ir="${node.id}">${icon("folder")}<span>Replace</span></button>`;
+    }
+
+    function renderRows() {
+      if (!nodes.length) {
+        chainList.innerHTML = `<div class="empty-state">No processors</div>`;
+        updateChrome();
+        return;
+      }
+      chainList.innerHTML = nodes.map((node, index) => {
+        const [name, subtitle] = rowLabel(node);
+        const content = node.kind === "preamp" ? preampContent(node) : node.kind === "channels" ? channelContent(node) : node.kind === "equalizer" ? equalizerContent(node) : convolutionContent(node);
+        return `<article class="processor-row${selected.has(node.id) ? " selected" : ""}${focusedId === node.id ? " focused" : ""}${node.enabled ? "" : " disabled"}" data-id="${node.id}" tabindex="-1" aria-selected="${selected.has(node.id)}">
+          <span class="row-index">${index + 1}</span>
+          <button class="drag-handle" type="button" draggable="true" data-drag="${node.id}" title="Move processor" aria-label="Move ${name}">${icon("grip")}</button>
+          <div class="processor-label"><button class="power-button" type="button" data-power="${node.id}" aria-pressed="${node.enabled}" title="${node.enabled ? "Disable" : "Enable"} ${name}">${icon("power")}</button><div class="processor-name"><strong>${name}</strong><span>${subtitle}</span></div></div>
+          <div class="processor-content">${content}</div>
+          <button class="icon-button delete-button" type="button" data-delete="${node.id}" title="Delete ${name}" aria-label="Delete ${name}">${icon("trash")}</button>
+        </article>`;
+      }).join("");
+      updateChrome();
+    }
+
+    function setSelection(id, event = {}) {
+      const index = nodes.findIndex(node => node.id === id);
+      if (index < 0) return;
+      if (event.shiftKey && anchorId) {
+        const anchorIndex = nodes.findIndex(node => node.id === anchorId);
+        selected = new Set(nodes.slice(Math.min(index, anchorIndex), Math.max(index, anchorIndex) + 1).map(node => node.id));
+      } else if (event.metaKey || event.ctrlKey) {
+        selected.has(id) ? selected.delete(id) : selected.add(id);
+        anchorId = id;
+      } else {
+        selected = new Set([id]);
+        anchorId = id;
+      }
+      focusedId = id;
+      renderRows();
+    }
+
+    function mutate(mutator) {
+      pushHistory();
+      mutator();
+      renderRows();
+    }
+
+    function moveFocus(offset, extend) {
+      if (!nodes.length) return;
+      const current = Math.max(0, nodes.findIndex(node => node.id === focusedId));
+      const next = Math.max(0, Math.min(nodes.length - 1, current + offset));
+      focusedId = nodes[next].id;
+      if (extend) {
+        if (!anchorId) anchorId = nodes[current].id;
+        const anchorIndex = nodes.findIndex(node => node.id === anchorId);
+        selected = new Set(nodes.slice(Math.min(next, anchorIndex), Math.max(next, anchorIndex) + 1).map(node => node.id));
+      }
+      renderRows();
+      chainList.querySelector(`[data-id="${focusedId}"]`)?.scrollIntoView({ block: "nearest" });
+    }
+
+    chainList.addEventListener("click", event => {
+      const action = event.target.closest("button, input, [role=slider]");
+      const row = event.target.closest(".processor-row");
+      if (!row) {
+        selected.clear(); focusedId = null; renderRows(); return;
+      }
+      if (!action) setSelection(row.dataset.id, event);
+    });
+
+    chainList.addEventListener("click", event => {
+      const power = event.target.closest("[data-power]");
+      const remove = event.target.closest("[data-delete]");
+      const channels = event.target.closest("[data-change-channels]");
+      const replace = event.target.closest("[data-replace-ir]");
+      if (power) mutate(() => { const node = nodes.find(item => item.id === power.dataset.power); node.enabled = !node.enabled; });
+      if (remove) mutate(() => { nodes = nodes.filter(item => item.id !== remove.dataset.delete); selected.delete(remove.dataset.delete); if (focusedId === remove.dataset.delete) focusedId = null; });
+      if (channels) openChannelDialog(channels.dataset.changeChannels);
+      if (replace) { pendingIRNode = replace.dataset.replaceIr; document.querySelector("#irFileInput").click(); }
+    });
+
+    chainList.addEventListener("change", event => {
+      const input = event.target.closest("[data-gain]");
+      if (!input) return;
+      const value = Number(input.value);
+      if (!Number.isFinite(value) || value < -100 || value > 100) { input.value = nodes.find(node => node.id === input.dataset.gain).gain.toFixed(1); return; }
+      mutate(() => { nodes.find(node => node.id === input.dataset.gain).gain = Math.round(value * 10) / 10; });
+    });
+
+    chainList.addEventListener("pointerdown", event => {
+      const knob = event.target.closest(".knob");
+      if (!knob) return;
+      const node = nodes.find(item => item.id === knob.dataset.id);
+      knob.setPointerCapture(event.pointerId);
+      knobDrag = { id: node.id, startY: event.clientY, startValue: node.gain, before: cloneNodes() };
+    });
+
+    chainList.addEventListener("pointermove", event => {
+      if (!knobDrag) return;
+      const node = nodes.find(item => item.id === knobDrag.id);
+      node.gain = Math.max(-100, Math.min(100, Math.round((knobDrag.startValue + (knobDrag.startY - event.clientY) / 2) * 10) / 10));
+      const knob = chainList.querySelector(`.knob[data-id="${node.id}"]`);
+      if (knob) { knob.style.setProperty("--angle", `${Math.max(-135, Math.min(135, node.gain / 20 * 135))}deg`); knob.setAttribute("aria-valuenow", node.gain); }
+      const input = chainList.querySelector(`[data-gain="${node.id}"]`);
+      if (input) input.value = node.gain.toFixed(1);
+      updateChrome();
+    });
+
+    chainList.addEventListener("pointerup", () => {
+      if (!knobDrag) return;
+      if (JSON.stringify(knobDrag.before) !== snapshot()) { undoStack.push(knobDrag.before); redoStack = []; }
+      knobDrag = null;
+      updateChrome();
+    });
+
+    chainList.addEventListener("keydown", event => {
+      const input = event.target.closest("input");
+      if (input) return;
+      if (event.key === "ArrowUp" || event.key === "ArrowDown") { event.preventDefault(); moveFocus(event.key === "ArrowUp" ? -1 : 1, event.shiftKey); }
+      if (event.key === " " && focusedId) { event.preventDefault(); event.metaKey || event.ctrlKey ? (selected.has(focusedId) ? selected.delete(focusedId) : selected.add(focusedId)) : selected.add(focusedId); renderRows(); }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "a") { event.preventDefault(); selected = new Set(nodes.map(node => node.id)); renderRows(); }
+      if ((event.key === "Delete" || event.key === "Backspace") && selected.size) { event.preventDefault(); mutate(() => { nodes = nodes.filter(node => !selected.has(node.id)); selected.clear(); focusedId = null; }); }
+    });
+
+    chainList.addEventListener("dragstart", event => {
+      const handle = event.target.closest("[data-drag]");
+      if (!handle) return;
+      const id = handle.dataset.drag;
+      if (!selected.has(id)) { selected = new Set([id]); anchorId = id; focusedId = id; }
+      draggedIds = nodes.filter(node => selected.has(node.id)).map(node => node.id);
+      event.dataTransfer.effectAllowed = "copyMove";
+      event.dataTransfer.setData("text/plain", draggedIds.join(","));
+      requestAnimationFrame(() => draggedIds.forEach(draggedId => chainList.querySelector(`[data-id="${draggedId}"]`)?.classList.add("dragging")));
+    });
+
+    chainList.addEventListener("dragover", event => {
+      const row = event.target.closest(".processor-row");
+      if (!row || draggedIds.includes(row.dataset.id)) return;
+      event.preventDefault();
+      chainList.querySelectorAll(".drop-before,.drop-after").forEach(item => item.classList.remove("drop-before", "drop-after"));
+      const before = event.clientY < row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2;
+      row.classList.add(before ? "drop-before" : "drop-after");
+      event.dataTransfer.dropEffect = event.altKey ? "copy" : "move";
+    });
+
+    chainList.addEventListener("drop", event => {
+      const row = event.target.closest(".processor-row");
+      if (!row) return;
+      event.preventDefault();
+      const after = row.classList.contains("drop-after");
+      const targetId = row.dataset.id;
+      mutate(() => {
+        const moving = nodes.filter(node => draggedIds.includes(node.id));
+        const remainder = nodes.filter(node => !draggedIds.includes(node.id));
+        let targetIndex = remainder.findIndex(node => node.id === targetId);
+        if (targetIndex < 0) targetIndex = remainder.length;
+        else if (after) targetIndex += 1;
+        const inserted = event.altKey ? moving.map(node => ({ ...cloneNodes([node])[0], id: makeId() })) : moving;
+        nodes = [...remainder.slice(0, targetIndex), ...inserted, ...remainder.slice(targetIndex)];
+        selected = new Set(inserted.map(node => node.id));
+        focusedId = inserted[0]?.id ?? null;
+        anchorId = focusedId;
+      });
+      draggedIds = [];
+    });
+
+    chainList.addEventListener("dragend", () => { draggedIds = []; renderRows(); });
+
+    const addButton = document.querySelector("#addButton");
+    const addMenu = document.querySelector("#addMenu");
+    function closeAddMenu() { addMenu.hidden = true; addButton.setAttribute("aria-expanded", "false"); }
+    addButton.addEventListener("click", event => { event.stopPropagation(); addMenu.hidden = !addMenu.hidden; addButton.setAttribute("aria-expanded", String(!addMenu.hidden)); });
+    addMenu.addEventListener("click", event => { const item = event.target.closest("[data-add]"); if (!item) return; mutate(() => nodes.push(templates[item.dataset.add]())); closeAddMenu(); });
+    document.addEventListener("click", event => { if (!event.target.closest(".add-wrap")) closeAddMenu(); });
+
+    document.querySelector("#saveButton").addEventListener("click", () => { savedSnapshot = snapshot(); updateChrome(); });
+    undoButton.addEventListener("click", () => { if (!undoStack.length) return; redoStack.push(cloneNodes()); nodes = undoStack.pop(); selected.clear(); focusedId = null; renderRows(); });
+    redoButton.addEventListener("click", () => { if (!redoStack.length) return; undoStack.push(cloneNodes()); nodes = redoStack.pop(); selected.clear(); focusedId = null; renderRows(); });
+
+    function openChannelDialog(id) {
+      editingChannelNode = id;
+      const node = nodes.find(item => item.id === id);
+      const all = node.channels?.includes("ALL");
+      document.querySelector("#channelAll").checked = all;
+      document.querySelectorAll('#knownChannels input[name="channel"]').forEach(input => { input.checked = !all && node.channels.includes(input.value); input.disabled = all; });
+      document.querySelector("#channelDialog").showModal();
+    }
+
+    document.querySelector("#channelAll").addEventListener("change", event => { document.querySelectorAll('#knownChannels input[name="channel"]').forEach(input => input.disabled = event.target.checked); });
+    document.querySelector("#addCustomChannel").addEventListener("click", () => {
+      const input = document.querySelector("#customChannel");
+      const value = input.value.trim().toUpperCase();
+      if (!value) return;
+      const label = document.createElement("label");
+      label.className = "check-option";
+      label.innerHTML = `<input type="checkbox" name="channel" value="${value}" checked> ${value}`;
+      document.querySelector("#knownChannels").append(label);
+      input.value = "";
+    });
+    document.querySelector("#confirmChannels").addEventListener("click", event => {
+      event.preventDefault();
+      const all = document.querySelector("#channelAll").checked;
+      const values = all ? ["ALL"] : [...document.querySelectorAll('#knownChannels input[name="channel"]:checked')].map(input => input.value);
+      mutate(() => { nodes.find(node => node.id === editingChannelNode).channels = values.length ? values : ["ALL"]; });
+      document.querySelector("#channelDialog").close();
+    });
+
+    document.querySelector("#irFileInput").addEventListener("change", event => {
+      const file = event.target.files[0];
+      if (!file || !pendingIRNode) return;
+      if (!file.name.toLowerCase().endsWith(".wav")) {
+        document.querySelector("#alertReason").textContent = `“${file.name}” is not a supported WAV file.`;
+        document.querySelector("#alertDialog").showModal();
+      } else {
+        mutate(() => { const node = nodes.find(item => item.id === pendingIRNode); node.file = file.name; node.rate = "48 kHz"; node.channels = "2 ch"; node.duration = "Ready"; });
+      }
+      event.target.value = "";
+      pendingIRNode = null;
+    });
+
+    document.querySelector("#processingToggle").addEventListener("change", event => {
+      document.querySelector(".route-status strong").textContent = event.target.checked ? "Built-in Output" : "Effects bypassed";
+    });
+
+    renderRows();
+  </script>
+</body>
+</html>

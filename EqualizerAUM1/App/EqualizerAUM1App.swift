@@ -18,6 +18,7 @@ final class M1AppModel: ObservableObject {
         audio: .stopped,
         audioRecovery: .inactive,
         outputLayout: nil,
+        availableOutputLayout: nil,
         activeDiagnostics: nil,
         expectedDiagnostics: nil,
         activeConfigurationGeneration: nil,
@@ -44,6 +45,7 @@ final class M1AppModel: ObservableObject {
     private var stopTask: Task<Void, Never>?
     private var commandSequence: UInt64 = 0
     private var terminationPending = false
+    private var draggedNodeID: UUID?
     private let pasteboard: any M1PasteboardAccess
     private let audioLifecycleMonitor: (any M1AudioLifecycleMonitoring)?
 
@@ -96,7 +98,7 @@ final class M1AppModel: ObservableObject {
 
     func importConvolution(before id: UUID?) {
         guard let url = selectWAV() else { return }
-        performEdit {
+        performEdit(onError: { self.presentConvolutionError($0, fileName: url.lastPathComponent) }) {
             let ir = try await Task.detached {
                 try M1ConvolutionIRStore().importWAV(at: url)
             }.value
@@ -106,7 +108,7 @@ final class M1AppModel: ObservableObject {
 
     func replaceConvolutionIR(id: UUID) {
         guard let url = selectWAV() else { return }
-        performEdit {
+        performEdit(onError: { self.presentConvolutionError($0, fileName: url.lastPathComponent) }) {
             let ir = try await Task.detached {
                 try M1ConvolutionIRStore().importWAV(at: url)
             }.value
@@ -146,17 +148,57 @@ final class M1AppModel: ObservableObject {
 
     func beginGesture(_ id: UUID) { performEdit { await self.controller.beginEditGesture(id) } }
     func endGesture(_ id: UUID) { performEdit { await self.controller.endEditGesture(id) } }
-    func undo() { performEdit { try await self.controller.undo() } }
-    func redo() { performEdit { try await self.controller.redo() } }
-    func selectAll() { performEdit { await self.controller.selectAllNodes() } }
+    func undo() {
+        if routeTextHistory(redo: false) { return }
+        guard snapshot.canUndo else { return }
+        performEdit { try await self.controller.undo() }
+    }
+    func redo() {
+        if routeTextHistory(redo: true) { return }
+        guard snapshot.canRedo else { return }
+        performEdit { try await self.controller.redo() }
+    }
+    func selectAll() {
+        if routeTextCommand(#selector(NSText.selectAll(_:))) { return }
+        performEdit { await self.controller.selectAllNodes() }
+    }
     func moveFocus(by offset: Int, extending: Bool) {
-        guard !(NSApp.keyWindow?.firstResponder is NSTextView) else { return }
+        let selector = extending
+            ? (offset < 0
+                ? #selector(NSText.moveUpAndModifySelection(_:))
+                : #selector(NSText.moveDownAndModifySelection(_:)))
+            : (offset < 0 ? #selector(NSText.moveUp(_:)) : #selector(NSText.moveDown(_:)))
+        if routeTextCommand(selector) { return }
         performEdit { await self.controller.moveSelectionFocus(by: offset, extending: extending) }
     }
-    func deleteSelection() { performEdit { try await self.controller.deleteSelectedPreamps() } }
-    func copy() { perform { try await self.controller.copySelection(to: self.pasteboard) } }
-    func cut() { perform { try await self.controller.cutSelection(to: self.pasteboard) } }
-    func paste() { performEdit { try await self.controller.paste(from: self.pasteboard) } }
+    func selectFocused(toggling: Bool) {
+        if let textView = NSApp.keyWindow?.firstResponder as? NSTextView {
+            if !toggling {
+                textView.insertText(" ", replacementRange: textView.selectedRange())
+            }
+            return
+        }
+        performEdit { await self.controller.selectFocusedNode(toggling: toggling) }
+    }
+    func deleteSelection() {
+        if routeTextCommand(#selector(NSText.deleteBackward(_:))) { return }
+        guard snapshot.canUseSelection else { return }
+        performEdit { try await self.controller.deleteSelectedPreamps() }
+    }
+    func copy() {
+        if routeTextCommand(#selector(NSText.copy(_:))) { return }
+        guard snapshot.canUseSelection else { return }
+        perform { try await self.controller.copySelection(to: self.pasteboard) }
+    }
+    func cut() {
+        if routeTextCommand(#selector(NSText.cut(_:))) { return }
+        guard snapshot.canUseSelection else { return }
+        perform { try await self.controller.cutSelection(to: self.pasteboard) }
+    }
+    func paste() {
+        if routeTextCommand(#selector(NSText.paste(_:))) { return }
+        performEdit { try await self.controller.paste(from: self.pasteboard) }
+    }
     func moveSelection(to index: Int, operation: M1NodeDragOperation) {
         performEdit {
             try await self.controller.moveSelectedPreamps(to: index, operation: operation)
@@ -172,6 +214,7 @@ final class M1AppModel: ObservableObject {
     }
 
     func beginDrag(_ id: UUID) -> NSItemProvider {
+        draggedNodeID = id
         if !snapshot.selectedNodeIDs.contains(id) {
             select(id, mode: .replacing)
         }
@@ -184,6 +227,22 @@ final class M1AppModel: ObservableObject {
             return nil
         }
         return provider
+    }
+
+    func moveDraggedSelection(to index: Int, operation: M1NodeDragOperation) {
+        guard let draggedNodeID else { return }
+        self.draggedNodeID = nil
+        performEdit {
+            try await self.controller.moveDraggedPreamps(
+                startingAt: draggedNodeID,
+                to: index,
+                operation: operation
+            )
+        }
+    }
+
+    func cancelDrag() {
+        draggedNodeID = nil
     }
 
     func save() { perform { try await self.controller.save() } }
@@ -230,6 +289,46 @@ final class M1AppModel: ObservableObject {
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         return panel.runModal() == .OK ? panel.url : nil
+    }
+
+    private func presentConvolutionError(_ error: any Error, fileName: String) {
+        let reason: String
+        if let error = error as? M1ConvolutionIRError {
+            switch error {
+            case .fileTooLarge:
+                reason = "The file exceeds the 32 MiB import limit."
+            case .invalidWAV:
+                reason = "The file is not a valid RIFF/WAVE file or is structurally damaged."
+            case .unsupportedEncoding:
+                reason = "The WAV encoding is unsupported. Use PCM 8/16/24/32-bit or Float32 audio."
+            case .invalidMetadata:
+                reason = "The WAV sample rate, channel count, or block metadata is invalid."
+            case .emptyAudio:
+                reason = "The WAV file contains no audio frames."
+            case .durationExceeded:
+                reason = "The impulse response exceeds the 2-second duration limit."
+            case .invalidSample:
+                reason = "The audio contains a non-finite, subnormal, or otherwise invalid sample."
+            case .storageAlreadyExists:
+                reason = "The imported resource conflicts with an existing stored impulse response."
+            case .missingResource:
+                reason = "The stored impulse-response resource is missing."
+            case .hashMismatch:
+                reason = "The stored impulse-response resource failed its integrity check."
+            case .metadataMismatch:
+                reason = "The stored impulse-response metadata no longer matches its audio data."
+            case .resourceIO:
+                reason = "The file or impulse-response storage could not be read or written."
+            }
+        } else {
+            reason = "The impulse response could not be applied to the current configuration."
+        }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Unable to Import Impulse Response"
+        alert.informativeText = "\(fileName) was not imported. \(reason) The existing configuration was not changed."
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     func presentDiagnostics() {
@@ -323,7 +422,10 @@ final class M1AppModel: ObservableObject {
         commandTask = task
     }
 
-    private func performEdit(_ operation: @escaping @MainActor () async throws -> Void) {
+    private func performEdit(
+        onError: (@MainActor (any Error) -> Void)? = nil,
+        _ operation: @escaping @MainActor () async throws -> Void
+    ) {
         guard !terminationPending else { return }
         let predecessor = editTask
         commandSequence &+= 1
@@ -332,10 +434,30 @@ final class M1AppModel: ObservableObject {
             do {
                 try await operation()
             } catch {
-                await controller.reportCommandError(String(describing: error))
+                if let onError {
+                    onError(error)
+                } else {
+                    await controller.reportCommandError(String(describing: error))
+                }
             }
             snapshot = await controller.snapshot()
         }
+    }
+
+    private func routeTextCommand(_ selector: Selector) -> Bool {
+        guard NSApp.keyWindow?.firstResponder is NSTextView else { return false }
+        return NSApp.sendAction(selector, to: nil, from: nil)
+    }
+
+    private func routeTextHistory(redo: Bool) -> Bool {
+        guard let textView = NSApp.keyWindow?.firstResponder as? NSTextView else { return false }
+        guard let undoManager = textView.undoManager else { return true }
+        if redo {
+            if undoManager.canRedo { undoManager.redo() }
+        } else if undoManager.canUndo {
+            undoManager.undo()
+        }
+        return true
     }
 
     private func drainCommands() async {
@@ -540,18 +662,18 @@ struct EqualizerAUM1App: App {
             CommandGroup(replacing: .undoRedo) {
                 Button("Undo") { model.undo() }
                     .keyboardShortcut("z")
-                    .disabled(!model.snapshot.canUndo)
+                    .disabled(!model.snapshot.canEdit)
                 Button("Redo") { model.redo() }
                     .keyboardShortcut("z", modifiers: [.command, .shift])
-                    .disabled(!model.snapshot.canRedo)
+                    .disabled(!model.snapshot.canEdit)
             }
             CommandGroup(replacing: .pasteboard) {
                 Button("Cut") { model.cut() }
                     .keyboardShortcut("x")
-                    .disabled(!model.snapshot.canUseSelection)
+                    .disabled(!model.snapshot.canEdit)
                 Button("Copy") { model.copy() }
                     .keyboardShortcut("c")
-                    .disabled(!model.snapshot.canUseSelection)
+                    .disabled(!model.snapshot.canEdit)
                 Button("Paste") { model.paste() }
                     .keyboardShortcut("v")
                     .disabled(!model.snapshot.canEdit)
@@ -562,7 +684,7 @@ struct EqualizerAUM1App: App {
             CommandGroup(after: .pasteboard) {
                 Button("Delete") { model.deleteSelection() }
                     .keyboardShortcut(.delete, modifiers: [])
-                    .disabled(!model.snapshot.canUseSelection)
+                    .disabled(!model.snapshot.canEdit)
             }
             CommandGroup(after: .textEditing) {
                 Button("Move Focus Up") { model.moveFocus(by: -1, extending: false) }
@@ -577,6 +699,16 @@ struct EqualizerAUM1App: App {
                 Button("Extend Selection Down") { model.moveFocus(by: 1, extending: true) }
                     .keyboardShortcut(.downArrow, modifiers: [.shift])
                     .disabled(!model.snapshot.canEdit)
+                Button("Add Focused Processor to Selection") {
+                    model.selectFocused(toggling: false)
+                }
+                .keyboardShortcut(.space, modifiers: [])
+                .disabled(!model.snapshot.canEdit)
+                Button("Toggle Focused Processor Selection") {
+                    model.selectFocused(toggling: true)
+                }
+                .keyboardShortcut(.space, modifiers: [.command])
+                .disabled(!model.snapshot.canEdit)
                 Divider()
                 Button("Move Selection Up") { model.moveSelection(by: -1) }
                     .keyboardShortcut(.upArrow, modifiers: [.command, .control])
@@ -600,6 +732,8 @@ struct EqualizerAUM1App: App {
 
 private struct M1EditorView: View {
     @ObservedObject var model: M1AppModel
+    @State private var dropDestination: Int?
+    @State private var editingGraphicEQNodeID: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -628,6 +762,19 @@ private struct M1EditorView: View {
             .toggleStyle(.switch)
             .disabled(!model.snapshot.canSetProcessing)
 
+            Menu {
+                Button("Channels") { model.addChannels(before: nil) }
+                Button("Preamp") { model.add(before: nil) }
+                Button("Graphic EQ") { model.addGraphicEQ(before: nil) }
+                Button("Convolution…") { model.importConvolution(before: nil) }
+            } label: {
+                Label("Add", systemImage: "plus")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Add processor")
+            .disabled(!model.snapshot.canEdit)
+
             Spacer()
 
             if case .uncertain = model.snapshot.persistence {
@@ -651,45 +798,80 @@ private struct M1EditorView: View {
     }
 
     private var chain: some View {
-        List {
-            ForEach(Array(model.snapshot.draft.nodes.enumerated()), id: \.element.id) { index, node in
-                nodeRow(node, index: index)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    model.select(node.id, mode: currentSelectionMode())
+        GeometryReader { geometry in
+            ScrollViewReader { proxy in
+                List {
+                    ForEach(Array(model.snapshot.draft.nodes.enumerated()), id: \.element.id) { index, node in
+                        nodeRow(node, index: index)
+                            .id(node.id)
+                            .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
+                            .listRowBackground(rowBackground(for: node.id))
+                            .overlay(alignment: .top) {
+                                if dropDestination == index { insertionIndicator }
+                            }
+                            .overlay(alignment: .bottom) {
+                                if index == model.snapshot.draft.nodes.count - 1,
+                                   dropDestination == model.snapshot.draft.nodes.count {
+                                    insertionIndicator
+                                }
+                            }
+                            .onDrop(
+                                of: [m1NodeDragType],
+                                delegate: M1NodeDropDelegate(
+                                    model: model,
+                                    rowIndex: index,
+                                    rowHeight: 58,
+                                    endDestination: model.snapshot.draft.nodes.count,
+                                    dropDestination: $dropDestination
+                                )
+                            )
+                            .disabled(!model.snapshot.canEdit)
+                    }
+
+                    Color.clear
+                        .frame(
+                            maxWidth: .infinity,
+                            minHeight: clearSelectionHeight(in: geometry.size.height)
+                        )
+                        .contentShape(Rectangle())
+                        .onTapGesture { model.select(nil, mode: .replacing) }
+                        .listRowInsets(EdgeInsets())
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                        .accessibilityLabel("Clear processor selection")
+                        .onDrop(
+                            of: [m1NodeDragType],
+                            delegate: M1NodeDropDelegate(
+                                model: model,
+                                rowIndex: nil,
+                                rowHeight: clearSelectionHeight(in: geometry.size.height),
+                                endDestination: model.snapshot.draft.nodes.count,
+                                dropDestination: $dropDestination
+                            )
+                        )
                 }
-                .listRowBackground(rowBackground(for: node.id))
-                .onDrag { model.beginDrag(node.id) }
-                .onDrop(
-                    of: [m1NodeDragType],
-                    delegate: M1NodeDropDelegate(model: model, destination: index)
-                )
-                .disabled(!model.snapshot.canEdit)
+                .onChange(of: model.snapshot.focusedNodeID) { _, id in
+                    if let id {
+                        proxy.scrollTo(id, anchor: .center)
+                    }
+                }
             }
         }
-        .safeAreaInset(edge: .bottom) {
-            HStack {
-                Menu {
-                    Button("Channels") { model.addChannels(before: nil) }
-                    Button("Preamp") { model.add(before: nil) }
-                    Button("Graphic EQ") { model.addGraphicEQ(before: nil) }
-                    Button("Convolution…") { model.importConvolution(before: nil) }
-                } label: {
-                    Label("Add", systemImage: "plus")
-                }
-                .disabled(!model.snapshot.canEdit)
-                Spacer()
-            }
-            .padding(10)
-            .background(.bar)
-            .onDrop(
-                of: [m1NodeDragType],
-                delegate: M1NodeDropDelegate(
-                    model: model,
-                    destination: model.snapshot.draft.nodes.count
-                )
-            )
-        }
+    }
+
+    private func clearSelectionHeight(in listHeight: CGFloat) -> CGFloat {
+        max(
+            32,
+            listHeight - CGFloat(model.snapshot.draft.nodes.count) * 58
+        )
+    }
+
+    private var insertionIndicator: some View {
+        Rectangle()
+            .fill(Color.accentColor)
+            .frame(height: 2)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 
     private var status: some View {
@@ -800,75 +982,91 @@ private struct M1EditorView: View {
 
     @ViewBuilder
     private func nodeRow(_ node: M1ProcessingNode, index: Int) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                Image(systemName: "line.3.horizontal")
-                    .foregroundStyle(.tertiary)
-                Image(systemName: nodeIcon(node.kind))
+        HStack(spacing: 8) {
+            Image(systemName: "line.3.horizontal")
+                .foregroundStyle(.secondary)
+                .frame(width: 26, height: 34)
+                .contentShape(Rectangle())
+                .help("Move \(nodeTitle(node.kind))")
+                .onDrag { model.beginDrag(node.id) }
+
+            Text("\(index + 1)")
+                .font(.body.weight(.medium))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(width: 32, height: 34, alignment: .center)
+                .allowsHitTesting(false)
+
+            powerControl(node)
+
+            Image(systemName: nodeIcon(node.kind))
+                .frame(width: 20)
+                .allowsHitTesting(false)
+
+            VStack(alignment: .leading, spacing: 2) {
                 Text(nodeTitle(node.kind))
                     .fontWeight(.medium)
-                    .frame(width: 90, alignment: .leading)
-                switch node.kind {
-                case .channels:
-                    Text(channelSummary(node.channels))
-                        .foregroundStyle(.secondary)
-                    if let warning = scopeDiagnosticSummary(node.id) {
-                        Text(warning)
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
-                case .preamp:
-                    if !node.isEnabled {
-                        Text("Disabled")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Text(channelSummary(effectiveSelections[node.id] ?? .all))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(node.gainDB.formatted(.number.precision(.fractionLength(1))))
-                        .monospacedDigit()
-                    Text("dB").foregroundStyle(.secondary)
-                case .graphicEQ:
-                    if !node.isEnabled {
-                        Text("Disabled")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Text(channelSummary(effectiveSelections[node.id] ?? .all))
-                        .foregroundStyle(.secondary)
-                    if let warning = graphicEQDiagnosticSummary(node.id) {
-                        Text(warning)
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
-                    Spacer()
-                    Text(graphicEQSummary(node.graphicEQBands))
-                        .monospacedDigit()
-                case .convolution:
-                    convolutionSummary(node)
-                }
-                Spacer()
-                Button { model.delete(node.id) } label: { Image(systemName: "trash") }
-                    .buttonStyle(.plain)
-                    .help("Delete node")
+                Text(nodeSubtitle(node))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
+            .frame(width: 104, alignment: .leading)
+            .allowsHitTesting(false)
 
-            if model.snapshot.focusedNodeID == node.id {
-                Divider()
-                switch node.kind {
-                case .channels:
-                    channelEditor(node)
-                case .preamp:
-                    preampEditor(node)
-                case .graphicEQ:
-                    graphicEQEditor(node)
-                case .convolution:
-                    convolutionEditor(node)
-                }
+            nodeControls(node)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+
+            Button { model.delete(node.id) } label: {
+                Image(systemName: "trash")
+                    .frame(width: 24, height: 28)
             }
+            .buttonStyle(.plain)
+            .help("Delete \(nodeTitle(node.kind))")
         }
-        .padding(.vertical, 4)
+        .frame(minHeight: 58)
+        .background {
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture { selectRow(node.id) }
+        }
+        .opacity(node.isEnabled ? 1 : 0.58)
+    }
+
+    @ViewBuilder
+    private func powerControl(_ node: M1ProcessingNode) -> some View {
+        Button { model.setEnabled(!node.isEnabled, id: node.id) } label: {
+            Image(systemName: "power")
+                .foregroundStyle(node.isEnabled ? Color.accentColor : .secondary)
+                .frame(width: 26, height: 30)
+        }
+        .buttonStyle(.plain)
+        .help("\(node.isEnabled ? "Disable" : "Enable") \(nodeTitle(node.kind))")
+        .accessibilityLabel("\(node.isEnabled ? "Disable" : "Enable") \(nodeTitle(node.kind))")
+        .accessibilityValue(node.isEnabled ? "Enabled" : "Disabled")
+    }
+
+    @ViewBuilder
+    private func nodeControls(_ node: M1ProcessingNode) -> some View {
+        switch node.kind {
+        case .channels:
+            channelEditor(node)
+        case .preamp:
+            preampEditor(node)
+        case .graphicEQ:
+            graphicEQSummaryControl(node)
+        case .convolution:
+            convolutionEditor(node)
+        }
+    }
+
+    private func nodeSubtitle(_ node: M1ProcessingNode) -> String {
+        switch node.kind {
+        case .channels:
+            return scopeDiagnosticSummary(node.id) ?? "Scope for following processors"
+        case .preamp, .graphicEQ, .convolution:
+            return channelSummary(effectiveSelections[node.id] ?? .all) + " channels"
+        }
     }
 
     private func scopeDiagnosticSummary(_ nodeID: UUID) -> String? {
@@ -921,30 +1119,22 @@ private struct M1EditorView: View {
     }
 
     private func preampEditor(_ node: M1ProcessingNode) -> some View {
-        HStack(spacing: 10) {
-            Toggle("Enabled", isOn: Binding(
-                get: { node.isEnabled },
-                set: { model.setEnabled($0, id: node.id) }
-            ))
-            Slider(
-                value: Binding(
-                    get: { node.gainDB },
-                    set: { model.setGain($0, id: node.id) }
-                ),
-                in: -20...20,
-                step: 0.1,
-                onEditingChanged: { editing in
-                    if editing { model.beginGesture(node.id) }
+        HStack(spacing: 8) {
+            M1GainKnob(
+                gainDB: node.gainDB,
+                onChange: { model.setGain($0, id: node.id) },
+                onEditingChanged: {
+                    if $0 { model.beginGesture(node.id) }
                     else { model.endGesture(node.id) }
                 }
             )
-            TextField(
-                "Gain",
-                value: Binding(
-                    get: { node.gainDB },
-                    set: { model.setGain(min(max($0, -100), 100), id: node.id) }
-                ),
-                format: .number.precision(.fractionLength(1))
+            M1GainTextField(
+                gainDB: node.gainDB,
+                onChange: { model.setGain($0, id: node.id) },
+                onEditingChanged: {
+                    if $0 { model.beginGesture(node.id) }
+                    else { model.endGesture(node.id) }
+                }
             )
             .textFieldStyle(.roundedBorder)
             .monospacedDigit()
@@ -953,13 +1143,56 @@ private struct M1EditorView: View {
         }
     }
 
+    private func graphicEQSummaryControl(_ node: M1ProcessingNode) -> some View {
+        HStack(spacing: 8) {
+            if graphicEQDiagnosticSummary(node.id) != nil {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .help(graphicEQDiagnosticSummary(node.id) ?? "")
+            }
+            Text(graphicEQSummary(node.graphicEQBands))
+                .font(.caption)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+            HStack(alignment: .center, spacing: 2) {
+                ForEach(Array(node.graphicEQBands.enumerated()), id: \.offset) { _, band in
+                    Capsule()
+                        .fill(isGraphicEQBandUnavailable(band) ? Color.orange : Color.accentColor)
+                        .frame(width: 2, height: graphicEQBarHeight(band.gainDB))
+                }
+            }
+            .frame(width: 58, height: 30)
+            .accessibilityLabel("15-band Graphic EQ preview")
+            Button { editingGraphicEQNodeID = node.id } label: {
+                Image(systemName: "slider.horizontal.3")
+                    .frame(width: 24, height: 28)
+            }
+            .buttonStyle(.plain)
+            .help("Edit Graphic EQ")
+            .accessibilityLabel("Edit Graphic EQ")
+            .popover(isPresented: graphicEQEditorPresentation(for: node.id), arrowEdge: .bottom) {
+                graphicEQEditor(node)
+                    .padding(12)
+                    .frame(width: 620)
+            }
+        }
+    }
+
+    private func graphicEQEditorPresentation(for id: UUID) -> Binding<Bool> {
+        Binding(
+            get: { editingGraphicEQNodeID == id },
+            set: { presented in
+                if presented { editingGraphicEQNodeID = id }
+                else if editingGraphicEQNodeID == id { editingGraphicEQNodeID = nil }
+            }
+        )
+    }
+
     private func graphicEQEditor(_ node: M1ProcessingNode) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Toggle("Enabled", isOn: Binding(
-                get: { node.isEnabled },
-                set: { model.setEnabled($0, id: node.id) }
-            ))
-
+            Text("Graphic EQ")
+                .font(.headline)
             ScrollView(.horizontal) {
                 HStack(alignment: .top, spacing: 8) {
                     ForEach(Array(node.graphicEQBands.enumerated()), id: \.offset) { index, band in
@@ -999,12 +1232,11 @@ private struct M1EditorView: View {
                                 value: Binding(
                                     get: { band.gainDB },
                                     set: {
-                                        let bounded = min(
-                                            max($0, M1GraphicEQContract.minimumGainDB),
-                                            M1GraphicEQContract.maximumGainDB
-                                        )
                                         model.setGraphicEQGain(
-                                            bounded,
+                                            min(
+                                                max($0, M1GraphicEQContract.minimumGainDB),
+                                                M1GraphicEQContract.maximumGainDB
+                                            ),
                                             bandIndex: index,
                                             id: node.id
                                         )
@@ -1030,60 +1262,52 @@ private struct M1EditorView: View {
         }
     }
 
-    private func convolutionSummary(_ node: M1ProcessingNode) -> some View {
-        let ir = node.convolutionIR!
-        return HStack(spacing: 8) {
-            Text(node.isEnabled ? "Enabled" : "Disabled")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(channelSummary(effectiveSelections[node.id] ?? .all))
-                .foregroundStyle(.secondary)
-            Text(ir.originalFileName)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Text("\(Int(ir.sampleRate)) Hz · \(ir.channelCount) ch · \(ir.frameCount) frames")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
+    private func graphicEQBarHeight(_ gainDB: Double) -> CGFloat {
+        let normalized = min(max((gainDB + 24) / 48, 0), 1)
+        return 6 + CGFloat(normalized) * 20
     }
 
     private func convolutionEditor(_ node: M1ProcessingNode) -> some View {
         let ir = node.convolutionIR!
         let duration = Double(ir.frameCount) / ir.sampleRate
-        return VStack(alignment: .leading, spacing: 8) {
-            Toggle("Enabled", isOn: Binding(
-                get: { node.isEnabled },
-                set: { model.setEnabled($0, id: node.id) }
-            ))
-            LabeledContent("Impulse response") {
+        return HStack(spacing: 8) {
+            VStack(alignment: .trailing, spacing: 2) {
                 Text(ir.originalFileName)
                     .lineLimit(1)
                     .truncationMode(.middle)
-            }
-            LabeledContent("Source") {
-                Text("\(Int(ir.sampleRate)) Hz · \(ir.channelCount) ch · \(ir.frameCount) frames · \(duration.formatted(.number.precision(.fractionLength(3)))) s")
+                    .help(ir.originalFileName)
+                Text("\(Int(ir.sampleRate)) Hz · \(ir.channelCount) ch · \(duration.formatted(.number.precision(.fractionLength(3)))) s")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-            LabeledContent("Processing") {
-                Text("0 frame algorithmic latency")
-            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
             Button { model.replaceConvolutionIR(id: node.id) } label: {
-                Label("Replace…", systemImage: "arrow.triangle.2.circlepath")
+                Image(systemName: "folder")
+                    .frame(width: 24, height: 28)
             }
+            .buttonStyle(.plain)
             .help("Replace impulse response")
+            .accessibilityLabel("Replace impulse response")
         }
     }
 
     private func channelEditor(_ node: M1ProcessingNode) -> some View {
-        HStack {
-            Text("Apply following effects to")
+        let available = availableChannelIdentifiers
+        let unavailable = selectedIdentifiers(node.channels).filter { !available.contains($0) }
+        return HStack(spacing: 8) {
+            Text(channelSummary(node.channels))
+                .lineLimit(1)
                 .foregroundStyle(.secondary)
             Menu {
                 Button("All") { model.setChannels(.all, id: node.id) }
-                ForEach(channelIdentifiers(for: node), id: \.self) { identifier in
+                if available.isEmpty {
+                    Text("No output channels available")
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(available, id: \.self) { identifier in
                     Toggle(
-                        identifier.rawValue,
+                        channelDisplayName(identifier),
                         isOn: Binding(
                             get: { selectedIdentifiers(node.channels).contains(identifier) },
                             set: { selected in
@@ -1095,11 +1319,33 @@ private struct M1EditorView: View {
                         )
                     )
                 }
-                Divider()
-                Button("Add Custom Channel…") { addCustomChannel(to: node) }
+                if !unavailable.isEmpty {
+                    Divider()
+                    Section("Unavailable in Current Output") {
+                        ForEach(unavailable, id: \.self) { identifier in
+                            Toggle(
+                                channelDisplayName(identifier),
+                                isOn: Binding(
+                                    get: { selectedIdentifiers(node.channels).contains(identifier) },
+                                    set: { selected in
+                                        model.setChannels(
+                                            updatedChannels(
+                                                node.channels,
+                                                identifier: identifier,
+                                                selected: selected
+                                            ),
+                                            id: node.id
+                                        )
+                                    }
+                                )
+                            )
+                        }
+                    }
+                }
             } label: {
-                Text(channelSummary(node.channels))
+                Text("Change…")
             }
+            .fixedSize()
         }
     }
 
@@ -1123,27 +1369,20 @@ private struct M1EditorView: View {
         return .replacing
     }
 
-    private func addCustomChannel(to node: M1ProcessingNode) {
-        let alert = NSAlert()
-        alert.messageText = "Add Custom Channel"
-        alert.informativeText = "Enter a non-empty channel identifier. It will be normalized to uppercase."
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Add")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn,
-              let identifier = M1ChannelIdentifier(field.stringValue) else { return }
-        model.setChannels(
-            updatedChannels(node.channels, identifier: identifier, selected: true),
-            id: node.id
-        )
+    private func selectRow(_ id: UUID) {
+        model.select(id, mode: currentSelectionMode())
     }
 
     private func channelSummary(_ selection: M1ChannelSelection) -> String {
         switch selection {
         case .all: return "All"
-        case let .identifiers(values): return values.map(\.rawValue).joined(separator: ", ")
+        case let .identifiers(values): return values.map(channelDisplayName).joined(separator: ", ")
         }
+    }
+
+    private func channelDisplayName(_ identifier: M1ChannelIdentifier) -> String {
+        guard let channel = Int(identifier.rawValue), channel > 0 else { return identifier.rawValue }
+        return "Channel \(channel)"
     }
 
     private func nodeIcon(_ kind: M1ProcessingNodeKind) -> String {
@@ -1185,13 +1424,8 @@ private struct M1EditorView: View {
         return []
     }
 
-    private func channelIdentifiers(for node: M1ProcessingNode) -> [M1ChannelIdentifier] {
-        var result = selectedIdentifiers(node.channels)
-        for channel in model.snapshot.outputLayout?.channels ?? []
-        where !result.contains(channel.identifier) {
-            result.append(channel.identifier)
-        }
-        return result
+    private var availableChannelIdentifiers: [M1ChannelIdentifier] {
+        (model.snapshot.availableOutputLayout?.channels ?? []).map(\.identifier)
     }
 
     private func updatedChannels(
@@ -1209,23 +1443,141 @@ private struct M1EditorView: View {
     }
 }
 
+private struct M1GainTextField: View {
+    let gainDB: Double
+    let onChange: (Double) -> Void
+    let onEditingChanged: (Bool) -> Void
+
+    @State private var text = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        TextField("Gain", text: $text)
+            .focused($isFocused)
+            .onAppear { text = formatted(gainDB) }
+            .onChange(of: gainDB) { _, value in
+                if !isFocused { text = formatted(value) }
+            }
+            .onChange(of: text) { _, value in
+                guard isFocused, let parsed = parsed(value) else { return }
+                onChange(min(max(parsed, -100), 100))
+            }
+            .onChange(of: isFocused) { wasFocused, focused in
+                if focused {
+                    text = formatted(gainDB)
+                    onEditingChanged(true)
+                } else if wasFocused {
+                    normalizeText()
+                    onEditingChanged(false)
+                }
+            }
+            .onSubmit { isFocused = false }
+    }
+
+    private func normalizeText() {
+        let value = parsed(text).map { min(max($0, -100), 100) } ?? gainDB
+        onChange(value)
+        text = formatted(value)
+    }
+
+    private func parsed(_ value: String) -> Double? {
+        let decimalSeparator = Locale.current.decimalSeparator ?? "."
+        return Double(
+            value
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: decimalSeparator, with: ".")
+        )
+    }
+
+    private func formatted(_ value: Double) -> String {
+        value.formatted(.number.precision(.fractionLength(1)))
+    }
+}
+
+private struct M1GainKnob: View {
+    let gainDB: Double
+    let onChange: (Double) -> Void
+    let onEditingChanged: (Bool) -> Void
+
+    @State private var dragStartGain: Double?
+
+    var body: some View {
+        let boundedGain = min(max(gainDB, -20), 20)
+        let angle = Angle.degrees((boundedGain / 20) * 135)
+        ZStack {
+            Circle()
+                .fill(Color(nsColor: .controlBackgroundColor))
+            Circle()
+                .stroke(Color.secondary.opacity(0.45), lineWidth: 1)
+            Capsule()
+                .fill(Color.primary)
+                .frame(width: 2, height: 9)
+                .offset(y: -7)
+                .rotationEffect(angle)
+        }
+        .frame(width: 32, height: 32)
+        .contentShape(Circle())
+        .gesture(
+            DragGesture(minimumDistance: 2)
+                .onChanged { value in
+                    if dragStartGain == nil {
+                        dragStartGain = boundedGain
+                        onEditingChanged(true)
+                    }
+                    let candidate = (dragStartGain ?? boundedGain) - value.translation.height * 0.2
+                    onChange((min(max(candidate, -20), 20) * 10).rounded() / 10)
+                }
+                .onEnded { _ in
+                    dragStartGain = nil
+                    onEditingChanged(false)
+                }
+        )
+        .accessibilityElement()
+        .accessibilityLabel("Preamp gain")
+        .accessibilityValue("\(gainDB.formatted(.number.precision(.fractionLength(1)))) dB")
+        .accessibilityAdjustableAction { direction in
+            let delta = direction == .increment ? 0.1 : -0.1
+            onChange(min(max(gainDB + delta, -20), 20))
+        }
+    }
+}
+
 @MainActor
 private struct M1NodeDropDelegate: DropDelegate {
     let model: M1AppModel
-    let destination: Int
+    let rowIndex: Int?
+    let rowHeight: CGFloat
+    let endDestination: Int
+    @Binding var dropDestination: Int?
 
     func validateDrop(info: DropInfo) -> Bool {
         model.snapshot.canEdit && info.hasItemsConforming(to: [m1NodeDragType])
     }
 
+    func dropEntered(info: DropInfo) {
+        dropDestination = destination(for: info)
+    }
+
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: NSEvent.modifierFlags.contains(.option) ? .copy : .move)
+        dropDestination = destination(for: info)
+        return DropProposal(operation: NSEvent.modifierFlags.contains(.option) ? .copy : .move)
+    }
+
+    func dropExited(info: DropInfo) {
+        dropDestination = nil
     }
 
     func performDrop(info: DropInfo) -> Bool {
         guard validateDrop(info: info) else { return false }
         let operation: M1NodeDragOperation = NSEvent.modifierFlags.contains(.option) ? .copy : .move
-        model.moveSelection(to: destination, operation: operation)
+        let destination = destination(for: info)
+        dropDestination = nil
+        model.moveDraggedSelection(to: destination, operation: operation)
         return true
+    }
+
+    private func destination(for info: DropInfo) -> Int {
+        guard let rowIndex else { return endDestination }
+        return info.location.y < rowHeight / 2 ? rowIndex : rowIndex + 1
     }
 }

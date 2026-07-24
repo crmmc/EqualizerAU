@@ -184,6 +184,36 @@ enum M1CoreAudioDataParser {
         return labels.map(speakerPosition)
     }
 
+    static func applyingPreferredStereoChannels(
+        _ data: Data,
+        to positions: [M1SpeakerPosition?]
+    ) throws -> [M1SpeakerPosition?] {
+        guard data.count == 2 * MemoryLayout<UInt32>.stride else {
+            throw M1CoreAudioStatusError(operation: "Parse preferred stereo channels", status: kAudio_ParamError)
+        }
+        let channels = data.withUnsafeBytes { bytes in
+            [
+                bytes.loadUnaligned(as: UInt32.self),
+                bytes.loadUnaligned(fromByteOffset: MemoryLayout<UInt32>.stride, as: UInt32.self),
+            ]
+        }
+        guard channels[0] > 0,
+              channels[1] > 0,
+              channels[0] != channels[1],
+              channels.allSatisfy({ Int($0) <= positions.count })
+        else {
+            throw M1CoreAudioStatusError(operation: "Validate preferred stereo channels", status: kAudio_ParamError)
+        }
+
+        var result = positions
+        let stereoPositions: [M1SpeakerPosition] = [.left, .right]
+        for (channel, position) in zip(channels, stereoPositions) {
+            let index = Int(channel - 1)
+            if result[index] == nil { result[index] = position }
+        }
+        return result
+    }
+
     private static func channelLabels(_ data: Data) throws -> [AudioChannelLabel] {
         guard let descriptionsOffset = MemoryLayout<AudioChannelLayout>.offset(of: \AudioChannelLayout.mChannelDescriptions),
               data.count >= descriptionsOffset
@@ -353,7 +383,7 @@ struct M1SystemHALRouteOperations: M1HALRouteOperations, @unchecked Sendable {
             kAudioDevicePropertyPreferredChannelLayout,
             scope: kAudioObjectPropertyScopeOutput
         )
-        let positions: [M1SpeakerPosition?]
+        var positions: [M1SpeakerPosition?]
         if reader.hasProperty(objectID: deviceID, address: layoutAddress) {
             positions = try M1CoreAudioDataParser.semanticPositions(
                 reader.data(objectID: deviceID, address: layoutAddress, operation: "Read output channel layout"),
@@ -361,6 +391,22 @@ struct M1SystemHALRouteOperations: M1HALRouteOperations, @unchecked Sendable {
             )
         } else {
             positions = Array(repeating: nil, count: channelCount)
+        }
+        let stereoAddress = M1HALPropertyAddress(
+            kAudioDevicePropertyPreferredChannelsForStereo,
+            scope: kAudioObjectPropertyScopeOutput
+        )
+        if reader.hasProperty(objectID: deviceID, address: stereoAddress),
+           let enriched = try? M1CoreAudioDataParser.applyingPreferredStereoChannels(
+               reader.data(
+                   objectID: deviceID,
+                   address: stereoAddress,
+                   operation: "Read preferred stereo channels"
+               ),
+               to: positions
+           )
+        {
+            positions = enriched
         }
         return M1HALOutputDeviceData(
             objectID: deviceID,

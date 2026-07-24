@@ -32,6 +32,31 @@ final class M1CoreAudioDataParserTests: XCTestCase {
         XCTAssertEqual(positions[2]?.rawValue, "R")
     }
 
+    func testPreferredStereoChannelsFillOnlyMissingSemanticPositions() throws {
+        let data = preferredStereoChannelsData(left: 2, right: 3)
+        let positions = try M1CoreAudioDataParser.applyingPreferredStereoChannels(
+            data,
+            to: [.center, nil, .rearRight]
+        )
+
+        XCTAssertEqual(positions.map { $0?.rawValue }, ["C", "L", "RR"])
+    }
+
+    func testInvalidPreferredStereoChannelsAreRejected() throws {
+        XCTAssertThrowsError(try M1CoreAudioDataParser.applyingPreferredStereoChannels(
+            Data(repeating: 0, count: MemoryLayout<UInt32>.stride),
+            to: [nil, nil]
+        ))
+        XCTAssertThrowsError(try M1CoreAudioDataParser.applyingPreferredStereoChannels(
+            preferredStereoChannelsData(left: 1, right: 1),
+            to: [nil, nil]
+        ))
+        XCTAssertThrowsError(try M1CoreAudioDataParser.applyingPreferredStereoChannels(
+            preferredStereoChannelsData(left: 1, right: 3),
+            to: [nil, nil]
+        ))
+    }
+
     func testTruncatedAndCountMismatchedLayoutsAreRejected() throws {
         let compact = channelLayoutData(tag: kAudioChannelLayoutTag_Stereo)
         XCTAssertThrowsError(
@@ -123,6 +148,11 @@ private func descriptionLayoutData(labels: [AudioChannelLabel]) -> Data {
         )
     }
     return data
+}
+
+private func preferredStereoChannelsData(left: UInt32, right: UInt32) -> Data {
+    let channels = [left, right]
+    return channels.withUnsafeBytes { Data($0) }
 }
 
 private func write<T>(_ value: T, to data: inout Data, at offset: Int) {

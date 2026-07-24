@@ -107,9 +107,12 @@ enum M1ProcessingBuilder {
     ) throws -> M1CompiledPreampTargets {
         try validate(nodes: nodes)
 
-        let channelIndexes = Dictionary(
+        var channelIndexes = Dictionary(
             uniqueKeysWithValues: layout.channels.map { ($0.identifier, $0.linearIndex) }
         )
+        for channel in layout.channels {
+            channelIndexes[M1ChannelIdentifier(String(channel.linearIndex + 1))!] = channel.linearIndex
+        }
         var gainsByChannel = Array(repeating: [Double](), count: layout.channels.count)
         var pendingPreampGainsByChannel = Array(
             repeating: [(nodeID: UUID, gainDB: Double)](),
@@ -128,8 +131,10 @@ enum M1ProcessingBuilder {
         var currentScopeNodeID: UUID?
         for node in nodes {
             if node.kind == .channels {
-                currentScope = node.channels
-                currentScopeNodeID = node.id
+                if node.isEnabled {
+                    currentScope = node.channels
+                    currentScopeNodeID = node.id
+                }
                 continue
             }
             guard node.isEnabled else { continue }
