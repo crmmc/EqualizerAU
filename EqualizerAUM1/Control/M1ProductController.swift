@@ -534,6 +534,16 @@ actor M1ProductController {
         }
     }
 
+    func setGraphicEQGainsDB(id: UUID, gainsDB: [Double]) async throws {
+        try await updateEditingSession { session, effectsEnabled in
+            try session.setGraphicEQGainsDB(
+                id: id,
+                gainsDB: gainsDB,
+                effectsEnabled: effectsEnabled
+            )
+        }
+    }
+
     func setChannels(id: UUID, channels: M1ChannelSelection) async throws {
         try await updateEditingSession { session, effectsEnabled in
             try session.setChannels(id: id, channels: channels, effectsEnabled: effectsEnabled)

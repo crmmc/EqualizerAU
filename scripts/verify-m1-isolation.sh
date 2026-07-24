@@ -134,6 +134,7 @@ contracts = {
       "EqualizerAUM1RuntimeTests/M1CoreAudioDataParserTests.swift",
       "EqualizerAUM1RuntimeTests/M1ProductControllerTests.swift",
       "EqualizerAUM1RuntimeTests/M1EditingSessionTests.swift",
+      "EqualizerAUM1RuntimeTests/M1EditingPerformanceTests.swift",
     ],
     phase_types: %w[PBXSourcesBuildPhase PBXFrameworksBuildPhase PBXResourcesBuildPhase],
     frameworks: ["System/Library/Frameworks/XCTest.framework", "libEqualizerAUM1Runtime.a", "System/Library/Frameworks/CoreAudio.framework", "System/Library/Frameworks/AudioToolbox.framework"],

@@ -97,6 +97,7 @@
 		D10000000000000000000032 /* M1EditingSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000028 /* M1EditingSession.swift */; };
 		D10000000000000000000033 /* M1EditingSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000028 /* M1EditingSession.swift */; };
 		D10000000000000000000034 /* M1EditingSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000029 /* M1EditingSessionTests.swift */; };
+		E10000000000000000000001 /* M1EditingPerformanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000001 /* M1EditingPerformanceTests.swift */; };
 		D10000000000000000000035 /* M1ConvolutionIR.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002A /* M1ConvolutionIR.swift */; };
 		D10000000000000000000036 /* M1ConvolutionIR.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002A /* M1ConvolutionIR.swift */; };
 		D10000000000000000000037 /* M1ConvolutionIRTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002B /* M1ConvolutionIRTests.swift */; };
@@ -233,6 +234,7 @@
 		D20000000000000000000027 /* M1ProductControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1ProductControllerTests.swift; sourceTree = "<group>"; };
 		D20000000000000000000028 /* M1EditingSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1EditingSession.swift; sourceTree = "<group>"; };
 		D20000000000000000000029 /* M1EditingSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1EditingSessionTests.swift; sourceTree = "<group>"; };
+		E20000000000000000000001 /* M1EditingPerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1EditingPerformanceTests.swift; sourceTree = "<group>"; };
 		D2000000000000000000002A /* M1ConvolutionIR.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1ConvolutionIR.swift; sourceTree = "<group>"; };
 		D2000000000000000000002C /* M1SystemAudioLifecycleMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1SystemAudioLifecycleMonitor.swift; sourceTree = "<group>"; };
 		D2000000000000000000002B /* M1ConvolutionIRTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1ConvolutionIRTests.swift; sourceTree = "<group>"; };
@@ -542,6 +544,7 @@
 				D20000000000000000000025 /* M1ConfigurationStoreTests.swift */,
 				D20000000000000000000027 /* M1ProductControllerTests.swift */,
 				D20000000000000000000029 /* M1EditingSessionTests.swift */,
+				E20000000000000000000001 /* M1EditingPerformanceTests.swift */,
 			);
 			path = EqualizerAUM1RuntimeTests;
 			sourceTree = "<group>";
@@ -944,6 +947,7 @@
 				D10000000000000000000027 /* M1CoreAudioDataParserTests.swift in Sources */,
 				D10000000000000000000031 /* M1ProductControllerTests.swift in Sources */,
 				D10000000000000000000034 /* M1EditingSessionTests.swift in Sources */,
+				E10000000000000000000001 /* M1EditingPerformanceTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

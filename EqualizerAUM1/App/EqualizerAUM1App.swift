@@ -142,6 +142,12 @@ final class M1AppModel: ObservableObject {
         }
     }
 
+    func setGraphicEQGains(_ gains: [Double], id: UUID) {
+        performEdit {
+            try await self.controller.setGraphicEQGainsDB(id: id, gainsDB: gains)
+        }
+    }
+
     func setChannels(_ channels: M1ChannelSelection, id: UUID) {
         performEdit { try await self.controller.setChannels(id: id, channels: channels) }
     }
@@ -988,7 +994,11 @@ private struct M1EditorView: View {
                 .frame(width: 26, height: 34)
                 .contentShape(Rectangle())
                 .help("Move \(nodeTitle(node.kind))")
-                .onDrag { model.beginDrag(node.id) }
+                .onDrag {
+                    model.beginDrag(node.id)
+                } preview: {
+                    Color.clear.frame(width: 1, height: 1)
+                }
 
             Text("\(index + 1)")
                 .font(.body.weight(.medium))
@@ -1151,18 +1161,15 @@ private struct M1EditorView: View {
                     .foregroundStyle(.orange)
                     .help(graphicEQDiagnosticSummary(node.id) ?? "")
             }
-            Text(graphicEQSummary(node.graphicEQBands))
-                .font(.caption)
-                .monospacedDigit()
-                .foregroundStyle(.secondary)
             HStack(alignment: .center, spacing: 2) {
                 ForEach(Array(node.graphicEQBands.enumerated()), id: \.offset) { _, band in
                     Capsule()
                         .fill(isGraphicEQBandUnavailable(band) ? Color.orange : Color.accentColor)
-                        .frame(width: 2, height: graphicEQBarHeight(band.gainDB))
+                        .frame(width: 3, height: graphicEQBarHeight(band.gainDB))
+                        .frame(maxWidth: .infinity)
                 }
             }
-            .frame(width: 58, height: 30)
+            .frame(maxWidth: .infinity, minHeight: 30, maxHeight: 30)
             .accessibilityLabel("15-band Graphic EQ preview")
             Button { editingGraphicEQNodeID = node.id } label: {
                 Image(systemName: "slider.horizontal.3")
@@ -1190,76 +1197,11 @@ private struct M1EditorView: View {
     }
 
     private func graphicEQEditor(_ node: M1ProcessingNode) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Graphic EQ")
-                .font(.headline)
-            ScrollView(.horizontal) {
-                HStack(alignment: .top, spacing: 8) {
-                    ForEach(Array(node.graphicEQBands.enumerated()), id: \.offset) { index, band in
-                        let unavailable = isGraphicEQBandUnavailable(band)
-                        VStack(spacing: 6) {
-                            Text(formatFrequency(band.frequencyHz))
-                                .font(.caption)
-                                .foregroundStyle(unavailable ? .orange : .secondary)
-                                .frame(width: 54)
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .font(.caption2)
-                                .foregroundStyle(.orange)
-                                .opacity(unavailable ? 1 : 0)
-                                .frame(height: 10)
-                                .accessibilityHidden(true)
-                            Slider(
-                                value: Binding(
-                                    get: { band.gainDB },
-                                    set: { model.setGraphicEQGain($0, bandIndex: index, id: node.id) }
-                                ),
-                                in: M1GraphicEQContract.minimumGainDB...M1GraphicEQContract.maximumGainDB,
-                                step: M1GraphicEQContract.gainStepDB,
-                                onEditingChanged: { editing in
-                                    if editing { model.beginGesture(node.id) }
-                                    else { model.endGesture(node.id) }
-                                }
-                            )
-                            .rotationEffect(.degrees(-90))
-                            .frame(width: 112, height: 24)
-                            .frame(width: 32, height: 112)
-                            .accessibilityLabel(
-                                "\(formatFrequency(band.frequencyHz)) gain"
-                                    + (unavailable ? ", unavailable at current sample rate" : "")
-                            )
-                            TextField(
-                                "Gain",
-                                value: Binding(
-                                    get: { band.gainDB },
-                                    set: {
-                                        model.setGraphicEQGain(
-                                            min(
-                                                max($0, M1GraphicEQContract.minimumGainDB),
-                                                M1GraphicEQContract.maximumGainDB
-                                            ),
-                                            bandIndex: index,
-                                            id: node.id
-                                        )
-                                    }
-                                ),
-                                format: .number.precision(.fractionLength(1))
-                            )
-                            .textFieldStyle(.roundedBorder)
-                            .multilineTextAlignment(.trailing)
-                            .monospacedDigit()
-                            .frame(width: 54)
-                            .accessibilityLabel(
-                                "\(formatFrequency(band.frequencyHz)) gain in decibels"
-                                    + (unavailable ? ", unavailable at current sample rate" : "")
-                            )
-                        }
-                        .frame(width: 58)
-                    }
-                }
-                .padding(.vertical, 2)
-            }
-            .scrollIndicators(.visible)
-        }
+        M1GraphicEQEditor(
+            bands: node.graphicEQBands,
+            sampleRate: model.snapshot.outputLayout?.sampleRate,
+            onCommit: { model.setGraphicEQGains($0, id: node.id) }
+        )
     }
 
     private func graphicEQBarHeight(_ gainDB: Double) -> CGFloat {
@@ -1403,14 +1345,6 @@ private struct M1EditorView: View {
         }
     }
 
-    private func graphicEQSummary(_ bands: [M1GraphicEQBand]) -> String {
-        let gains = bands.map(\.gainDB)
-        guard let minimum = gains.min(), let maximum = gains.max(), minimum != 0 || maximum != 0 else {
-            return "Flat"
-        }
-        return "\(minimum.formatted(.number.precision(.fractionLength(1))))…\(maximum.formatted(.number.precision(.fractionLength(1)))) dB"
-    }
-
     private func formatFrequency(_ frequencyHz: Double) -> String {
         if frequencyHz >= 1_000 {
             let kilohertz = frequencyHz / 1_000
@@ -1494,12 +1428,187 @@ private struct M1GainTextField: View {
     }
 }
 
+private struct M1GraphicEQEditor: View {
+    let bands: [M1GraphicEQBand]
+    let sampleRate: Double?
+    let onCommit: ([Double]) -> Void
+
+    private let initialGains: [Double]
+    @State private var gains: [Double]
+    @State private var didCommit = false
+
+    init(
+        bands: [M1GraphicEQBand],
+        sampleRate: Double?,
+        onCommit: @escaping ([Double]) -> Void
+    ) {
+        self.bands = bands
+        self.sampleRate = sampleRate
+        self.onCommit = onCommit
+        initialGains = bands.map(\.gainDB)
+        _gains = State(initialValue: initialGains)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Graphic EQ")
+                .font(.headline)
+            ScrollView(.horizontal) {
+                LazyHStack(alignment: .top, spacing: 8) {
+                    ForEach(bands.indices, id: \.self) { index in
+                        let band = bands[index]
+                        let unavailable = isUnavailable(band)
+                        VStack(spacing: 6) {
+                            Text(formatFrequency(band.frequencyHz))
+                                .font(.caption)
+                                .foregroundStyle(unavailable ? .orange : .secondary)
+                                .frame(width: 54)
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.orange)
+                                .opacity(unavailable ? 1 : 0)
+                                .frame(height: 10)
+                                .accessibilityHidden(true)
+                            M1GraphicEQFader(gainDB: gainBinding(at: index))
+                                .frame(width: 32, height: 112)
+                                .accessibilityLabel(
+                                    "\(formatFrequency(band.frequencyHz)) gain"
+                                        + (unavailable ? ", unavailable at current sample rate" : "")
+                                )
+                            TextField(
+                                "Gain",
+                                value: gainBinding(at: index),
+                                format: .number.precision(.fractionLength(1))
+                            )
+                            .textFieldStyle(.roundedBorder)
+                            .multilineTextAlignment(.trailing)
+                            .monospacedDigit()
+                            .frame(width: 54)
+                            .accessibilityLabel(
+                                "\(formatFrequency(band.frequencyHz)) gain in decibels"
+                                    + (unavailable ? ", unavailable at current sample rate" : "")
+                            )
+                        }
+                        .frame(width: 58)
+                    }
+                }
+                .padding(.top, 2)
+                .padding(.bottom, 18)
+            }
+            .scrollIndicators(.visible)
+        }
+        .onDisappear(perform: commitIfNeeded)
+    }
+
+    private func gainBinding(at index: Int) -> Binding<Double> {
+        Binding(
+            get: { gains[index] },
+            set: { gains[index] = quantized($0) }
+        )
+    }
+
+    private func commitIfNeeded() {
+        guard !didCommit else { return }
+        didCommit = true
+        guard gains != initialGains else { return }
+        onCommit(gains)
+    }
+
+    private func isUnavailable(_ band: M1GraphicEQBand) -> Bool {
+        guard let sampleRate else { return false }
+        return band.frequencyHz >= sampleRate / 2
+    }
+
+    private func formatFrequency(_ frequencyHz: Double) -> String {
+        if frequencyHz >= 1_000 {
+            let kilohertz = frequencyHz / 1_000
+            return "\(kilohertz.formatted(.number.precision(.fractionLength(kilohertz == kilohertz.rounded() ? 0 : 1)))) kHz"
+        }
+        return "\(frequencyHz.formatted(.number.precision(.fractionLength(frequencyHz == frequencyHz.rounded() ? 0 : 1)))) Hz"
+    }
+
+    private func quantized(_ gain: Double) -> Double {
+        let bounded = min(
+            max(gain, M1GraphicEQContract.minimumGainDB),
+            M1GraphicEQContract.maximumGainDB
+        )
+        return (bounded / M1GraphicEQContract.gainStepDB).rounded()
+            * M1GraphicEQContract.gainStepDB
+    }
+}
+
+private struct M1GraphicEQFader: View {
+    @Binding var gainDB: Double
+
+    var body: some View {
+        GeometryReader { geometry in
+            let fraction = normalized(gainDB)
+            ZStack {
+                Capsule()
+                    .fill(Color.secondary.opacity(0.25))
+                    .frame(width: 4)
+                    .padding(.vertical, 6)
+                Capsule()
+                    .fill(Color.accentColor)
+                    .frame(width: 4, height: max(4, (geometry.size.height - 12) * fraction))
+                    .frame(maxHeight: .infinity, alignment: .bottom)
+                    .padding(.bottom, 6)
+                Circle()
+                    .fill(Color(nsColor: .controlBackgroundColor))
+                    .overlay(Circle().stroke(Color.accentColor, lineWidth: 2))
+                    .frame(width: 16, height: 16)
+                    .position(
+                        x: geometry.size.width / 2,
+                        y: 6 + (geometry.size.height - 12) * (1 - fraction)
+                    )
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        gainDB = gain(at: value.location.y, height: geometry.size.height)
+                    }
+            )
+        }
+        .accessibilityElement()
+        .accessibilityValue("\(gainDB.formatted(.number.precision(.fractionLength(1)))) dB")
+        .accessibilityAdjustableAction { direction in
+            let delta = direction == .increment
+                ? M1GraphicEQContract.gainStepDB
+                : -M1GraphicEQContract.gainStepDB
+            gainDB = quantized(gainDB + delta)
+        }
+    }
+
+    private func gain(at y: CGFloat, height: CGFloat) -> Double {
+        guard height > 12 else { return gainDB }
+        let fraction = 1 - min(max(Double(y - 6) / Double(height - 12), 0), 1)
+        let range = M1GraphicEQContract.maximumGainDB - M1GraphicEQContract.minimumGainDB
+        return quantized(M1GraphicEQContract.minimumGainDB + fraction * range)
+    }
+
+    private func normalized(_ gain: Double) -> Double {
+        let range = M1GraphicEQContract.maximumGainDB - M1GraphicEQContract.minimumGainDB
+        return (min(max(gain, M1GraphicEQContract.minimumGainDB), M1GraphicEQContract.maximumGainDB)
+            - M1GraphicEQContract.minimumGainDB) / range
+    }
+
+    private func quantized(_ gain: Double) -> Double {
+        let bounded = min(
+            max(gain, M1GraphicEQContract.minimumGainDB),
+            M1GraphicEQContract.maximumGainDB
+        )
+        return (bounded / M1GraphicEQContract.gainStepDB).rounded()
+            * M1GraphicEQContract.gainStepDB
+    }
+}
+
 private struct M1GainKnob: View {
     let gainDB: Double
     let onChange: (Double) -> Void
     let onEditingChanged: (Bool) -> Void
 
-    @State private var dragStartGain: Double?
+    @State private var isDragging = false
 
     var body: some View {
         let boundedGain = min(max(gainDB, -20), 20)
@@ -1520,15 +1629,19 @@ private struct M1GainKnob: View {
         .gesture(
             DragGesture(minimumDistance: 2)
                 .onChanged { value in
-                    if dragStartGain == nil {
-                        dragStartGain = boundedGain
+                    if !isDragging {
+                        isDragging = true
                         onEditingChanged(true)
                     }
-                    let candidate = (dragStartGain ?? boundedGain) - value.translation.height * 0.2
-                    onChange((min(max(candidate, -20), 20) * 10).rounded() / 10)
+                    let x = Double(value.location.x - 16)
+                    let y = Double(value.location.y - 16)
+                    guard hypot(x, y) >= 4 else { return }
+                    let degrees = atan2(x, -y) * 180 / Double.pi
+                    let boundedDegrees = min(max(degrees, -135), 135)
+                    onChange(((boundedDegrees / 135) * 200).rounded() / 10)
                 }
                 .onEnded { _ in
-                    dragStartGain = nil
+                    isDragging = false
                     onEditingChanged(false)
                 }
         )

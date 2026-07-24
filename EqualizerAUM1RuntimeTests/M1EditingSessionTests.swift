@@ -305,6 +305,30 @@ final class M1EditingSessionTests: XCTestCase {
         )
     }
 
+    func testGraphicEQBulkCommitIsOneValidatedHistoryStep() throws {
+        var session = M1EditingSession(nodes: [.graphicEQ(id: ids[0])])
+        var gains = M1GraphicEQContract.flatBands.map(\.gainDB)
+        gains[2] = -3.04
+        gains[11] = 5.06
+
+        try session.setGraphicEQGainsDB(id: ids[0], gainsDB: gains, effectsEnabled: true)
+
+        XCTAssertEqual(session.historyMetrics.undoCount, 1)
+        XCTAssertEqual(session.nodes[0].graphicEQBands[2].gainDB, -3, accuracy: 1e-12)
+        XCTAssertEqual(session.nodes[0].graphicEQBands[11].gainDB, 5.1, accuracy: 1e-12)
+        try session.undo(effectsEnabled: true)
+        XCTAssertEqual(session.nodes[0].graphicEQBands, M1GraphicEQContract.flatBands)
+
+        XCTAssertThrowsError(
+            try session.setGraphicEQGainsDB(
+                id: ids[0],
+                gainsDB: Array(gains.dropLast()),
+                effectsEnabled: true
+            )
+        )
+        XCTAssertEqual(session.nodes[0].graphicEQBands, M1GraphicEQContract.flatBands)
+    }
+
     func testClipboardDecodesVersionsOneThroughFiveAndPreservesVersionThreeGraphicEQ() throws {
         let preampID = ids[0]
         let v1 = Data(

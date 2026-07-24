@@ -378,6 +378,24 @@ struct M1EditingSession: Sendable {
         }
     }
 
+    mutating func setGraphicEQGainsDB(
+        id: UUID,
+        gainsDB: [Double],
+        effectsEnabled: Bool
+    ) throws {
+        guard let node = nodes.first(where: { $0.id == id }), node.kind == .graphicEQ,
+              node.graphicEQBands.count == gainsDB.count
+        else {
+            throw M1EditingSessionError.invalidNodeKind
+        }
+        try updateNode(id: id, effectsEnabled: effectsEnabled) { node in
+            let step = M1GraphicEQContract.gainStepDB
+            for index in node.graphicEQBands.indices {
+                node.graphicEQBands[index].gainDB = (gainsDB[index] / step).rounded() * step
+            }
+        }
+    }
+
     mutating func setChannels(
         id: UUID,
         channels: M1ChannelSelection,
@@ -541,10 +559,10 @@ struct M1EditingSession: Sendable {
         coalescingGestureID: UUID? = nil
     ) throws {
         guard candidate != nodes else { return }
-        let normalized = M1ConfigurationMigration.normalizedCurrentNodes(candidate)
-        _ = try M1ConfigurationCodec.encode(
-            M1ConfigurationSnapshot(effectsEnabled: effectsEnabled, nodes: normalized)
+        let encoded = try M1ConfigurationCodec.encode(
+            M1ConfigurationSnapshot(effectsEnabled: effectsEnabled, nodes: candidate)
         )
+        let normalized = encoded.snapshot.nodes
         let coalesces = activeGestureID != nil && activeGestureID == coalescingGestureID
         if !coalesces {
             activeGestureID = nil
