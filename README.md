@@ -122,6 +122,7 @@ flowchart TD
 | [`docs/milestones/M4-mvp-stabilization.md`](docs/milestones/M4-mvp-stabilization.md) | M4 设备/权限/睡眠恢复、资源所有权、自动化证据和发布待验收范围 |
 | [`docs/milestones/M5-equalizerapo-editor-parity.md`](docs/milestones/M5-equalizerapo-editor-parity.md) | M5 EqualizerAPO 编辑器对齐目标、探索门禁、范围与退出条件 |
 | [`docs/milestones/M6-arbitrary-point-graphic-equalizer.md`](docs/milestones/M6-arbitrary-point-graphic-equalizer.md) | M6 任意频率 Graphic EQ 目标、决策门禁、范围与退出条件 |
+| [`docs/future-equalizerapo-import.md`](docs/future-equalizerapo-import.md) | 未排期的 EqualizerAPO 导入与多文件 Include 未来需求池，可按需求卡选择范围 |
 | [`CONTEXT.md`](CONTEXT.md) | 产品与处理链的规范领域词汇 |
 | [`AGENTS.md`](AGENTS.md) | 编码 Agent 的仓库工作规范 |
 
