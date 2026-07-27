@@ -42,16 +42,25 @@ final class M1ProcessingModelTests: XCTestCase {
         )
     }
 
-    func testGraphicEQFactoryUsesFixedReferenceBandsAndCopiesPayload() {
-        var node = M1ProcessingNode.graphicEQ(id: UUID())
-        node.graphicEQBands[7].gainDB = 3.5
+    func testGraphicEQFactoryStoresPointsKeepsLegacyBandAliasAndDefaultsFlatToEmpty() {
+        let defaultNode = M1ProcessingNode.graphicEQ()
+        var node = M1ProcessingNode.graphicEQ(
+            id: UUID(),
+            points: [
+                M1GraphicEQPoint(frequencyHz: 20, gainDB: -3),
+                M1GraphicEQPoint(frequencyHz: 2_000, gainDB: 1.5),
+                M1GraphicEQPoint(frequencyHz: 20_000, gainDB: 6),
+            ]
+        )
+        node.graphicEQPoints[1].gainDB = 3.5
         let copy = node.copied(id: UUID())
 
-        XCTAssertEqual(node.graphicEQBands.map(\.frequencyHz), M1GraphicEQContract.centerFrequenciesHz)
+        XCTAssertTrue(defaultNode.graphicEQPoints.isEmpty)
+        XCTAssertEqual(node.graphicEQPoints[1].gainDB, 3.5)
         XCTAssertEqual(copy.kind, .graphicEQ)
         XCTAssertNotEqual(copy.id, node.id)
-        XCTAssertEqual(copy.graphicEQBands, node.graphicEQBands)
-        XCTAssertEqual(M1GraphicEQContract.gainStepDB, 0.1)
+        XCTAssertEqual(copy.graphicEQPoints, node.graphicEQPoints)
+        XCTAssertEqual(M1GraphicEQContract.maximumPointCount, 512)
     }
 
     func testChannelIdentifierCanonicalizesCustomAndNumericValues() {
@@ -176,6 +185,46 @@ final class M1ProcessingModelTests: XCTestCase {
         )
 
         XCTAssertEqual(snapshot.channels.map(\.identifier.rawValue), ["1", "2", "R"])
+    }
+
+    func testGraphicEQCSVMatchesEqualizerAPONumericPairParsing() throws {
+        let points = try M1GraphicEQCSVCodec.decode([
+            "* ignored 30 4\n1000,5; -2,5\n2000 3 trailing-value 99",
+            "20\t-1\n20000 2\n",
+        ])
+        XCTAssertEqual(points, [
+            M1GraphicEQPoint(frequencyHz: 20, gainDB: -1),
+            M1GraphicEQPoint(frequencyHz: 1_000.5, gainDB: -2.5),
+            M1GraphicEQPoint(frequencyHz: 2_000, gainDB: 3),
+            M1GraphicEQPoint(frequencyHz: 20_000, gainDB: 2),
+        ])
+        XCTAssertEqual(
+            M1GraphicEQCSVCodec.encode(Array(points.prefix(2))),
+            "20.0\t-1.0\n1000.5\t-2.5\n"
+        )
+    }
+
+    func testGraphicEQCSVPreservesPositiveOutOfProcessingRangePoints() throws {
+        XCTAssertEqual(
+            try M1GraphicEQCSVCodec.decode(["10 -1\n20000.1 2\n200000 3"]),
+            [
+                M1GraphicEQPoint(frequencyHz: 10, gainDB: -1),
+                M1GraphicEQPoint(frequencyHz: 20_000.1, gainDB: 2),
+                M1GraphicEQPoint(frequencyHz: 200_000, gainDB: 3),
+            ]
+        )
+    }
+
+    func testGraphicEQCSVRejectsDuplicateAndNonPositivePoints() {
+        XCTAssertThrowsError(try M1GraphicEQCSVCodec.decode(["20 0\n20 1"])) {
+            XCTAssertEqual($0 as? M1GraphicEQCSVCodecError, .invalidPoints)
+        }
+        XCTAssertThrowsError(try M1GraphicEQCSVCodec.decode(["0 0"])) {
+            XCTAssertEqual($0 as? M1GraphicEQCSVCodecError, .invalidPoints)
+        }
+        XCTAssertThrowsError(try M1GraphicEQCSVCodec.decode(["-1 0"])) {
+            XCTAssertEqual($0 as? M1GraphicEQCSVCodecError, .invalidPoints)
+        }
     }
 
     func testLayoutRejectsInvalidOrMismatchedTopology() {

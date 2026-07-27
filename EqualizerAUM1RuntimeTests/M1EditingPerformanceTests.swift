@@ -6,26 +6,30 @@ final class M1EditingPerformanceTests: XCTestCase {
 
     override func setUpWithError() throws {
         try super.setUpWithError()
+    }
+
+    func testM5CEditingBaseline() throws {
         try XCTSkipUnless(
             ProcessInfo.processInfo.environment["M5C_PERFORMANCE"] == "1",
             "Set M5C_PERFORMANCE=1 to run the M5-C performance baseline."
         )
-    }
-
-    func testM5CEditingBaseline() throws {
         let chainSize = 512
         let graphicEQID = UUID()
-        let chain = makePreampNodes(count: chainSize - 1) + [M1ProcessingNode.graphicEQ(id: graphicEQID)]
+        let chain = makePreampNodes(count: chainSize - 1)
+            + [M1ProcessingNode.graphicEQ(
+                id: graphicEQID,
+                points: M1GraphicEQContract.legacyFlatPoints
+            )]
 
         var editingSession = M1EditingSession(nodes: chain)
-        var gains = M1GraphicEQContract.flatBands.map(\.gainDB)
-        for index in gains.indices {
-            gains[index] = Double(index) - 7
+        var points = M1GraphicEQContract.legacyFlatPoints
+        for index in points.indices {
+            points[index].gainDB = Double(index) - 7
         }
         let graphicEQCloseCommit = try elapsed {
-            try editingSession.setGraphicEQGainsDB(
+            try editingSession.setGraphicEQPoints(
                 id: graphicEQID,
-                gainsDB: gains,
+                points: points,
                 effectsEnabled: true
             )
         }
@@ -56,7 +60,7 @@ final class M1EditingPerformanceTests: XCTestCase {
         XCTAssertEqual(editingSession.selectedNodeIDs, Set(pasteFixture.newIDs))
 
         report("graphic_eq_close_commit", graphicEQCloseCommit, [
-            "bands": gains.count,
+            "points": points.count,
             "chain_nodes": chainSize,
         ])
         report("structural_move", structuralMove, ["chain_nodes": chainSize])
@@ -69,6 +73,74 @@ final class M1EditingPerformanceTests: XCTestCase {
             "existing_nodes": chainSize,
             "pasted_nodes": pasteFixture.nodes.count,
         ])
+    }
+
+    func testM6GraphicEQControlPerformance() throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["M6_PERFORMANCE"] == "1",
+            "Set M6_PERFORMANCE=1 to run the M6 performance baseline."
+        )
+        let points = makeGraphicEQPoints(count: M1GraphicEQContract.maximumPointCount)
+        let layout = M1OutputLayoutSnapshot(
+            sampleRate: 48_000,
+            maximumFrameCount: 256,
+            bufferChannelCounts: [2],
+            semanticPositionsByChannelIndex: [.left, .right]
+        )!
+        let node = M1ProcessingNode.graphicEQ(points: points)
+
+        var compiled: M1CompiledPreampTargets?
+        let builder = try elapsed {
+            compiled = try M1ProcessingBuilder.build(nodes: [node], layout: layout)
+        }
+        let result = try XCTUnwrap(compiled)
+        var prepared: OpaquePointer?
+        let preparedCreation = try elapsed {
+            prepared = try M1RuntimePreparedStateFactory.create(
+                stagesByChannel: result.stagesByChannel
+            )
+        }
+        if let prepared { EAUM1PreparedStateDestroy(prepared) }
+        let preview = try elapsed {
+            _ = try M1ProcessingBuilder.graphicEQPreview(
+                points: points,
+                sampleRate: layout.sampleRate
+            )
+        }
+
+        report("graphic_eq_fir_build", builder, [
+            "channels": 2,
+            "points": points.count,
+            "taps": M1ProcessingBuilder.graphicEQTapCount,
+        ], prefix: "M6_METRIC")
+        report("graphic_eq_prepared_create", preparedCreation, [
+            "channels": 2,
+            "taps_per_channel": M1ProcessingBuilder.graphicEQTapCount,
+        ], prefix: "M6_METRIC")
+        report("graphic_eq_preview", preview, [
+            "points": points.count,
+            "samples": 257,
+        ], prefix: "M6_METRIC")
+    }
+
+    private func makeGraphicEQPoints(count: Int) -> [M1GraphicEQPoint] {
+        let lower = log(M1GraphicEQContract.minimumFrequencyHz)
+        let upper = log(M1GraphicEQContract.maximumFrequencyHz)
+        return (0..<count).map { index in
+            let fraction = Double(index) / Double(count - 1)
+            let frequencyHz: Double
+            if index == 0 {
+                frequencyHz = M1GraphicEQContract.minimumFrequencyHz
+            } else if index == count - 1 {
+                frequencyHz = M1GraphicEQContract.maximumFrequencyHz
+            } else {
+                frequencyHz = exp(lower + (upper - lower) * fraction)
+            }
+            return M1GraphicEQPoint(
+                frequencyHz: frequencyHz,
+                gainDB: 12 * sin(fraction * 4 * Double.pi)
+            )
+        }
     }
 
     private func maximumLegalPaste(existingNodes: [M1ProcessingNode]) throws -> (
@@ -130,10 +202,15 @@ final class M1EditingPerformanceTests: XCTestCase {
         }
     }
 
-    private func report(_ name: String, _ duration: Duration, _ dimensions: [String: Int]) {
+    private func report(
+        _ name: String,
+        _ duration: Duration,
+        _ dimensions: [String: Int],
+        prefix: String = "M5C_METRIC"
+    ) {
         let milliseconds = duration.components.seconds * 1_000
             + duration.components.attoseconds / 1_000_000_000_000_000
         let fields = dimensions.keys.sorted().map { "\($0)=\(dimensions[$0]!)" }.joined(separator: " ")
-        print("M5C_METRIC name=\(name) milliseconds=\(milliseconds) \(fields)")
+        print("\(prefix) name=\(name) milliseconds=\(milliseconds) \(fields)")
     }
 }

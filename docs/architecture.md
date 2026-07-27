@@ -13,14 +13,15 @@ bundle ID 为 `com.ruimingchen.EqualizerAU`。M1 正常构建产物位于 config
 
 `EqualizerAUM1Runtime` 提供正式 C ABI v3、有限值 Gain/Biquad/Convolution chain、10 ms 双槽切换、Prepared
 发布和退休回收；`EqualizerAUM1` 独立拥有原生 Tap、Aggregate、捕获、输出和代次生命周期。
-配置层使用有序的 typed processing-node 快照以及版本化规范 JSON。schema v5 当前包含
-非 DSP 的 Channels 作用域节点，以及 Preamp、固定 15 段 Graphic EQ 和 Convolution 效果节点：启用的
-Channels 选择后续效果的目标声道，直到下一个启用的 Channels 节点覆盖；停用的 Channels 不改变
-作用域，所有节点的 `isEnabled` 均由 typed 字段持久化，效果节点不重复保存声道字段。
+配置层使用有序的 typed processing-node 快照以及版本化规范 JSON。schema v7 当前包含
+非 DSP 的 Channels 作用域节点，以及 Preamp、任意频率控制点 Graphic EQ 和 Convolution 效果节点：
+启用的 Channels 选择后续效果的目标声道，直到下一个启用的 Channels 节点覆盖；停用的 Channels
+不改变作用域，所有节点的 `isEnabled` 均由 typed 字段持久化，效果节点不重复保存声道字段。
 schema v1 读取时按有效作用域
 变化确定性插入 Channels 节点，保留原 Preamp UUID/顺序，并以确定性加盐避开任何已有 UUID；
-下一次 Save 写出 v5；schema v2/v3/v4 也会在读取后规范化为 v5，其中旧版 Channels 缺省迁移为
-启用。编码结果按键排序、可读格式、
+下一次 Save 写出 v7；schema v2/v3/v4/v5/v6 也会在读取后规范化为 v7，其中旧版 Channels 缺省迁移为
+启用，schema v3-v5 的固定 15 段 Graphic EQ 在按旧契约严格验证后逐点迁移；schema v6 的
+20...30 kHz 点原样保留。编码结果按键排序、可读格式、
 保留 slash 并以 LF 结尾，最终 UTF-8
 数据上限为 `4 MiB`。设备无关校验不依赖输出布局。
 
@@ -38,7 +39,18 @@ SHA-256 与来源元数据。控制线程按真实输出采样率执行 windowed
 没有可发现输出或路线正在转换时，Save 仍先验证启用节点的 IR sidecar 存在性、hash、WAV 与来源
 metadata；只有依赖真实布局的 SRC、声道映射和容量编译可以等待输出。
 
-Runtime ABI v3 的 Convolution stage 引用 Prepared 中的 planar taps。每个 kernel 前 256 taps
+Graphic EQ 保存 `0...512` 个按频率严格升序的正有限频率控制点，不设输入频率上限，gain 为
+`-24...+24 dB`。Builder 先排除 20 Hz...20 kHz 之外的点，再用域内点按对数频率插值；域外点
+只保存，不参与目标或 FIR 设计。没有域内点时不生成 stage，域外目标为 `0 dB`，有限 FIR 在边界外
+的自然过渡不做硬切。Builder 在 detached 控制路径按真实采样率生成 16,384-tap minimum-phase FIR，执行
+完整单边 cosine taper、Float32 有限值检查和 subnormal 清零，并通过 ABI v3 convolution 发布。
+目标与编译响应在 40 Hz...18 kHz 内域超过 `0.75 dB max / 0.1 dB p99` 时产生节点归属诊断；
+20...40 Hz 和 18...20 kHz 的边界过渡仍由双曲线公开显示。编辑器只暴露任意点
+模型，使用只读 target/compiled 曲线、独立 Select 列、有边框 Frequency/Gain 表格与
+Import/Export/Invert/Normalize/Reset 工具；所有表格编辑在弹窗关闭时一次提交。
+
+Runtime ABI v3 的 Convolution stage 引用 Prepared 中的 planar taps。Graphic EQ FIR 与 WAV IR
+共同使用该 stage；每个 kernel 前 256 taps
 逐样本直接卷积，余下 tail 使用 256-frame partition、512-point FFT 的 overlap-add，因此不引入
 算法延迟并可与 Gain/Biquad 任意排序。所有 taps 复制、FFT plan 和频谱预计算均在控制线程完成；
 回调只使用预分配状态。单 Prepared 最多 8 个 Convolution stages，所有声道实例 taps 合计最多

@@ -70,10 +70,10 @@ final class M1ConfigurationCodecTests: XCTestCase {
     func testUnsupportedSchemaAndUnknownNodeAreRejected() {
         let id = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
         let unsupported = Data(
-            "{\"schemaVersion\":6,\"effectsEnabled\":true,\"nodes\":[]}".utf8
+            "{\"schemaVersion\":8,\"effectsEnabled\":true,\"nodes\":[]}".utf8
         )
         XCTAssertThrowsError(try M1ConfigurationCodec.decode(unsupported)) { error in
-            XCTAssertEqual(error as? M1ConfigurationCodecError, .unsupportedSchema(6))
+            XCTAssertEqual(error as? M1ConfigurationCodecError, .unsupportedSchema(8))
         }
 
         let unknown = Data(
@@ -97,7 +97,7 @@ final class M1ConfigurationCodecTests: XCTestCase {
         XCTAssertEqual(first.snapshot.nodes.map(\.kind), [.channels, .preamp])
         XCTAssertEqual(first.snapshot.nodes[1].id, id)
         let text = try XCTUnwrap(String(data: first.data, encoding: .utf8))
-        XCTAssertTrue(text.contains("\"schemaVersion\" : 5"))
+        XCTAssertTrue(text.contains("\"schemaVersion\" : 7"))
         XCTAssertTrue(text.contains("\"type\" : \"channels\""))
         XCTAssertFalse(text.contains("\"channels\" : \"all\""))
     }
@@ -110,7 +110,7 @@ final class M1ConfigurationCodecTests: XCTestCase {
 
         let decoded = try M1ConfigurationCodec.decode(source)
         XCTAssertEqual(decoded.snapshot.nodes.map(\.kind), [.preamp])
-        XCTAssertTrue(String(decoding: decoded.data, as: UTF8.self).contains("\"schemaVersion\" : 5"))
+        XCTAssertTrue(String(decoding: decoded.data, as: UTF8.self).contains("\"schemaVersion\" : 7"))
     }
 
     func testVersionThreeDecodesAndCanonicalizesToVersionFive() throws {
@@ -121,7 +121,7 @@ final class M1ConfigurationCodecTests: XCTestCase {
 
         let decoded = try M1ConfigurationCodec.decode(source)
         XCTAssertEqual(decoded.snapshot.nodes.map(\.kind), [.preamp])
-        XCTAssertTrue(String(decoding: decoded.data, as: UTF8.self).contains("\"schemaVersion\" : 5"))
+        XCTAssertTrue(String(decoding: decoded.data, as: UTF8.self).contains("\"schemaVersion\" : 7"))
     }
 
     func testVersionFourChannelsMigrateEnabledAndVersionFiveRequiresExplicitState() throws {
@@ -140,14 +140,14 @@ final class M1ConfigurationCodecTests: XCTestCase {
         XCTAssertEqual(node["isEnabled"] as? Bool, true)
 
         let disabledCurrent = Data(
-            "{\"schemaVersion\":5,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"channels\",\"isEnabled\":false,\"channels\":\"all\"}]}".utf8
+            "{\"schemaVersion\":7,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"channels\",\"isEnabled\":false,\"channels\":\"all\"}]}".utf8
         )
         XCTAssertFalse(try XCTUnwrap(
             M1ConfigurationCodec.decode(disabledCurrent).snapshot.nodes.first
         ).isEnabled)
 
         let missingCurrentState = Data(
-            "{\"schemaVersion\":5,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"channels\",\"channels\":\"all\"}]}".utf8
+            "{\"schemaVersion\":7,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"channels\",\"channels\":\"all\"}]}".utf8
         )
         XCTAssertThrowsError(try M1ConfigurationCodec.decode(missingCurrentState))
         let unexpectedLegacyState = Data(
@@ -203,7 +203,7 @@ final class M1ConfigurationCodecTests: XCTestCase {
 
     func testVersionTwoRejectsGraphicEQOwnedByVersionThree() {
         let id = UUID()
-        let bands = M1GraphicEQContract.flatBands.map {
+        let bands = M1GraphicEQContract.legacyFlatPoints.map {
             "{\"frequencyHz\":\($0.frequencyHz),\"gainDB\":0}"
         }.joined(separator: ",")
         let node = "{\"id\":\"\(id)\",\"type\":\"graphicEQ\",\"isEnabled\":true,\"bands\":[\(bands)]}"
@@ -216,54 +216,169 @@ final class M1ConfigurationCodecTests: XCTestCase {
         XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(clipboard))
     }
 
-    func testGraphicEQRoundTripPreservesFixedBands() throws {
-        var node = M1ProcessingNode.graphicEQ(id: UUID())
-        node.graphicEQBands[0].gainDB = -24
-        node.graphicEQBands[7].gainDB = 6.4
-        node.graphicEQBands[14].gainDB = 24
-
-        let encoded = try M1ConfigurationCodec.encode(
-            M1ConfigurationSnapshot(effectsEnabled: true, nodes: [node])
-        )
-        let decoded = try M1ConfigurationCodec.decode(encoded.data)
-
-        XCTAssertEqual(decoded.snapshot.nodes, [node])
-        XCTAssertEqual(decoded, encoded)
-    }
-
-    func testGraphicEQRejectsNestedShapeAndBandContractViolations() throws {
-        let id = UUID()
-        let validBands = M1GraphicEQContract.flatBands.map {
+    func testGraphicEQLegacySchemasThreeThroughFiveMigrateEveryBandToCanonicalPoints() throws {
+        let nodeID = UUID()
+        let expected = M1GraphicEQContract.legacyFlatPoints.enumerated().map { index, point in
+            M1GraphicEQPoint(
+                frequencyHz: point.frequencyHz,
+                gainDB: Double(index) - 7
+            )
+        }
+        let bands = expected.map {
             "{\"frequencyHz\":\($0.frequencyHz),\"gainDB\":\($0.gainDB)}"
         }.joined(separator: ",")
-        let unknownField = Data(
-            "{\"schemaVersion\":3,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"graphicEQ\",\"isEnabled\":true,\"bands\":[{\"frequencyHz\":25,\"gainDB\":0,\"future\":1}]}]}".utf8
+
+        for schemaVersion in 3...5 {
+            let source = Data(
+                "{\"schemaVersion\":\(schemaVersion),\"effectsEnabled\":false,"
+                    .appending("\"nodes\":[{\"id\":\"\(nodeID)\",\"type\":\"graphicEQ\",\"isEnabled\":false,")
+                    .appending("\"bands\":[\(bands)]}]}\n")
+                    .utf8
+            )
+            let decoded = try M1ConfigurationCodec.decode(source)
+            let node = try XCTUnwrap(decoded.snapshot.nodes.first)
+            XCTAssertEqual(node.id, nodeID)
+            XCTAssertFalse(node.isEnabled)
+            XCTAssertEqual(node.graphicEQPoints, expected)
+            XCTAssertFalse(decoded.snapshot.effectsEnabled)
+            let canonical = String(decoding: decoded.data, as: UTF8.self)
+            XCTAssertTrue(canonical.contains("\"schemaVersion\" : 7"))
+            XCTAssertTrue(canonical.contains("\"points\""))
+            XCTAssertFalse(canonical.contains("\"bands\""))
+        }
+    }
+
+    func testGraphicEQSchemaSixPreservesThirtyKilohertzPointsInSchemaSeven() throws {
+        let nodeID = UUID()
+        let oldPoints = [
+            M1GraphicEQPoint(frequencyHz: 10_000, gainDB: -6),
+            M1GraphicEQPoint(frequencyHz: 30_000, gainDB: 6),
+        ]
+        let source = Data(
+            "{\"schemaVersion\":6,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(nodeID)\",\"type\":\"graphicEQ\",\"isEnabled\":true,\"points\":[{\"frequencyHz\":10000,\"gainDB\":-6},{\"frequencyHz\":30000,\"gainDB\":6}]}]}".utf8
         )
-        let duplicateField = Data(
-            "{\"schemaVersion\":3,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"graphicEQ\",\"isEnabled\":true,\"bands\":[{\"frequencyHz\":25,\"gainDB\":0,\"gainDB\":1}]}]}".utf8
+        let decoded = try M1ConfigurationCodec.decode(source)
+        XCTAssertEqual(
+            try XCTUnwrap(decoded.snapshot.nodes.first).graphicEQPoints,
+            oldPoints
         )
-        let wrongCount = Data(
-            "{\"schemaVersion\":3,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"graphicEQ\",\"isEnabled\":true,\"bands\":[]}]}".utf8
+        let canonical = String(decoding: decoded.data, as: UTF8.self)
+        XCTAssertTrue(canonical.contains("\"schemaVersion\" : 7"))
+        XCTAssertTrue(canonical.contains("\"frequencyHz\" : 30000"))
+    }
+
+    func testGraphicEQRoundTripPreservesCurrentPointsAtZeroOneAndMaximumCount() throws {
+        let empty = M1ProcessingNode.graphicEQ(id: UUID(), points: [])
+        let single = M1ProcessingNode.graphicEQ(
+            id: UUID(),
+            points: [M1GraphicEQPoint(frequencyHz: 20, gainDB: -24)]
+        )
+        let maximum = M1ProcessingNode.graphicEQ(
+            id: UUID(),
+            points: makeGraphicEQPoints(count: M1GraphicEQContract.maximumPointCount)
+        )
+
+        let outside = M1ProcessingNode.graphicEQ(
+            id: UUID(),
+            points: [
+                M1GraphicEQPoint(frequencyHz: 10, gainDB: -1),
+                M1GraphicEQPoint(frequencyHz: 200_000, gainDB: 1),
+            ]
+        )
+        let encoded = try M1ConfigurationCodec.encode(
+            M1ConfigurationSnapshot(
+                effectsEnabled: true,
+                nodes: [empty, single, maximum, outside]
+            )
+        )
+        let decoded = try M1ConfigurationCodec.decode(encoded.data)
+        let text = try XCTUnwrap(String(data: encoded.data, encoding: .utf8))
+
+        XCTAssertEqual(decoded.snapshot.nodes, [empty, single, maximum, outside])
+        XCTAssertEqual(decoded, encoded)
+        XCTAssertTrue(text.contains("\"schemaVersion\" : 7"))
+        XCTAssertTrue(text.contains("\"points\""))
+        XCTAssertFalse(text.contains("\"bands\""))
+    }
+
+    func testGraphicEQCurrentAndLegacySchemasRejectInvalidPointShapes() throws {
+        let id = UUID()
+        let validBands = M1GraphicEQContract.legacyFlatPoints.map {
+            "{\"frequencyHz\":\($0.frequencyHz),\"gainDB\":\($0.gainDB)}"
+        }.joined(separator: ",")
+        let legacyWrongFrequencyBands = ([
+            "{\"frequencyHz\":24,\"gainDB\":0}",
+        ] + M1GraphicEQContract.legacyFlatPoints.dropFirst().map {
+            "{\"frequencyHz\":\($0.frequencyHz),\"gainDB\":\($0.gainDB)}"
+        }).joined(separator: ",")
+        let currentBandsField = Data(
+            "{\"schemaVersion\":7,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"graphicEQ\",\"isEnabled\":true,\"bands\":[\(validBands)]}]}".utf8
+        )
+        let unknownPointField = Data(
+            "{\"schemaVersion\":7,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"graphicEQ\",\"isEnabled\":true,\"points\":[{\"frequencyHz\":20,\"gainDB\":0,\"future\":1}]}]}".utf8
         )
         let crossKindField = Data(
-            "{\"schemaVersion\":3,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"graphicEQ\",\"isEnabled\":true,\"gainDB\":0,\"bands\":[\(validBands)]}]}".utf8
+            "{\"schemaVersion\":7,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"graphicEQ\",\"isEnabled\":true,\"gainDB\":0,\"points\":[]}]}".utf8
+        )
+        let unsortedPoints = Data(
+            "{\"schemaVersion\":7,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"graphicEQ\",\"isEnabled\":true,\"points\":[{\"frequencyHz\":100,\"gainDB\":0},{\"frequencyHz\":20,\"gainDB\":0}]}]}".utf8
+        )
+        let duplicatePoints = Data(
+            "{\"schemaVersion\":7,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"graphicEQ\",\"isEnabled\":true,\"points\":[{\"frequencyHz\":20,\"gainDB\":0},{\"frequencyHz\":20,\"gainDB\":1}]}]}".utf8
+        )
+        let lowFrequency = Data(
+            "{\"schemaVersion\":7,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"graphicEQ\",\"isEnabled\":true,\"points\":[{\"frequencyHz\":0,\"gainDB\":0}]}]}".utf8
+        )
+        let legacyWrongCount = Data(
+            "{\"schemaVersion\":3,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"graphicEQ\",\"isEnabled\":true,\"bands\":[]}]}".utf8
+        )
+        let legacyWrongFrequency = Data(
+            "{\"schemaVersion\":5,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"graphicEQ\",\"isEnabled\":true,\"bands\":[\(legacyWrongFrequencyBands)]}]}".utf8
         )
 
-        XCTAssertThrowsError(try M1ConfigurationCodec.decode(unknownField))
-        XCTAssertThrowsError(try M1ConfigurationCodec.decode(duplicateField))
-        XCTAssertThrowsError(try M1ConfigurationCodec.decode(wrongCount))
-        XCTAssertThrowsError(try M1ConfigurationCodec.decode(crossKindField))
+        for payload in [
+            currentBandsField, unknownPointField, crossKindField,
+            unsortedPoints, duplicatePoints, lowFrequency,
+            legacyWrongCount, legacyWrongFrequency,
+        ] {
+            XCTAssertThrowsError(try M1ConfigurationCodec.decode(payload))
+        }
 
-        var wrongFrequency = M1ProcessingNode.graphicEQ(id: id)
-        wrongFrequency.graphicEQBands[0] = M1GraphicEQBand(frequencyHz: 24, gainDB: 0)
+        XCTAssertThrowsError(try M1ConfigurationCodec.decode(legacyWrongCount)) {
+            XCTAssertEqual(
+                $0 as? M1ConfigurationCodecError,
+                .invalidConfiguration(.invalidGraphicEQBandCount(nodeID: id))
+            )
+        }
+        XCTAssertThrowsError(try M1ConfigurationCodec.decode(legacyWrongFrequency)) {
+            XCTAssertEqual(
+                $0 as? M1ConfigurationCodecError,
+                .invalidConfiguration(.invalidGraphicEQFrequency(nodeID: id, bandIndex: 0))
+            )
+        }
+
+        let tooManyPoints = M1ProcessingNode.graphicEQ(
+            id: id,
+            points: makeGraphicEQPoints(count: M1GraphicEQContract.maximumPointCount + 1)
+        )
         XCTAssertThrowsError(try M1ConfigurationCodec.encode(
-            M1ConfigurationSnapshot(effectsEnabled: true, nodes: [wrongFrequency])
+            M1ConfigurationSnapshot(effectsEnabled: true, nodes: [tooManyPoints])
         ))
 
-        var wrongGain = M1ProcessingNode.graphicEQ(id: id)
-        wrongGain.graphicEQBands[0].gainDB = 24.1
+        let nonFiniteFrequency = M1ProcessingNode.graphicEQ(
+            id: id,
+            points: [M1GraphicEQPoint(frequencyHz: .nan, gainDB: 0)]
+        )
         XCTAssertThrowsError(try M1ConfigurationCodec.encode(
-            M1ConfigurationSnapshot(effectsEnabled: true, nodes: [wrongGain])
+            M1ConfigurationSnapshot(effectsEnabled: true, nodes: [nonFiniteFrequency])
+        ))
+
+        let outOfRangeGain = M1ProcessingNode.graphicEQ(
+            id: id,
+            points: [M1GraphicEQPoint(frequencyHz: 20, gainDB: 24.1)]
+        )
+        XCTAssertThrowsError(try M1ConfigurationCodec.encode(
+            M1ConfigurationSnapshot(effectsEnabled: true, nodes: [outOfRangeGain])
         ))
     }
 
@@ -380,5 +495,17 @@ final class M1ConfigurationCodecTests: XCTestCase {
                 )
             ]
         )
+    }
+
+    private func makeGraphicEQPoints(count: Int) -> [M1GraphicEQPoint] {
+        guard count > 0 else { return [] }
+        let frequencyRange = M1GraphicEQContract.maximumFrequencyHz - M1GraphicEQContract.minimumFrequencyHz
+        return (0..<count).map { index in
+            let fraction = count == 1 ? 0.0 : Double(index) / Double(count - 1)
+            return M1GraphicEQPoint(
+                frequencyHz: M1GraphicEQContract.minimumFrequencyHz + frequencyRange * fraction,
+                gainDB: -24 + 48 * fraction
+            )
+        }
     }
 }

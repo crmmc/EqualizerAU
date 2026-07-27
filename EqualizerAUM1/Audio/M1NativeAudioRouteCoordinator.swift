@@ -86,6 +86,7 @@ actor M1NativeAudioRouteCoordinator {
         var tap: M1ProcessTapResource?
         var aggregate: M1AggregateResource?
         var runtime: M1RuntimeHandleLease?
+        var diagnostics: M1ProcessingBuildDiagnostics?
         var runtimeLeaseInstalled = false
         var io: M1AudioIOResource?
         var phase: Phase = .starting
@@ -228,6 +229,7 @@ actor M1NativeAudioRouteCoordinator {
                 sampleRate: output.layout.sampleRate
             )
             resources.runtime = runtime
+            resources.diagnostics = compiled.diagnostics
             try checkStartCancellation()
             guard await runtimeAccess.install(runtime) else {
                 throw M1AudioIOError.invalidState("runtime lease is already installed")
@@ -318,6 +320,11 @@ actor M1NativeAudioRouteCoordinator {
     func outputLayout() -> M1OutputLayoutSnapshot? {
         guard current?.phase == .running else { return nil }
         return current?.output?.layout
+    }
+
+    func processingDiagnostics() -> M1ProcessingBuildDiagnostics? {
+        guard current?.phase == .running else { return nil }
+        return current?.diagnostics
     }
 
     func discoverOutputLayout() async -> M1OutputLayoutSnapshot? {

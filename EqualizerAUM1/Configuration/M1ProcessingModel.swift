@@ -43,23 +43,33 @@ struct M1ConvolutionIRReference: Equatable, Sendable {
     let frameCount: Int
 }
 
-struct M1GraphicEQBand: Equatable, Sendable {
+struct M1GraphicEQPoint: Equatable, Sendable {
     let frequencyHz: Double
     var gainDB: Double
 }
 
 enum M1GraphicEQContract {
+    static let minimumFrequencyHz = 20.0
+    static let maximumFrequencyHz = 20_000.0
+    static let schemaSixMaximumFrequencyHz = 30_000.0
+    static let minimumResponseEvaluationFrequencyHz = 40.0
+    static let maximumResponseEvaluationFrequencyHz = 18_000.0
+    static let maximumPointCount = 512
+    static let legacyMinimumGainDB = -24.0
+    static let legacyMaximumGainDB = 24.0
     static let minimumGainDB = -24.0
     static let maximumGainDB = 24.0
     static let gainStepDB = 0.1
     static let octaveBandwidth = 2.0 / 3.0
-    static let centerFrequenciesHz: [Double] = [
+    static let legacyCenterFrequenciesHz: [Double] = [
         25, 40, 63, 100, 160, 250, 400, 630,
         1_000, 1_600, 2_500, 4_000, 6_300, 10_000, 16_000,
     ]
 
-    static var flatBands: [M1GraphicEQBand] {
-        centerFrequenciesHz.map { M1GraphicEQBand(frequencyHz: $0, gainDB: 0) }
+    static var flatPoints: [M1GraphicEQPoint] { [] }
+
+    static var legacyFlatPoints: [M1GraphicEQPoint] {
+        legacyCenterFrequenciesHz.map { M1GraphicEQPoint(frequencyHz: $0, gainDB: 0) }
     }
 }
 
@@ -69,7 +79,7 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
     var isEnabled: Bool
     var gainDB: Double
     var channels: M1ChannelSelection
-    var graphicEQBands: [M1GraphicEQBand]
+    var graphicEQPoints: [M1GraphicEQPoint]
     var convolutionIR: M1ConvolutionIRReference?
 
     init(
@@ -83,7 +93,7 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
         self.isEnabled = isEnabled
         self.gainDB = gainDB
         self.channels = channels
-        graphicEQBands = []
+        graphicEQPoints = []
         convolutionIR = nil
     }
 
@@ -98,7 +108,7 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
             isEnabled: isEnabled,
             gainDB: 0,
             channels: selection,
-            graphicEQBands: [],
+            graphicEQPoints: [],
             convolutionIR: nil
         )
     }
@@ -106,7 +116,7 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
     static func graphicEQ(
         id: UUID = UUID(),
         isEnabled: Bool = true,
-        bands: [M1GraphicEQBand] = M1GraphicEQContract.flatBands
+        points: [M1GraphicEQPoint] = M1GraphicEQContract.flatPoints
     ) -> Self {
         Self(
             id: id,
@@ -114,7 +124,7 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
             isEnabled: isEnabled,
             gainDB: 0,
             channels: .all,
-            graphicEQBands: bands,
+            graphicEQPoints: points,
             convolutionIR: nil
         )
     }
@@ -130,7 +140,7 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
             isEnabled: isEnabled,
             gainDB: 0,
             channels: .all,
-            graphicEQBands: [],
+            graphicEQPoints: [],
             convolutionIR: ir
         )
     }
@@ -141,7 +151,7 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
         isEnabled: Bool,
         gainDB: Double,
         channels: M1ChannelSelection,
-        graphicEQBands: [M1GraphicEQBand],
+        graphicEQPoints: [M1GraphicEQPoint],
         convolutionIR: M1ConvolutionIRReference?
     ) {
         self.id = id
@@ -149,7 +159,7 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
         self.isEnabled = isEnabled
         self.gainDB = gainDB
         self.channels = channels
-        self.graphicEQBands = graphicEQBands
+        self.graphicEQPoints = graphicEQPoints
         self.convolutionIR = convolutionIR
     }
 
@@ -165,7 +175,7 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
                 channels: channels
             )
         case .graphicEQ:
-            return .graphicEQ(id: id, isEnabled: isEnabled, bands: graphicEQBands)
+            return .graphicEQ(id: id, isEnabled: isEnabled, points: graphicEQPoints)
         case .convolution:
             return .convolution(id: id, isEnabled: isEnabled, ir: convolutionIR!)
         }
@@ -283,5 +293,54 @@ struct M1OutputLayoutSnapshot: Equatable, Sendable {
         self.maximumFrameCount = maximumFrameCount
         self.bufferChannelCounts = bufferChannelCounts
         channels = resolvedChannels
+    }
+}
+
+enum M1GraphicEQCSVCodecError: Error, Equatable {
+    case invalidPoints
+}
+
+enum M1GraphicEQCSVCodec {
+    static func decode(_ texts: [String]) throws -> [M1GraphicEQPoint] {
+        let expression = try NSRegularExpression(
+            pattern: #"[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?"#
+        )
+        var points: [M1GraphicEQPoint] = []
+        for text in texts {
+            for originalLine in text.components(separatedBy: .newlines)
+                where !originalLine.hasPrefix("*") {
+                let line = originalLine.contains(".")
+                    ? originalLine : originalLine.replacingOccurrences(of: ",", with: ".")
+                let range = NSRange(line.startIndex..., in: line)
+                let values = expression.matches(in: line, range: range).compactMap { match in
+                    Range(match.range, in: line).flatMap { Double(line[$0]) }
+                }
+                for index in stride(from: 0, to: values.count - 1, by: 2) {
+                    points.append(M1GraphicEQPoint(
+                        frequencyHz: values[index],
+                        gainDB: values[index + 1]
+                    ))
+                }
+            }
+        }
+        points.sort { $0.frequencyHz < $1.frequencyHz }
+        guard points.count <= M1GraphicEQContract.maximumPointCount,
+              points.allSatisfy({
+                  $0.frequencyHz.isFinite && $0.gainDB.isFinite
+                      && $0.frequencyHz > 0
+                      && $0.gainDB >= M1GraphicEQContract.minimumGainDB
+                      && $0.gainDB <= M1GraphicEQContract.maximumGainDB
+              }),
+              zip(points, points.dropFirst()).allSatisfy({
+                  $0.frequencyHz < $1.frequencyHz
+              }) else {
+            throw M1GraphicEQCSVCodecError.invalidPoints
+        }
+        return points
+    }
+
+    static func encode(_ points: [M1GraphicEQPoint]) -> String {
+        points.map { "\($0.frequencyHz)\t\($0.gainDB)" }
+            .joined(separator: "\n") + "\n"
     }
 }

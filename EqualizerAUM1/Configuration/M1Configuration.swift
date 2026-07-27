@@ -1,7 +1,7 @@
 import Foundation
 
 struct M1ConfigurationSnapshot: Equatable, Sendable {
-    static let schemaVersion = 5
+    static let schemaVersion = 7
 
     var effectsEnabled: Bool
     var nodes: [M1ProcessingNode]
@@ -45,16 +45,20 @@ enum M1ConfigurationCodecError: Error, Equatable, Sendable {
 enum M1ConfigurationCodec {
     static let maximumDataSize = 4 * 1024 * 1024
 
+    static func validateNodes(_ nodes: [M1ProcessingNode]) throws {
+        do {
+            try M1ProcessingBuilder.validate(nodes: nodes)
+        } catch let error as M1ProcessingBuildError {
+            throw M1ConfigurationCodecError.invalidConfiguration(error)
+        }
+    }
+
     static func encode(_ snapshot: M1ConfigurationSnapshot) throws -> M1EncodedConfiguration {
         let snapshot = M1ConfigurationSnapshot(
             effectsEnabled: snapshot.effectsEnabled,
             nodes: M1ConfigurationMigration.normalizedCurrentNodes(snapshot.nodes)
         )
-        do {
-            try M1ProcessingBuilder.validate(nodes: snapshot.nodes)
-        } catch let error as M1ProcessingBuildError {
-            throw M1ConfigurationCodecError.invalidConfiguration(error)
-        }
+        try validateNodes(snapshot.nodes)
 
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
@@ -108,6 +112,14 @@ enum M1ConfigurationCodec {
             try M1JSONShapeValidator.validateConfiguration(data, schemaVersion: 4)
             let wire = try JSONDecoder().decode(M1ConfigurationWire.self, from: data)
             snapshot = try wire.snapshot(expectedSchemaVersion: 4)
+        case 5:
+            try M1JSONShapeValidator.validateConfiguration(data, schemaVersion: 5)
+            let wire = try JSONDecoder().decode(M1ConfigurationWire.self, from: data)
+            snapshot = try wire.snapshot(expectedSchemaVersion: 5)
+        case 6:
+            try M1JSONShapeValidator.validateConfiguration(data, schemaVersion: 6)
+            let wire = try JSONDecoder().decode(M1ConfigurationWire.self, from: data)
+            snapshot = try wire.snapshot(expectedSchemaVersion: 6)
         case M1ConfigurationSnapshot.schemaVersion:
             try M1JSONShapeValidator.validateConfiguration(
                 data,
@@ -173,6 +185,13 @@ enum M1JSONShapeValidator {
                         : ["id", "type", "channels"]
                 case M1ProcessingNodeKind.preamp.rawValue:
                     allowedKeys = ["id", "type", "isEnabled", "gainDB"]
+                case M1ProcessingNodeKind.graphicEQ.rawValue where schemaVersion >= 6:
+                    allowedKeys = ["id", "type", "isEnabled", "points"]
+                    guard let points = node["points"] as? [[String: Any]],
+                          points.allSatisfy({ Set($0.keys) == ["frequencyHz", "gainDB"] })
+                    else {
+                        throw M1ConfigurationCodecError.invalidJSON
+                    }
                 case M1ProcessingNodeKind.graphicEQ.rawValue where schemaVersion >= 3:
                     allowedKeys = ["id", "type", "isEnabled", "bands"]
                     guard let bands = node["bands"] as? [[String: Any]],
@@ -328,15 +347,17 @@ private struct M1ConfigurationWire: Codable {
         guard schemaVersion == expectedSchemaVersion else {
             throw M1ConfigurationCodecError.unsupportedSchema(schemaVersion)
         }
-        let snapshot = M1ConfigurationSnapshot(
-            effectsEnabled: effectsEnabled,
-            nodes: try nodes.map { try $0.node(schemaVersion: expectedSchemaVersion) }
-        )
+        let decodedNodes: [M1ProcessingNode]
         do {
-            try M1ProcessingBuilder.validate(nodes: snapshot.nodes)
+            decodedNodes = try nodes.map { try $0.node(schemaVersion: expectedSchemaVersion) }
         } catch let error as M1ProcessingBuildError {
             throw M1ConfigurationCodecError.invalidConfiguration(error)
         }
+        let snapshot = M1ConfigurationSnapshot(
+            effectsEnabled: effectsEnabled,
+            nodes: decodedNodes
+        )
+        try M1ConfigurationCodec.validateNodes(snapshot.nodes)
         return snapshot
     }
 }
@@ -364,7 +385,8 @@ struct M1ProcessingNodeWire: Codable {
     let isEnabled: Bool?
     let gainDB: Double?
     let channels: M1ChannelSelectionWire?
-    let bands: [M1GraphicEQBandWire]?
+    let points: [M1GraphicEQPointWire]?
+    let bands: [M1GraphicEQPointWire]?
     let ir: M1ConvolutionIRReferenceWire?
 
     init(_ node: M1ProcessingNode) {
@@ -375,24 +397,28 @@ struct M1ProcessingNodeWire: Codable {
             isEnabled = node.isEnabled
             gainDB = nil
             channels = M1ChannelSelectionWire(node.channels)
+            points = nil
             bands = nil
             ir = nil
         case .preamp:
             isEnabled = node.isEnabled
             gainDB = node.gainDB
             channels = nil
+            points = nil
             bands = nil
             ir = nil
         case .graphicEQ:
             isEnabled = node.isEnabled
             gainDB = nil
             channels = nil
-            bands = node.graphicEQBands.map(M1GraphicEQBandWire.init)
+            points = node.graphicEQPoints.map(M1GraphicEQPointWire.init)
+            bands = nil
             ir = nil
         case .convolution:
             isEnabled = node.isEnabled
             gainDB = nil
             channels = nil
+            points = nil
             bands = nil
             ir = node.convolutionIR.map(M1ConvolutionIRReferenceWire.init)
         }
@@ -401,7 +427,7 @@ struct M1ProcessingNodeWire: Codable {
     func node(schemaVersion: Int) throws -> M1ProcessingNode {
         switch type {
         case M1ProcessingNodeKind.channels.rawValue:
-            guard let channels, gainDB == nil, bands == nil, ir == nil else {
+            guard let channels, gainDB == nil, points == nil, bands == nil, ir == nil else {
                 throw M1ConfigurationCodecError.invalidJSON
             }
             let enabled: Bool
@@ -414,7 +440,8 @@ struct M1ProcessingNodeWire: Codable {
             }
             return .channels(id: id, isEnabled: enabled, selection: try channels.selection())
         case M1ProcessingNodeKind.preamp.rawValue:
-            guard let isEnabled, let gainDB, channels == nil, bands == nil, ir == nil else {
+            guard let isEnabled, let gainDB, channels == nil, points == nil, bands == nil,
+                  ir == nil else {
                 throw M1ConfigurationCodecError.invalidJSON
             }
             return M1ProcessingNode(
@@ -424,16 +451,39 @@ struct M1ProcessingNodeWire: Codable {
                 channels: .all
             )
         case M1ProcessingNodeKind.graphicEQ.rawValue:
-            guard let isEnabled, let bands, gainDB == nil, channels == nil, ir == nil else {
+            guard let isEnabled, gainDB == nil, channels == nil, ir == nil else {
+                throw M1ConfigurationCodecError.invalidJSON
+            }
+            if schemaVersion >= 6 {
+                guard let points, bands == nil else {
+                    throw M1ConfigurationCodecError.invalidJSON
+                }
+                let decodedPoints = points.map(\.point)
+                return .graphicEQ(
+                    id: id,
+                    isEnabled: isEnabled,
+                    points: schemaVersion == 6
+                        ? try M1GraphicEQModelValidator.migrateSchemaSixPoints(
+                            decodedPoints,
+                            nodeID: id
+                        )
+                        : decodedPoints
+                )
+            }
+            guard let bands, points == nil else {
                 throw M1ConfigurationCodecError.invalidJSON
             }
             return .graphicEQ(
                 id: id,
                 isEnabled: isEnabled,
-                bands: bands.map(\.band)
+                points: try M1GraphicEQModelValidator.migrateLegacyBands(
+                    bands.map(\.point),
+                    nodeID: id
+                )
             )
         case M1ProcessingNodeKind.convolution.rawValue:
-            guard let isEnabled, let ir, gainDB == nil, channels == nil, bands == nil else {
+            guard let isEnabled, let ir, gainDB == nil, channels == nil, points == nil,
+                  bands == nil else {
                 throw M1ConfigurationCodecError.invalidJSON
             }
             return .convolution(id: id, isEnabled: isEnabled, ir: ir.reference)
@@ -472,17 +522,86 @@ struct M1ConvolutionIRReferenceWire: Codable {
     }
 }
 
-struct M1GraphicEQBandWire: Codable {
+struct M1GraphicEQPointWire: Codable {
     let frequencyHz: Double
     let gainDB: Double
 
-    init(_ band: M1GraphicEQBand) {
-        frequencyHz = band.frequencyHz
-        gainDB = band.gainDB
+    init(_ point: M1GraphicEQPoint) {
+        frequencyHz = point.frequencyHz
+        gainDB = point.gainDB
     }
 
-    var band: M1GraphicEQBand {
-        M1GraphicEQBand(frequencyHz: frequencyHz, gainDB: gainDB)
+    var point: M1GraphicEQPoint {
+        M1GraphicEQPoint(frequencyHz: frequencyHz, gainDB: gainDB)
+    }
+}
+
+private enum M1GraphicEQModelValidator {
+    static func migrateSchemaSixPoints(
+        _ points: [M1GraphicEQPoint],
+        nodeID: UUID
+    ) throws -> [M1GraphicEQPoint] {
+        guard points.count <= M1GraphicEQContract.maximumPointCount else {
+            throw M1ProcessingBuildError.invalidGraphicEQBandCount(nodeID: nodeID)
+        }
+        var previousFrequencyHz: Double?
+        for (index, point) in points.enumerated() {
+            guard point.frequencyHz.isFinite,
+                  point.frequencyHz >= M1GraphicEQContract.minimumFrequencyHz,
+                  point.frequencyHz <= M1GraphicEQContract.schemaSixMaximumFrequencyHz,
+                  previousFrequencyHz.map({ point.frequencyHz > $0 }) ?? true else {
+                throw M1ProcessingBuildError.invalidGraphicEQFrequency(
+                    nodeID: nodeID,
+                    bandIndex: index
+                )
+            }
+            guard point.gainDB.isFinite else {
+                throw M1ProcessingBuildError.nonFiniteGraphicEQGain(
+                    nodeID: nodeID,
+                    bandIndex: index
+                )
+            }
+            guard point.gainDB >= M1GraphicEQContract.minimumGainDB,
+                  point.gainDB <= M1GraphicEQContract.maximumGainDB else {
+                throw M1ProcessingBuildError.graphicEQGainOutOfRange(
+                    nodeID: nodeID,
+                    bandIndex: index
+                )
+            }
+            previousFrequencyHz = point.frequencyHz
+        }
+        return points
+    }
+
+    static func migrateLegacyBands(
+        _ bands: [M1GraphicEQPoint],
+        nodeID: UUID
+    ) throws -> [M1GraphicEQPoint] {
+        guard bands.count == M1GraphicEQContract.legacyCenterFrequenciesHz.count else {
+            throw M1ProcessingBuildError.invalidGraphicEQBandCount(nodeID: nodeID)
+        }
+        for (index, band) in bands.enumerated() {
+            guard band.frequencyHz == M1GraphicEQContract.legacyCenterFrequenciesHz[index] else {
+                throw M1ProcessingBuildError.invalidGraphicEQFrequency(
+                    nodeID: nodeID,
+                    bandIndex: index
+                )
+            }
+            guard band.gainDB.isFinite else {
+                throw M1ProcessingBuildError.nonFiniteGraphicEQGain(
+                    nodeID: nodeID,
+                    bandIndex: index
+                )
+            }
+            guard band.gainDB >= M1GraphicEQContract.legacyMinimumGainDB,
+                  band.gainDB <= M1GraphicEQContract.legacyMaximumGainDB else {
+                throw M1ProcessingBuildError.graphicEQGainOutOfRange(
+                    nodeID: nodeID,
+                    bandIndex: index
+                )
+            }
+        }
+        return bands
     }
 }
 
@@ -605,7 +724,7 @@ enum M1ConfigurationMigration {
                     .graphicEQ(
                         id: node.id,
                         isEnabled: node.isEnabled,
-                        bands: node.graphicEQBands
+                        points: node.graphicEQPoints
                     )
                 )
             case .convolution:

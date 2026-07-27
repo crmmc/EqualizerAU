@@ -31,16 +31,12 @@ struct M1EncodedNodeEnvelope: Equatable, Sendable {
 }
 
 enum M1NodeEnvelopeCodec {
-    static let schemaVersion = 5
+    static let schemaVersion = 7
     static let maximumDataSize = M1ConfigurationCodec.maximumDataSize
 
     static func encode(_ nodes: [M1ProcessingNode]) throws -> M1EncodedNodeEnvelope {
         let nodes = M1ConfigurationMigration.normalizedCurrentNodes(nodes)
-        do {
-            try M1ProcessingBuilder.validate(nodes: nodes)
-        } catch let error as M1ProcessingBuildError {
-            throw M1ConfigurationCodecError.invalidConfiguration(error)
-        }
+        try M1ConfigurationCodec.validateNodes(nodes)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         var data = try encoder.encode(M1NodeEnvelopeWire(nodes: nodes))
@@ -89,6 +85,14 @@ enum M1NodeEnvelopeCodec {
                 try M1JSONShapeValidator.validateNodeEnvelope(data, schemaVersion: 4)
                 let wire = try JSONDecoder().decode(M1NodeEnvelopeWire.self, from: data)
                 return try encode(try wire.nodes.map { try $0.node(schemaVersion: 4) })
+            case 5:
+                try M1JSONShapeValidator.validateNodeEnvelope(data, schemaVersion: 5)
+                let wire = try JSONDecoder().decode(M1NodeEnvelopeWire.self, from: data)
+                return try encode(try wire.nodes.map { try $0.node(schemaVersion: 5) })
+            case 6:
+                try M1JSONShapeValidator.validateNodeEnvelope(data, schemaVersion: 6)
+                let wire = try JSONDecoder().decode(M1NodeEnvelopeWire.self, from: data)
+                return try encode(try wire.nodes.map { try $0.node(schemaVersion: 6) })
             case schemaVersion:
                 try M1JSONShapeValidator.validateNodeEnvelope(data, schemaVersion: schemaVersion)
                 let wire = try JSONDecoder().decode(M1NodeEnvelopeWire.self, from: data)
@@ -357,43 +361,15 @@ struct M1EditingSession: Sendable {
         ) { $0.gainDB = gainDB }
     }
 
-    mutating func setGraphicEQGainDB(
+    mutating func setGraphicEQPoints(
         id: UUID,
-        bandIndex: Int,
-        gainDB: Double,
+        points: [M1GraphicEQPoint],
         effectsEnabled: Bool
     ) throws {
-        guard let node = nodes.first(where: { $0.id == id }), node.kind == .graphicEQ,
-              node.graphicEQBands.indices.contains(bandIndex)
-        else {
+        guard nodes.first(where: { $0.id == id })?.kind == .graphicEQ else {
             throw M1EditingSessionError.invalidNodeKind
         }
-        try updateNode(
-            id: id,
-            effectsEnabled: effectsEnabled,
-            coalescingGestureID: id
-        ) {
-            let step = M1GraphicEQContract.gainStepDB
-            $0.graphicEQBands[bandIndex].gainDB = (gainDB / step).rounded() * step
-        }
-    }
-
-    mutating func setGraphicEQGainsDB(
-        id: UUID,
-        gainsDB: [Double],
-        effectsEnabled: Bool
-    ) throws {
-        guard let node = nodes.first(where: { $0.id == id }), node.kind == .graphicEQ,
-              node.graphicEQBands.count == gainsDB.count
-        else {
-            throw M1EditingSessionError.invalidNodeKind
-        }
-        try updateNode(id: id, effectsEnabled: effectsEnabled) { node in
-            let step = M1GraphicEQContract.gainStepDB
-            for index in node.graphicEQBands.indices {
-                node.graphicEQBands[index].gainDB = (gainsDB[index] / step).rounded() * step
-            }
-        }
+        try updateNode(id: id, effectsEnabled: effectsEnabled) { $0.graphicEQPoints = points }
     }
 
     mutating func setChannels(

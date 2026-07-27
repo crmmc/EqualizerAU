@@ -1,3 +1,4 @@
+import Accelerate
 import Foundation
 
 enum M1ProcessingBuildError: Error, Equatable, Sendable {
@@ -10,6 +11,8 @@ enum M1ProcessingBuildError: Error, Equatable, Sendable {
     case invalidGraphicEQFrequency(nodeID: UUID, bandIndex: Int)
     case nonFiniteGraphicEQGain(nodeID: UUID, bandIndex: Int)
     case graphicEQGainOutOfRange(nodeID: UUID, bandIndex: Int)
+    case graphicEQFIRGenerationFailed(nodeID: UUID)
+    case invalidGraphicEQTaps(nodeID: UUID)
     case invalidConvolutionIRReference(nodeID: UUID)
     case convolutionIRLoadFailed(nodeID: UUID, error: M1ConvolutionIRError)
     case convolutionChannelCountMismatch(nodeID: UUID, expected: Int, actual: Int)
@@ -34,24 +37,38 @@ struct M1GainBoundaryDiagnostic: Equatable, Sendable {
     let boundary: M1GainBoundary
 }
 
+struct M1GraphicEQResolutionDiagnostic: Equatable, Sendable {
+    let nodeID: UUID
+    let maximumErrorDB: Double
+    let percentile99ErrorDB: Double
+}
+
+struct M1GraphicEQPreview: Equatable, Sendable {
+    let frequenciesHz: [Double]
+    let targetGainDB: [Double]
+    let compiledGainDB: [Double]
+    let maximumErrorDB: Double
+    let percentile99ErrorDB: Double
+}
+
 struct M1ProcessingBuildDiagnostics: Equatable, Sendable {
     let unresolvedChannels: [M1UnresolvedChannelDiagnostic]
     let clippingRiskChannels: [M1ChannelIdentifier]
     let gainBoundaries: [M1GainBoundaryDiagnostic]
-    let unavailableGraphicEQBands: [M1UnavailableGraphicEQBandDiagnostic]
+    let graphicEQResolution: [M1GraphicEQResolutionDiagnostic]
     let convolutionSources: [M1ConvolutionSourceDiagnostic]
 
     init(
         unresolvedChannels: [M1UnresolvedChannelDiagnostic],
         clippingRiskChannels: [M1ChannelIdentifier],
         gainBoundaries: [M1GainBoundaryDiagnostic],
-        unavailableGraphicEQBands: [M1UnavailableGraphicEQBandDiagnostic] = [],
+        graphicEQResolution: [M1GraphicEQResolutionDiagnostic] = [],
         convolutionSources: [M1ConvolutionSourceDiagnostic] = []
     ) {
         self.unresolvedChannels = unresolvedChannels
         self.clippingRiskChannels = clippingRiskChannels
         self.gainBoundaries = gainBoundaries
-        self.unavailableGraphicEQBands = unavailableGraphicEQBands
+        self.graphicEQResolution = graphicEQResolution
         self.convolutionSources = convolutionSources
     }
 }
@@ -61,11 +78,6 @@ struct M1ConvolutionSourceDiagnostic: Equatable, Sendable {
     let source: M1ConvolutionIRReference
     let targetSampleRate: Double
     let targetFrameCount: Int
-}
-
-struct M1UnavailableGraphicEQBandDiagnostic: Equatable, Sendable {
-    let nodeID: UUID
-    let frequencyHz: Double
 }
 
 struct M1BiquadCoefficients: Equatable, Sendable {
@@ -95,10 +107,15 @@ enum M1ProcessingBuilder {
     static let maximumConvolutionStages = Int(EAUM1_MAX_CONVOLUTION_STAGES)
     static let maximumTotalConvolutionTaps = 131_072
     static let convolutionLatencyFrames = 0
+    static let graphicEQDesignLength = 32_768
+    static let graphicEQTapCount = 16_384
+    static let graphicEQMaximumResponseErrorDB = 0.75
+    static let graphicEQPercentile99ResponseErrorDB = 0.1
     private static let minimumGainDB = -100.0
     private static let maximumGainDB = 100.0
     private static let maximumFiniteGainDB = 20 * log10(Double(Float.greatestFiniteMagnitude))
     private static let minimumNormalGainDB = 20 * log10(Double(Float.leastNormalMagnitude))
+    private static let graphicEQMagnitudeFloorDB = -100.0
 
     static func build(
         nodes: [M1ProcessingNode],
@@ -120,7 +137,7 @@ enum M1ProcessingBuilder {
         )
         var stagesByChannel = Array(repeating: [M1CompiledProcessingStage](), count: layout.channels.count)
         var unresolvedDiagnostics: [M1UnresolvedChannelDiagnostic] = []
-        var unavailableGraphicEQBands: [M1UnavailableGraphicEQBandDiagnostic] = []
+        var graphicEQResolutionDiagnostics: [M1GraphicEQResolutionDiagnostic] = []
         var convolutionSources: [M1ConvolutionSourceDiagnostic] = []
         var convolutionStageCount = 0
         var totalConvolutionTaps = 0
@@ -130,6 +147,7 @@ enum M1ProcessingBuilder {
         var currentScope: M1ChannelSelection = .all
         var currentScopeNodeID: UUID?
         for node in nodes {
+            try Task.checkCancellation()
             if node.kind == .channels {
                 if node.isEnabled {
                     currentScope = node.channels
@@ -180,36 +198,47 @@ enum M1ProcessingBuilder {
                     }
                 }
             case .graphicEQ:
-                let availableBands: [M1CompiledProcessingStage] = node.graphicEQBands
-                    .enumerated()
-                    .compactMap { bandIndex, band in
-                    guard band.frequencyHz < layout.sampleRate / 2 else {
-                        unavailableGraphicEQBands.append(
-                            M1UnavailableGraphicEQBandDiagnostic(
-                                nodeID: node.id,
-                                frequencyHz: band.frequencyHz
-                            )
-                        )
-                        return nil
-                    }
-                    guard band.gainDB != 0 else { return nil }
-                    return M1CompiledProcessingStage.biquad(
-                        nodeID: node.id,
-                        bandIndex: bandIndex,
-                        coefficients: graphicEQCoefficients(
-                            frequencyHz: band.frequencyHz,
-                            gainDB: band.gainDB,
-                            sampleRate: layout.sampleRate
+                guard !selectedIndexes.isEmpty else { continue }
+                guard let taps = try compileGraphicEQTaps(
+                    nodeID: node.id,
+                    points: node.graphicEQPoints,
+                    sampleRate: layout.sampleRate
+                ) else {
+                    continue
+                }
+                let response = try graphicEQResponseMetrics(
+                    nodeID: node.id,
+                    taps: taps,
+                    points: node.graphicEQPoints,
+                    sampleRate: layout.sampleRate,
+                    sampleCount: 193
+                )
+                if response.maximumErrorDB > graphicEQMaximumResponseErrorDB
+                    || response.percentile99ErrorDB > graphicEQPercentile99ResponseErrorDB {
+                    graphicEQResolutionDiagnostics.append(
+                        M1GraphicEQResolutionDiagnostic(
+                            nodeID: node.id,
+                            maximumErrorDB: response.maximumErrorDB,
+                            percentile99ErrorDB: response.percentile99ErrorDB
                         )
                     )
-                    }
-                for index in selectedIndexes where !availableBands.isEmpty {
+                }
+                for index in selectedIndexes {
                     appendPendingGainStage(
                         channelIndex: index,
                         pending: &pendingPreampGainsByChannel,
                         stages: &stagesByChannel
                     )
-                    stagesByChannel[index].append(contentsOf: availableBands)
+                    convolutionStageCount += 1
+                    totalConvolutionTaps += taps.count
+                    guard convolutionStageCount <= maximumConvolutionStages else {
+                        throw M1ProcessingBuildError.convolutionStageCapacityExceeded
+                    }
+                    guard totalConvolutionTaps <= maximumTotalConvolutionTaps else {
+                        throw M1ProcessingBuildError.convolutionTapCapacityExceeded
+                    }
+                    stagesByChannel[index].append(.convolution(nodeID: node.id, taps: taps))
+                    latencyByChannel[index] += convolutionLatencyFrames
                 }
             case .convolution:
                 guard !selectedIndexes.isEmpty else { continue }
@@ -347,7 +376,7 @@ enum M1ProcessingBuilder {
                 unresolvedChannels: unresolvedDiagnostics,
                 clippingRiskChannels: clippingRiskChannels,
                 gainBoundaries: gainBoundaryDiagnostics,
-                unavailableGraphicEQBands: unavailableGraphicEQBands,
+                graphicEQResolution: graphicEQResolutionDiagnostics,
                 convolutionSources: convolutionSources
             ),
             processingLatencyFrames: latencyByChannel.max() ?? 0
@@ -369,30 +398,35 @@ enum M1ProcessingBuilder {
                 }
             }
             if node.kind == .graphicEQ {
-                guard node.graphicEQBands.count == M1GraphicEQContract.centerFrequenciesHz.count else {
+                guard node.graphicEQPoints.count <= M1GraphicEQContract.maximumPointCount else {
                     throw M1ProcessingBuildError.invalidGraphicEQBandCount(nodeID: node.id)
                 }
-                for (index, band) in node.graphicEQBands.enumerated() {
-                    guard band.frequencyHz == M1GraphicEQContract.centerFrequenciesHz[index] else {
+                var previousFrequencyHz: Double?
+                for (index, point) in node.graphicEQPoints.enumerated() {
+                    guard point.frequencyHz.isFinite,
+                          point.frequencyHz > 0,
+                          previousFrequencyHz.map({ point.frequencyHz > $0 }) ?? true
+                    else {
                         throw M1ProcessingBuildError.invalidGraphicEQFrequency(
                             nodeID: node.id,
                             bandIndex: index
                         )
                     }
-                    guard band.gainDB.isFinite else {
+                    guard point.gainDB.isFinite else {
                         throw M1ProcessingBuildError.nonFiniteGraphicEQGain(
                             nodeID: node.id,
                             bandIndex: index
                         )
                     }
-                    guard band.gainDB >= M1GraphicEQContract.minimumGainDB,
-                          band.gainDB <= M1GraphicEQContract.maximumGainDB
+                    guard point.gainDB >= M1GraphicEQContract.minimumGainDB,
+                          point.gainDB <= M1GraphicEQContract.maximumGainDB
                     else {
                         throw M1ProcessingBuildError.graphicEQGainOutOfRange(
                             nodeID: node.id,
                             bandIndex: index
                         )
                     }
+                    previousFrequencyHz = point.frequencyHz
                 }
             }
             if node.kind == .convolution {
@@ -436,25 +470,375 @@ enum M1ProcessingBuilder {
         }
     }
 
-    private static func graphicEQCoefficients(
+    static func graphicEQGainDB(
         frequencyHz: Double,
-        gainDB: Double,
-        sampleRate: Double
-    ) -> M1BiquadCoefficients {
-        let bandwidthRatio = pow(2, M1GraphicEQContract.octaveBandwidth)
-        let q = sqrt(bandwidthRatio) / (bandwidthRatio - 1)
-        let amplitude = pow(10, gainDB / 40)
-        let omega = 2 * Double.pi * frequencyHz / sampleRate
-        let alpha = sin(omega) / (2 * q)
-        let cosine = cos(omega)
-        let a0 = 1 + alpha / amplitude
-        return M1BiquadCoefficients(
-            b0: (1 + alpha * amplitude) / a0,
-            b1: (-2 * cosine) / a0,
-            b2: (1 - alpha * amplitude) / a0,
-            a1: (-2 * cosine) / a0,
-            a2: (1 - alpha / amplitude) / a0
+        points: [M1GraphicEQPoint]
+    ) -> Double {
+        guard !points.isEmpty else { return 0 }
+        guard frequencyHz > points[0].frequencyHz else { return points[0].gainDB }
+        guard frequencyHz < points[points.count - 1].frequencyHz else {
+            return points[points.count - 1].gainDB
+        }
+
+        var lowerIndex = 0
+        var upperIndex = points.count - 1
+        while upperIndex - lowerIndex > 1 {
+            let midpoint = (lowerIndex + upperIndex) / 2
+            if frequencyHz < points[midpoint].frequencyHz {
+                upperIndex = midpoint
+            } else {
+                lowerIndex = midpoint
+            }
+        }
+
+        let lower = points[lowerIndex]
+        let upper = points[upperIndex]
+        let lowerLog = log(lower.frequencyHz)
+        let upperLog = log(upper.frequencyHz)
+        let position = (log(frequencyHz) - lowerLog) / (upperLog - lowerLog)
+        return lower.gainDB + position * (upper.gainDB - lower.gainDB)
+    }
+
+    static func graphicEQProcessingGainDB(
+        frequencyHz: Double,
+        points: [M1GraphicEQPoint]
+    ) -> Double {
+        guard frequencyHz >= M1GraphicEQContract.minimumFrequencyHz,
+              frequencyHz <= M1GraphicEQContract.maximumFrequencyHz else {
+            return 0
+        }
+        return graphicEQGainDB(
+            frequencyHz: frequencyHz,
+            points: graphicEQProcessingPoints(points)
         )
+    }
+
+    static func graphicEQProcessingPoints(
+        _ points: [M1GraphicEQPoint]
+    ) -> [M1GraphicEQPoint] {
+        points.filter {
+            $0.frequencyHz >= M1GraphicEQContract.minimumFrequencyHz
+                && $0.frequencyHz <= M1GraphicEQContract.maximumFrequencyHz
+        }
+    }
+
+    private static func compileGraphicEQTaps(
+        nodeID: UUID,
+        points: [M1GraphicEQPoint],
+        sampleRate: Double
+    ) throws -> [Float]? {
+        let processingPoints = graphicEQProcessingPoints(points)
+        guard !processingPoints.isEmpty else {
+            return nil
+        }
+
+        let halfLength = graphicEQDesignLength / 2
+        let magnitudeFloor = pow(10, graphicEQMagnitudeFloorDB / 20)
+        var magnitudes = Array(repeating: 0.0, count: halfLength + 1)
+        var isFlat = true
+        for bin in 0...halfLength {
+            if bin.isMultiple(of: 256) { try Task.checkCancellation() }
+            let frequencyHz = sampleRate * Double(bin) / Double(graphicEQDesignLength)
+            let targetGainDB: Double
+            if frequencyHz >= M1GraphicEQContract.minimumFrequencyHz,
+               frequencyHz <= M1GraphicEQContract.maximumFrequencyHz {
+                targetGainDB = graphicEQGainDB(
+                    frequencyHz: frequencyHz,
+                    points: processingPoints
+                )
+            } else {
+                targetGainDB = 0
+            }
+            if targetGainDB != 0 { isFlat = false }
+            let gainDB = max(targetGainDB, graphicEQMagnitudeFloorDB)
+            let magnitude = max(pow(10, gainDB / 20), magnitudeFloor)
+            guard magnitude.isFinite, magnitude > 0 else {
+                throw M1ProcessingBuildError.graphicEQFIRGenerationFailed(nodeID: nodeID)
+            }
+            magnitudes[bin] = magnitude
+        }
+        return isFlat ? nil : try minimumPhaseTaps(nodeID: nodeID, magnitudes: magnitudes)
+    }
+
+    private static func minimumPhaseTaps(
+        nodeID: UUID,
+        magnitudes: [Double]
+    ) throws -> [Float] {
+        let designLength = graphicEQDesignLength
+        let halfLength = designLength / 2
+        guard magnitudes.count == halfLength + 1 else {
+            throw M1ProcessingBuildError.graphicEQFIRGenerationFailed(nodeID: nodeID)
+        }
+        let log2n = vDSP_Length(log2(Double(designLength)))
+        try Task.checkCancellation()
+        guard let setup = vDSP_create_fftsetupD(log2n, FFTRadix(kFFTRadix2)) else {
+            throw M1ProcessingBuildError.graphicEQFIRGenerationFailed(nodeID: nodeID)
+        }
+        defer { vDSP_destroy_fftsetupD(setup) }
+
+        var logSpectrumReal = Array(repeating: 0.0, count: designLength)
+        var logSpectrumImag = Array(repeating: 0.0, count: designLength)
+        for bin in 0...halfLength {
+            let magnitude = magnitudes[bin]
+            guard magnitude.isFinite, magnitude > 0 else {
+                throw M1ProcessingBuildError.graphicEQFIRGenerationFailed(nodeID: nodeID)
+            }
+            let value = log(magnitude)
+            logSpectrumReal[bin] = value
+            if bin > 0, bin < halfLength {
+                logSpectrumReal[designLength - bin] = value
+            }
+        }
+
+        fft(setup: setup, log2n: log2n, real: &logSpectrumReal, imag: &logSpectrumImag, direction: FFTDirection(FFT_INVERSE))
+        try Task.checkCancellation()
+        scale(values: &logSpectrumReal, by: 1.0 / Double(designLength))
+        scale(values: &logSpectrumImag, by: 1.0 / Double(designLength))
+
+        var minimumPhaseCepstrumReal = Array(repeating: 0.0, count: designLength)
+        var minimumPhaseCepstrumImag = Array(repeating: 0.0, count: designLength)
+        minimumPhaseCepstrumReal[0] = logSpectrumReal[0]
+        for index in 1..<halfLength {
+            minimumPhaseCepstrumReal[index] = 2 * logSpectrumReal[index]
+        }
+        minimumPhaseCepstrumReal[halfLength] = logSpectrumReal[halfLength]
+
+        fft(
+            setup: setup,
+            log2n: log2n,
+            real: &minimumPhaseCepstrumReal,
+            imag: &minimumPhaseCepstrumImag,
+            direction: FFTDirection(FFT_FORWARD)
+        )
+        try Task.checkCancellation()
+
+        var impulseReal = Array(repeating: 0.0, count: designLength)
+        var impulseImag = Array(repeating: 0.0, count: designLength)
+        for index in 0..<designLength {
+            let magnitude = exp(minimumPhaseCepstrumReal[index])
+            guard magnitude.isFinite else {
+                throw M1ProcessingBuildError.graphicEQFIRGenerationFailed(nodeID: nodeID)
+            }
+            impulseReal[index] = magnitude * cos(minimumPhaseCepstrumImag[index])
+            impulseImag[index] = magnitude * sin(minimumPhaseCepstrumImag[index])
+        }
+
+        fft(setup: setup, log2n: log2n, real: &impulseReal, imag: &impulseImag, direction: FFTDirection(FFT_INVERSE))
+        try Task.checkCancellation()
+        scale(values: &impulseReal, by: 1.0 / Double(designLength))
+        scale(values: &impulseImag, by: 1.0 / Double(designLength))
+
+        var truncated = Array(impulseReal.prefix(graphicEQTapCount))
+        applyOneSidedCosineTaper(to: &truncated)
+
+        var taps: [Float] = []
+        taps.reserveCapacity(graphicEQTapCount)
+        for tap in truncated {
+            if taps.count.isMultiple(of: 256) { try Task.checkCancellation() }
+            guard tap.isFinite else {
+                throw M1ProcessingBuildError.invalidGraphicEQTaps(nodeID: nodeID)
+            }
+            let normalizedTap = abs(tap) < Double(Float.leastNormalMagnitude) ? 0 : tap
+            let floatTap = Float(normalizedTap)
+            guard floatTap.isFinite else {
+                throw M1ProcessingBuildError.invalidGraphicEQTaps(nodeID: nodeID)
+            }
+            taps.append(floatTap == 0 || floatTap.isNormal ? floatTap : 0)
+        }
+        guard taps.count == graphicEQTapCount else {
+            throw M1ProcessingBuildError.invalidGraphicEQTaps(nodeID: nodeID)
+        }
+        return taps
+    }
+
+    private static func fft(
+        setup: FFTSetupD,
+        log2n: vDSP_Length,
+        real: inout [Double],
+        imag: inout [Double],
+        direction: FFTDirection
+    ) {
+        real.withUnsafeMutableBufferPointer { realBuffer in
+            imag.withUnsafeMutableBufferPointer { imagBuffer in
+                var split = DSPDoubleSplitComplex(
+                    realp: realBuffer.baseAddress!,
+                    imagp: imagBuffer.baseAddress!
+                )
+                vDSP_fft_zipD(setup, &split, 1, log2n, direction)
+            }
+        }
+    }
+
+    private static func scale(values: inout [Double], by factor: Double) {
+        guard factor != 1 else { return }
+        for index in values.indices {
+            values[index] *= factor
+        }
+    }
+
+    private static func applyOneSidedCosineTaper(to taps: inout [Double]) {
+        for index in taps.indices {
+            let weight = 0.5 * (
+                1 + cos(2 * Double.pi * Double(index) / Double(graphicEQDesignLength))
+            )
+            taps[index] *= weight
+        }
+    }
+
+    static func graphicEQPreview(
+        points: [M1GraphicEQPoint],
+        sampleRate: Double,
+        sampleCount: Int = 257
+    ) throws -> M1GraphicEQPreview {
+        try validate(nodes: [.graphicEQ(points: points)])
+        guard let taps = try compileGraphicEQTaps(
+            nodeID: UUID(),
+            points: points,
+            sampleRate: sampleRate
+        ) else {
+            let frequencies = logarithmicGraphicEQFrequencies(
+                sampleRate: sampleRate,
+                sampleCount: sampleCount,
+                maximumFrequencyHz: min(M1GraphicEQContract.maximumFrequencyHz, sampleRate / 2)
+            )
+            return M1GraphicEQPreview(
+                frequenciesHz: frequencies,
+                targetGainDB: Array(repeating: 0, count: frequencies.count),
+                compiledGainDB: Array(repeating: 0, count: frequencies.count),
+                maximumErrorDB: 0,
+                percentile99ErrorDB: 0
+            )
+        }
+        let metrics = try graphicEQResponseMetrics(
+            nodeID: UUID(),
+            taps: taps,
+            points: points,
+            sampleRate: sampleRate,
+            sampleCount: sampleCount,
+            maximumFrequencyHz: min(M1GraphicEQContract.maximumFrequencyHz, sampleRate / 2)
+        )
+        return M1GraphicEQPreview(
+            frequenciesHz: metrics.frequenciesHz,
+            targetGainDB: metrics.targetGainDB,
+            compiledGainDB: metrics.compiledGainDB,
+            maximumErrorDB: metrics.maximumErrorDB,
+            percentile99ErrorDB: metrics.percentile99ErrorDB
+        )
+    }
+
+    private static func graphicEQResponseMetrics(
+        nodeID: UUID,
+        taps: [Float],
+        points: [M1GraphicEQPoint],
+        sampleRate: Double,
+        sampleCount: Int,
+        maximumFrequencyHz: Double? = nil
+    ) throws -> M1GraphicEQPreview {
+        let frequencies = logarithmicGraphicEQFrequencies(
+            sampleRate: sampleRate,
+            sampleCount: sampleCount,
+            maximumFrequencyHz: maximumFrequencyHz
+        )
+        try Task.checkCancellation()
+        let processingPoints = graphicEQProcessingPoints(points)
+        let target = frequencies.map { frequencyHz in
+            guard frequencyHz >= M1GraphicEQContract.minimumFrequencyHz,
+                  frequencyHz <= M1GraphicEQContract.maximumFrequencyHz else {
+                return 0.0
+            }
+            return graphicEQGainDB(
+                frequencyHz: frequencyHz,
+                points: processingPoints
+            )
+        }
+        let spectrum = try graphicEQMagnitudeSpectrum(taps: taps, nodeID: nodeID)
+        let compiled = frequencies.map {
+            graphicEQResponseDB(
+                magnitudeSpectrum: spectrum,
+                frequencyHz: $0,
+                sampleRate: sampleRate
+            )
+        }
+        let evaluationMaximum = min(
+            M1GraphicEQContract.maximumResponseEvaluationFrequencyHz,
+            sampleRate * 0.45
+        )
+        let errors = frequencies.indices.compactMap { index -> Double? in
+            guard frequencies[index] >= M1GraphicEQContract.minimumResponseEvaluationFrequencyHz,
+                  frequencies[index] <= evaluationMaximum else {
+                return nil
+            }
+            return abs(target[index] - compiled[index])
+        }.sorted()
+        let percentileIndex = errors.isEmpty
+            ? 0
+            : min(errors.count - 1, Int(Double(errors.count - 1) * 0.99))
+        return M1GraphicEQPreview(
+            frequenciesHz: frequencies,
+            targetGainDB: target,
+            compiledGainDB: compiled,
+            maximumErrorDB: errors.last ?? 0,
+            percentile99ErrorDB: errors.isEmpty ? 0 : errors[percentileIndex]
+        )
+    }
+
+    private static func logarithmicGraphicEQFrequencies(
+        sampleRate: Double,
+        sampleCount: Int,
+        maximumFrequencyHz: Double? = nil
+    ) -> [Double] {
+        let lower = M1GraphicEQContract.minimumFrequencyHz
+        let upper = maximumFrequencyHz ?? min(20_000, sampleRate * 0.45)
+        guard sampleCount > 1, upper > lower else { return [lower] }
+        let lowerLog = log(lower)
+        let upperLog = log(upper)
+        return (0..<sampleCount).map { index in
+            let fraction = Double(index) / Double(sampleCount - 1)
+            return exp(lowerLog + (upperLog - lowerLog) * fraction)
+        }
+    }
+
+    private static func graphicEQMagnitudeSpectrum(
+        taps: [Float],
+        nodeID: UUID
+    ) throws -> [Double] {
+        let log2n = vDSP_Length(log2(Double(graphicEQDesignLength)))
+        guard let setup = vDSP_create_fftsetupD(log2n, FFTRadix(kFFTRadix2)) else {
+            throw M1ProcessingBuildError.graphicEQFIRGenerationFailed(nodeID: nodeID)
+        }
+        defer { vDSP_destroy_fftsetupD(setup) }
+        var real = Array(repeating: 0.0, count: graphicEQDesignLength)
+        var imaginary = Array(repeating: 0.0, count: graphicEQDesignLength)
+        for index in taps.indices {
+            real[index] = Double(taps[index])
+        }
+        fft(
+            setup: setup,
+            log2n: log2n,
+            real: &real,
+            imag: &imaginary,
+            direction: FFTDirection(FFT_FORWARD)
+        )
+        try Task.checkCancellation()
+        return (0...(graphicEQDesignLength / 2)).map { hypot(real[$0], imaginary[$0]) }
+    }
+
+    private static func graphicEQResponseDB(
+        magnitudeSpectrum: [Double],
+        frequencyHz: Double,
+        sampleRate: Double
+    ) -> Double {
+        let position = min(
+            max(frequencyHz * Double(graphicEQDesignLength) / sampleRate, 0),
+            Double(magnitudeSpectrum.count - 1)
+        )
+        let lower = Int(position.rounded(.down))
+        let upper = min(lower + 1, magnitudeSpectrum.count - 1)
+        let fraction = position - Double(lower)
+        let lowerLog = log(max(magnitudeSpectrum[lower], 1e-12))
+        let upperLog = log(max(magnitudeSpectrum[upper], 1e-12))
+        let magnitude = exp(lowerLog + (upperLog - lowerLog) * fraction)
+        return 20 * log10(max(magnitude, 1e-12))
     }
 
     private static func appendPendingGainStage(

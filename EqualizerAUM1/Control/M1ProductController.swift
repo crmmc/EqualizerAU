@@ -31,6 +31,7 @@ protocol M1ProductAudioControlling: Sendable {
     func discardPendingPublication() async
     func setEffectsEnabled(_ enabled: Bool) async throws
     func diagnostics() async throws -> M1RealtimeDiagnostics?
+    func processingDiagnostics() async -> M1ProcessingBuildDiagnostics?
 }
 
 extension M1ProductAudioControlling {
@@ -44,6 +45,7 @@ extension M1ProductAudioControlling {
 
     func verifyCapturePermission() async throws -> Bool { false }
     func discoverOutputLayout() async -> M1OutputLayoutSnapshot? { await outputLayout() }
+    func processingDiagnostics() async -> M1ProcessingBuildDiagnostics? { nil }
 }
 
 extension M1NativeAudioRouteCoordinator: M1ProductAudioControlling {}
@@ -523,22 +525,11 @@ actor M1ProductController {
         }
     }
 
-    func setGraphicEQGainDB(id: UUID, bandIndex: Int, gainDB: Double) async throws {
+    func setGraphicEQPoints(id: UUID, points: [M1GraphicEQPoint]) async throws {
         try await updateEditingSession { session, effectsEnabled in
-            try session.setGraphicEQGainDB(
+            try session.setGraphicEQPoints(
                 id: id,
-                bandIndex: bandIndex,
-                gainDB: gainDB,
-                effectsEnabled: effectsEnabled
-            )
-        }
-    }
-
-    func setGraphicEQGainsDB(id: UUID, gainsDB: [Double]) async throws {
-        try await updateEditingSession { session, effectsEnabled in
-            try session.setGraphicEQGainsDB(
-                id: id,
-                gainsDB: gainsDB,
+                points: points,
                 effectsEnabled: effectsEnabled
             )
         }
@@ -1076,30 +1067,16 @@ actor M1ProductController {
         else {
             throw CancellationError()
         }
-        do {
-            let diagnostics = try startedLayout.map {
-                try M1ProcessingBuilder.build(nodes: configuration.nodes, layout: $0).diagnostics
-            }
-            audioState = .running
-            runtimeBaseline = configuration
-            appliedEffectsEnabled = configuration.effectsEnabled
-            layout = startedLayout
-            availableLayout = startedLayout
-            activeDiagnostics = diagnostics
-            if diagnostics != nil { activeConfigurationGeneration = commitGeneration }
-            expectedConfigurationGeneration = nil
-            persistence = draft == saved ? .clean : .modified
-        } catch {
-            do {
-                try await audio.stop()
-            } catch {
-                audioState = Self.productAudioState(await audio.state())
-                throw error
-            }
-            audioState = Self.productAudioState(await audio.state())
-            clearAudioProjection()
-            throw error
-        }
+        let diagnostics = await audio.processingDiagnostics()
+        audioState = .running
+        runtimeBaseline = configuration
+        appliedEffectsEnabled = configuration.effectsEnabled
+        layout = startedLayout
+        availableLayout = startedLayout
+        activeDiagnostics = diagnostics
+        if diagnostics != nil { activeConfigurationGeneration = commitGeneration }
+        expectedConfigurationGeneration = nil
+        persistence = draft == saved ? .clean : .modified
     }
 
     private func clearAudioProjection() {

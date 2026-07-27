@@ -219,9 +219,9 @@ final class M1EditingSessionTests: XCTestCase {
     }
 
     func testClipboardRejectsUnsupportedSchemaMalformedAndOversizedData() {
-        let unsupported = Data("{\"nodes\":[],\"schemaVersion\":6}\n".utf8)
+        let unsupported = Data("{\"nodes\":[],\"schemaVersion\":8}\n".utf8)
         XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(unsupported)) {
-            XCTAssertEqual($0 as? M1EditingSessionError, .unsupportedClipboardSchema(6))
+            XCTAssertEqual($0 as? M1EditingSessionError, .unsupportedClipboardSchema(8))
         }
         XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(Data("nope".utf8)))
         XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(Data(
@@ -283,53 +283,78 @@ final class M1EditingSessionTests: XCTestCase {
         XCTAssertEqual(session.nodes, [disabledChannels, preamp])
     }
 
-    func testGraphicEQClipboardCopyAndGesturePreserveTypedBands() throws {
-        var eq = M1ProcessingNode.graphicEQ(id: ids[0])
-        eq.graphicEQBands[5].gainDB = -3
+    func testGraphicEQClipboardCopyPreservesTypedPoints() throws {
+        var points = M1GraphicEQContract.legacyFlatPoints
+        points[5].gainDB = -3
+        let eq = M1ProcessingNode.graphicEQ(id: ids[0], points: points)
         let envelope = try M1NodeEnvelopeCodec.encode([eq])
         let decoded = try XCTUnwrap(M1NodeEnvelopeCodec.decode(envelope.data).nodes.first)
         XCTAssertEqual(decoded, eq)
 
         var session = M1EditingSession(nodes: [decoded])
-        session.beginGesture(ids[0])
-        try session.setGraphicEQGainDB(id: ids[0], bandIndex: 5, gainDB: -2.04, effectsEnabled: true)
-        try session.setGraphicEQGainDB(id: ids[0], bandIndex: 5, gainDB: -1.04, effectsEnabled: true)
-        session.endGesture(ids[0])
-        XCTAssertEqual(session.historyMetrics.undoCount, 1)
-        XCTAssertEqual(session.nodes[0].graphicEQBands[5].gainDB, -1, accuracy: 1e-12)
-        try session.undo(effectsEnabled: true)
-        XCTAssertEqual(session.nodes[0].graphicEQBands[5].gainDB, -3)
-
         XCTAssertThrowsError(
             try session.setGainDB(id: ids[0], gainDB: 1, effectsEnabled: true)
         )
     }
 
-    func testGraphicEQBulkCommitIsOneValidatedHistoryStep() throws {
-        var session = M1EditingSession(nodes: [.graphicEQ(id: ids[0])])
-        var gains = M1GraphicEQContract.flatBands.map(\.gainDB)
-        gains[2] = -3.04
-        gains[11] = 5.06
+    func testGraphicEQPointPasteAssignsIdentityAndRoundTripsUndoRedo() throws {
+        let source = M1ProcessingNode.graphicEQ(
+            id: ids[0],
+            points: [
+                M1GraphicEQPoint(frequencyHz: 20, gainDB: -3),
+                M1GraphicEQPoint(frequencyHz: 20_000, gainDB: 6),
+            ]
+        )
+        let pastedID = ids[1]
+        var session = M1EditingSession(nodes: [])
+        try session.paste([source], newIDs: [pastedID], effectsEnabled: true)
 
-        try session.setGraphicEQGainsDB(id: ids[0], gainsDB: gains, effectsEnabled: true)
+        XCTAssertEqual(session.nodes.map(\.id), [pastedID])
+        XCTAssertEqual(session.nodes[0].graphicEQPoints, source.graphicEQPoints)
+        XCTAssertEqual(session.historyMetrics.undoCount, 1)
+        try session.undo(effectsEnabled: true)
+        XCTAssertTrue(session.nodes.isEmpty)
+        try session.redo(effectsEnabled: true)
+        XCTAssertEqual(session.nodes.map(\.id), [pastedID])
+        XCTAssertEqual(session.nodes[0].graphicEQPoints, source.graphicEQPoints)
+    }
+
+    func testGraphicEQWholePointsCommitIsOneValidatedHistoryStep() throws {
+        let originalPoints = [
+            M1GraphicEQPoint(frequencyHz: 20, gainDB: -3),
+            M1GraphicEQPoint(frequencyHz: 200, gainDB: 1),
+        ]
+        var session = M1EditingSession(nodes: [.graphicEQ(id: ids[0], points: originalPoints)])
+        let replacement = [
+            M1GraphicEQPoint(frequencyHz: 20, gainDB: -3),
+            M1GraphicEQPoint(frequencyHz: 2_000, gainDB: 5.06),
+            M1GraphicEQPoint(frequencyHz: 20_000, gainDB: -1.2),
+        ]
+
+        try session.setGraphicEQPoints(id: ids[0], points: replacement, effectsEnabled: true)
 
         XCTAssertEqual(session.historyMetrics.undoCount, 1)
-        XCTAssertEqual(session.nodes[0].graphicEQBands[2].gainDB, -3, accuracy: 1e-12)
-        XCTAssertEqual(session.nodes[0].graphicEQBands[11].gainDB, 5.1, accuracy: 1e-12)
+        XCTAssertEqual(session.nodes[0].graphicEQPoints, replacement)
         try session.undo(effectsEnabled: true)
-        XCTAssertEqual(session.nodes[0].graphicEQBands, M1GraphicEQContract.flatBands)
+        XCTAssertEqual(session.nodes[0].graphicEQPoints, originalPoints)
+        try session.redo(effectsEnabled: true)
+        XCTAssertEqual(session.nodes[0].graphicEQPoints, replacement)
+        try session.undo(effectsEnabled: true)
 
         XCTAssertThrowsError(
-            try session.setGraphicEQGainsDB(
+            try session.setGraphicEQPoints(
                 id: ids[0],
-                gainsDB: Array(gains.dropLast()),
+                points: [
+                    M1GraphicEQPoint(frequencyHz: 20, gainDB: 0),
+                    M1GraphicEQPoint(frequencyHz: 20, gainDB: 1),
+                ],
                 effectsEnabled: true
             )
         )
-        XCTAssertEqual(session.nodes[0].graphicEQBands, M1GraphicEQContract.flatBands)
+        XCTAssertEqual(session.nodes[0].graphicEQPoints, originalPoints)
     }
 
-    func testClipboardDecodesVersionsOneThroughFiveAndPreservesVersionThreeGraphicEQ() throws {
+    func testClipboardDecodesVersionsOneThroughSixAndPreservesGraphicEQPoints() throws {
         let preampID = ids[0]
         let v1 = Data(
             "{\"schemaVersion\":1,\"nodes\":[{\"id\":\"\(preampID)\",\"type\":\"preamp\",\"isEnabled\":true,\"gainDB\":-2,\"channels\":\"all\"}]}".utf8
@@ -337,27 +362,64 @@ final class M1EditingSessionTests: XCTestCase {
         let v2 = Data(
             "{\"schemaVersion\":2,\"nodes\":[{\"id\":\"\(preampID)\",\"type\":\"preamp\",\"isEnabled\":true,\"gainDB\":-2}]}".utf8
         )
-        let bands = M1GraphicEQContract.flatBands.map {
+        let bands = M1GraphicEQContract.legacyFlatPoints.map {
             "{\"frequencyHz\":\($0.frequencyHz),\"gainDB\":\($0.gainDB)}"
         }.joined(separator: ",")
         let v3 = Data(
             "{\"schemaVersion\":3,\"nodes\":[{\"id\":\"\(ids[1])\",\"type\":\"graphicEQ\",\"isEnabled\":true,\"bands\":[\(bands)]}]}".utf8
         )
+        let currentPoints = [
+            "{\"frequencyHz\":20,\"gainDB\":-3}",
+            "{\"frequencyHz\":2000,\"gainDB\":1.5}",
+            "{\"frequencyHz\":30000,\"gainDB\":6}",
+        ].joined(separator: ",")
+        let v6 = Data(
+            "{\"schemaVersion\":6,\"nodes\":[{\"id\":\"\(ids[4])\",\"type\":\"graphicEQ\",\"isEnabled\":true,\"points\":[\(currentPoints)]}]}".utf8
+        )
         let ir = convolutionIR(storageID: ids[2])
         let v4 = Data(
             "{\"schemaVersion\":4,\"nodes\":[{\"id\":\"\(ids[3])\",\"type\":\"channels\",\"channels\":[\"L\"]}]}".utf8
         )
-        let v5 = try M1NodeEnvelopeCodec.encode([.convolution(id: ids[3], ir: ir)]).data
+        let v5 = Data(
+            "{\"schemaVersion\":5,\"nodes\":[{\"id\":\"\(ids[3])\",\"type\":\"convolution\",\"isEnabled\":true,\"ir\":{\"storageID\":\"\(ir.storageID)\",\"originalFileName\":\"\(ir.originalFileName)\",\"sha256\":\"\(ir.sha256)\",\"sampleRate\":\(ir.sampleRate),\"channelCount\":\(ir.channelCount),\"frameCount\":\(ir.frameCount)}}]}".utf8
+        )
 
         XCTAssertEqual(try M1NodeEnvelopeCodec.decode(v1).nodes.map(\.kind), [.preamp])
         XCTAssertEqual(try M1NodeEnvelopeCodec.decode(v2).nodes.map(\.kind), [.preamp])
-        XCTAssertEqual(try M1NodeEnvelopeCodec.decode(v3).nodes.map(\.kind), [.graphicEQ])
+        let migratedV3 = try M1NodeEnvelopeCodec.decode(v3)
+        XCTAssertEqual(migratedV3.nodes.map(\.kind), [.graphicEQ])
+        XCTAssertEqual(
+            try XCTUnwrap(migratedV3.nodes.first).graphicEQPoints,
+            M1GraphicEQContract.legacyFlatPoints
+        )
+        for schemaVersion in 4...5 {
+            let legacyGraphicEQ = Data(
+                "{\"schemaVersion\":\(schemaVersion),\"nodes\":[{\"id\":\"\(ids[1])\","
+                    .appending("\"type\":\"graphicEQ\",\"isEnabled\":true,\"bands\":[\(bands)]}]}\n")
+                    .utf8
+            )
+            XCTAssertEqual(
+                try XCTUnwrap(M1NodeEnvelopeCodec.decode(legacyGraphicEQ).nodes.first)
+                    .graphicEQPoints,
+                M1GraphicEQContract.legacyFlatPoints
+            )
+        }
         let migratedV4 = try M1NodeEnvelopeCodec.decode(v4)
         XCTAssertEqual(migratedV4.nodes.map(\.kind), [.channels])
         XCTAssertTrue(try XCTUnwrap(migratedV4.nodes.first).isEnabled)
         XCTAssertEqual(try M1NodeEnvelopeCodec.decode(v5).nodes.map(\.kind), [.convolution])
-        XCTAssertTrue(String(decoding: try M1NodeEnvelopeCodec.decode(v3).data, as: UTF8.self)
-            .contains("\"schemaVersion\" : 5"))
+        let decodedV6 = try M1NodeEnvelopeCodec.decode(v6)
+        XCTAssertEqual(decodedV6.nodes.map(\.kind), [.graphicEQ])
+        XCTAssertEqual(
+            try XCTUnwrap(decodedV6.nodes.first).graphicEQPoints,
+            [
+                M1GraphicEQPoint(frequencyHz: 20, gainDB: -3),
+                M1GraphicEQPoint(frequencyHz: 2_000, gainDB: 1.5),
+                M1GraphicEQPoint(frequencyHz: 30_000, gainDB: 6),
+            ]
+        )
+        XCTAssertTrue(String(decoding: decodedV6.data, as: UTF8.self)
+            .contains("\"schemaVersion\" : 7"))
     }
 
     func testConvolutionClipboardRoundTripAndCopyPreserveImmutableIRWithNewNodeIdentity() throws {

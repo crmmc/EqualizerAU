@@ -132,19 +132,9 @@ final class M1AppModel: ObservableObject {
         performEdit { try await self.controller.setGainDB(id: id, gainDB: gain) }
     }
 
-    func setGraphicEQGain(_ gain: Double, bandIndex: Int, id: UUID) {
+    func setGraphicEQPoints(_ points: [M1GraphicEQPoint], id: UUID) {
         performEdit {
-            try await self.controller.setGraphicEQGainDB(
-                id: id,
-                bandIndex: bandIndex,
-                gainDB: gain
-            )
-        }
-    }
-
-    func setGraphicEQGains(_ gains: [Double], id: UUID) {
-        performEdit {
-            try await self.controller.setGraphicEQGainsDB(id: id, gainsDB: gains)
+            try await self.controller.setGraphicEQPoints(id: id, points: points)
         }
     }
 
@@ -595,11 +585,23 @@ private final class M1RouteHolder: @unchecked Sendable {
     weak var controller: M1ProductController?
 }
 
+private struct M1GraphicEQSelectAllActionKey: FocusedValueKey {
+    typealias Value = () -> Void
+}
+
+private extension FocusedValues {
+    var m1GraphicEQSelectAllAction: (() -> Void)? {
+        get { self[M1GraphicEQSelectAllActionKey.self] }
+        set { self[M1GraphicEQSelectAllActionKey.self] = newValue }
+    }
+}
+
 @main
 struct EqualizerAUM1App: App {
     @NSApplicationDelegateAdaptor(M1TerminationDelegate.self) private var appDelegate
     @Environment(\.openWindow) private var openWindow
     @StateObject private var model: M1AppModel
+    @FocusedValue(\.m1GraphicEQSelectAllAction) private var graphicEQSelectAllAction
 
     init() {
         let holder = M1RouteHolder()
@@ -641,6 +643,28 @@ struct EqualizerAUM1App: App {
         ))
     }
 
+    private func performTextAction(_ action: Selector) -> Bool {
+        guard let textView = NSApp.keyWindow?.firstResponder as? NSTextView else {
+            return false
+        }
+        return textView.tryToPerform(action, with: nil)
+    }
+
+    private func performTextUndo(isRedo: Bool) -> Bool {
+        guard let textView = NSApp.keyWindow?.firstResponder as? NSTextView,
+              let undoManager = textView.undoManager else {
+            return false
+        }
+        if isRedo {
+            guard undoManager.canRedo else { return false }
+            undoManager.redo()
+        } else {
+            guard undoManager.canUndo else { return false }
+            undoManager.undo()
+        }
+        return true
+    }
+
     var body: some Scene {
         Window("EqualizerAU", id: "editor") {
             M1EditorView(model: model)
@@ -666,29 +690,47 @@ struct EqualizerAUM1App: App {
                     .disabled(!model.snapshot.canSave)
             }
             CommandGroup(replacing: .undoRedo) {
-                Button("Undo") { model.undo() }
+                Button("Undo") {
+                    if !performTextUndo(isRedo: false) { model.undo() }
+                }
                     .keyboardShortcut("z")
                     .disabled(!model.snapshot.canEdit)
-                Button("Redo") { model.redo() }
+                Button("Redo") {
+                    if !performTextUndo(isRedo: true) { model.redo() }
+                }
                     .keyboardShortcut("z", modifiers: [.command, .shift])
                     .disabled(!model.snapshot.canEdit)
             }
             CommandGroup(replacing: .pasteboard) {
-                Button("Cut") { model.cut() }
+                Button("Cut") {
+                    if !performTextAction(#selector(NSText.cut(_:))) { model.cut() }
+                }
                     .keyboardShortcut("x")
                     .disabled(!model.snapshot.canEdit)
-                Button("Copy") { model.copy() }
+                Button("Copy") {
+                    if !performTextAction(#selector(NSText.copy(_:))) { model.copy() }
+                }
                     .keyboardShortcut("c")
                     .disabled(!model.snapshot.canEdit)
-                Button("Paste") { model.paste() }
+                Button("Paste") {
+                    if !performTextAction(#selector(NSText.paste(_:))) { model.paste() }
+                }
                     .keyboardShortcut("v")
                     .disabled(!model.snapshot.canEdit)
-                Button("Select All") { model.selectAll() }
+                Button("Select All") {
+                    if performTextAction(#selector(NSText.selectAll(_:))) { return }
+                    if let graphicEQSelectAllAction { graphicEQSelectAllAction() }
+                    else { model.selectAll() }
+                }
                     .keyboardShortcut("a")
                     .disabled(!model.snapshot.canEdit)
             }
             CommandGroup(after: .pasteboard) {
-                Button("Delete") { model.deleteSelection() }
+                Button("Delete") {
+                    if !performTextAction(#selector(NSText.deleteBackward(_:))) {
+                        model.deleteSelection()
+                    }
+                }
                     .keyboardShortcut(.delete, modifiers: [])
                     .disabled(!model.snapshot.canEdit)
             }
@@ -977,11 +1019,11 @@ private struct M1EditorView: View {
             let channels = diagnostics.gainBoundaries.map { $0.channel.rawValue }
             details.append("Gain boundary: \(channels.joined(separator: ", "))")
         }
-        if !diagnostics.unavailableGraphicEQBands.isEmpty {
-            let frequencies = diagnostics.unavailableGraphicEQBands.map {
-                formatFrequency($0.frequencyHz)
+        if !diagnostics.graphicEQResolution.isEmpty {
+            let errors = diagnostics.graphicEQResolution.map {
+                "\(formatError($0.maximumErrorDB)) max / \(formatError($0.percentile99ErrorDB)) p99"
             }
-            details.append("Above Nyquist: \(frequencies.joined(separator: ", "))")
+            details.append("Graphic EQ FIR resolution: \(errors.joined(separator: ", "))")
         }
         return details
     }
@@ -1095,37 +1137,32 @@ private struct M1EditorView: View {
     }
 
     private func graphicEQDiagnosticSummary(_ nodeID: UUID) -> String? {
-        let draft = model.snapshot.draft.nodes.first { $0.id == nodeID }.map {
-            $0.graphicEQBands.filter(isGraphicEQBandUnavailable).map {
-                formatFrequency($0.frequencyHz)
-            }
-        }
-        let active = model.snapshot.activeDiagnostics?.unavailableGraphicEQBands
-            .filter { $0.nodeID == nodeID }
-            .map { formatFrequency($0.frequencyHz) }
-        let expected = model.snapshot.expectedDiagnostics?.unavailableGraphicEQBands
-            .filter { $0.nodeID == nodeID }
-            .map { formatFrequency($0.frequencyHz) }
+        let active = model.snapshot.activeDiagnostics?.graphicEQResolution
+            .first { $0.nodeID == nodeID }
+        let expected = model.snapshot.expectedDiagnostics?.graphicEQResolution
+            .first { $0.nodeID == nodeID }
         var parts: [String] = []
-        if let draft, !draft.isEmpty {
-            parts.append("Draft unavailable: \(draft.joined(separator: ", "))")
+        if let active {
+            parts.append(
+                "Active FIR error: \(formatError(active.maximumErrorDB)) max, "
+                    + "\(formatError(active.percentile99ErrorDB)) p99"
+            )
         }
-        if let active, !active.isEmpty {
-            parts.append("Active unavailable: \(active.joined(separator: ", "))")
-        }
-        if let expected, !expected.isEmpty {
-            parts.append("Expected unavailable: \(expected.joined(separator: ", "))")
+        if let expected {
+            parts.append(
+                "Expected FIR error: \(formatError(expected.maximumErrorDB)) max, "
+                    + "\(formatError(expected.percentile99ErrorDB)) p99"
+            )
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    private var effectiveSelections: [UUID: M1ChannelSelection] {
-        M1ProcessingScopeResolver.effectiveSelections(nodes: model.snapshot.draft.nodes)
+    private func formatError(_ value: Double) -> String {
+        "\(value.formatted(.number.precision(.fractionLength(2)))) dB"
     }
 
-    private func isGraphicEQBandUnavailable(_ band: M1GraphicEQBand) -> Bool {
-        guard let sampleRate = model.snapshot.outputLayout?.sampleRate else { return false }
-        return band.frequencyHz >= sampleRate / 2
+    private var effectiveSelections: [UUID: M1ChannelSelection] {
+        M1ProcessingScopeResolver.effectiveSelections(nodes: model.snapshot.draft.nodes)
     }
 
     private func preampEditor(_ node: M1ProcessingNode) -> some View {
@@ -1161,16 +1198,11 @@ private struct M1EditorView: View {
                     .foregroundStyle(.orange)
                     .help(graphicEQDiagnosticSummary(node.id) ?? "")
             }
-            HStack(alignment: .center, spacing: 2) {
-                ForEach(Array(node.graphicEQBands.enumerated()), id: \.offset) { _, band in
-                    Capsule()
-                        .fill(isGraphicEQBandUnavailable(band) ? Color.orange : Color.accentColor)
-                        .frame(width: 3, height: graphicEQBarHeight(band.gainDB))
-                        .frame(maxWidth: .infinity)
-                }
-            }
-            .frame(maxWidth: .infinity, minHeight: 30, maxHeight: 30)
-            .accessibilityLabel("15-band Graphic EQ preview")
+            M1GraphicEQMiniCurve(points: node.graphicEQPoints)
+                .frame(maxWidth: .infinity, minHeight: 30, maxHeight: 30)
+                .accessibilityLabel(
+                    "Graphic EQ target curve, \(node.graphicEQPoints.count) control points"
+                )
             Button { editingGraphicEQNodeID = node.id } label: {
                 Image(systemName: "slider.horizontal.3")
                     .frame(width: 24, height: 28)
@@ -1181,7 +1213,7 @@ private struct M1EditorView: View {
             .popover(isPresented: graphicEQEditorPresentation(for: node.id), arrowEdge: .bottom) {
                 graphicEQEditor(node)
                     .padding(12)
-                    .frame(width: 620)
+                    .frame(width: 760, height: 520)
             }
         }
     }
@@ -1198,15 +1230,10 @@ private struct M1EditorView: View {
 
     private func graphicEQEditor(_ node: M1ProcessingNode) -> some View {
         M1GraphicEQEditor(
-            bands: node.graphicEQBands,
+            points: node.graphicEQPoints,
             sampleRate: model.snapshot.outputLayout?.sampleRate,
-            onCommit: { model.setGraphicEQGains($0, id: node.id) }
+            onCommit: { model.setGraphicEQPoints($0, id: node.id) }
         )
-    }
-
-    private func graphicEQBarHeight(_ gainDB: Double) -> CGFloat {
-        let normalized = min(max((gainDB + 24) / 48, 0), 1)
-        return 6 + CGFloat(normalized) * 20
     }
 
     private func convolutionEditor(_ node: M1ProcessingNode) -> some View {
@@ -1428,178 +1455,661 @@ private struct M1GainTextField: View {
     }
 }
 
-private struct M1GraphicEQEditor: View {
-    let bands: [M1GraphicEQBand]
-    let sampleRate: Double?
-    let onCommit: ([Double]) -> Void
+private enum M1GraphicEQPlot {
+    static func x(for frequencyHz: Double, width: CGFloat) -> CGFloat {
+        let lower = log(M1GraphicEQContract.minimumFrequencyHz)
+        let upper = log(M1GraphicEQContract.maximumFrequencyHz)
+        let position = (log(frequencyHz) - lower) / (upper - lower)
+        return width * CGFloat(min(max(position, 0), 1))
+    }
 
-    private let initialGains: [Double]
-    @State private var gains: [Double]
+    static func y(for gainDB: Double, height: CGFloat) -> CGFloat {
+        let range = M1GraphicEQContract.maximumGainDB - M1GraphicEQContract.minimumGainDB
+        let position = (M1GraphicEQContract.maximumGainDB - gainDB) / range
+        return height * CGFloat(min(max(position, 0), 1))
+    }
+}
+
+private struct M1GraphicEQMiniCurve: View {
+    let points: [M1GraphicEQPoint]
+
+    var body: some View {
+        Canvas { context, size in
+            let processingPoints = M1ProcessingBuilder.graphicEQProcessingPoints(points)
+            var path = Path()
+            for index in 0...64 {
+                let fraction = Double(index) / 64
+                let frequency = exp(
+                    log(M1GraphicEQContract.minimumFrequencyHz)
+                        + (log(M1GraphicEQContract.maximumFrequencyHz)
+                            - log(M1GraphicEQContract.minimumFrequencyHz)) * fraction
+                )
+                let gain = M1ProcessingBuilder.graphicEQGainDB(
+                    frequencyHz: frequency,
+                    points: processingPoints
+                )
+                let position = CGPoint(
+                    x: M1GraphicEQPlot.x(for: frequency, width: size.width),
+                    y: M1GraphicEQPlot.y(for: gain, height: size.height)
+                )
+                if index == 0 { path.move(to: position) }
+                else { path.addLine(to: position) }
+            }
+            context.stroke(path, with: .color(.accentColor), lineWidth: 2)
+        }
+    }
+}
+
+private struct M1EditableGraphicEQPoint: Identifiable, Equatable {
+    let id: UUID
+    var frequencyHz: Double
+    var gainDB: Double
+    var frequencyText: String
+    var gainText: String
+    var isFrequencyTextDirty = false
+    var isGainTextDirty = false
+
+    init(point: M1GraphicEQPoint) {
+        id = UUID()
+        frequencyHz = point.frequencyHz
+        gainDB = point.gainDB
+        frequencyText = Self.formatted(point.frequencyHz)
+        gainText = Self.formatted(point.gainDB)
+    }
+
+    var point: M1GraphicEQPoint {
+        M1GraphicEQPoint(frequencyHz: frequencyHz, gainDB: gainDB)
+    }
+
+    mutating func synchronizeFrequencyText() {
+        frequencyText = Self.formatted(frequencyHz)
+        isFrequencyTextDirty = false
+    }
+
+    mutating func synchronizeGainText() {
+        gainText = Self.formatted(gainDB)
+        isGainTextDirty = false
+    }
+
+    private static func formatted(_ value: Double) -> String {
+        value.formatted(.number.precision(.fractionLength(0...3)))
+    }
+}
+
+private enum M1GraphicEQFocusedField: Hashable {
+    case frequency(UUID)
+    case gain(UUID)
+}
+
+private struct M1GraphicEQEditor: View {
+    let sampleRate: Double?
+    let onCommit: ([M1GraphicEQPoint]) -> Void
+
+    private let initialPoints: [M1GraphicEQPoint]
+    @State private var editablePoints: [M1EditableGraphicEQPoint]
+    @State private var selectedPointIDs: Set<UUID> = []
+    @State private var validationMessage: String?
+    @State private var preview: M1GraphicEQPreview?
+    @State private var previewTask: Task<Void, Never>?
     @State private var didCommit = false
+    @FocusState private var focusedField: M1GraphicEQFocusedField?
 
     init(
-        bands: [M1GraphicEQBand],
+        points: [M1GraphicEQPoint],
         sampleRate: Double?,
-        onCommit: @escaping ([Double]) -> Void
+        onCommit: @escaping ([M1GraphicEQPoint]) -> Void
     ) {
-        self.bands = bands
         self.sampleRate = sampleRate
         self.onCommit = onCommit
-        initialGains = bands.map(\.gainDB)
-        _gains = State(initialValue: initialGains)
+        initialPoints = points
+        _editablePoints = State(initialValue: points.map(M1EditableGraphicEQPoint.init))
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Graphic EQ")
-                .font(.headline)
-            ScrollView(.horizontal) {
-                LazyHStack(alignment: .top, spacing: 8) {
-                    ForEach(bands.indices, id: \.self) { index in
-                        let band = bands[index]
-                        let unavailable = isUnavailable(band)
-                        VStack(spacing: 6) {
-                            Text(formatFrequency(band.frequencyHz))
-                                .font(.caption)
-                                .foregroundStyle(unavailable ? .orange : .secondary)
-                                .frame(width: 54)
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .font(.caption2)
-                                .foregroundStyle(.orange)
-                                .opacity(unavailable ? 1 : 0)
-                                .frame(height: 10)
-                                .accessibilityHidden(true)
-                            M1GraphicEQFader(gainDB: gainBinding(at: index))
-                                .frame(width: 32, height: 112)
-                                .accessibilityLabel(
-                                    "\(formatFrequency(band.frequencyHz)) gain"
-                                        + (unavailable ? ", unavailable at current sample rate" : "")
-                                )
-                            TextField(
-                                "Gain",
-                                value: gainBinding(at: index),
-                                format: .number.precision(.fractionLength(1))
-                            )
-                            .textFieldStyle(.roundedBorder)
-                            .multilineTextAlignment(.trailing)
-                            .monospacedDigit()
-                            .frame(width: 54)
-                            .accessibilityLabel(
-                                "\(formatFrequency(band.frequencyHz)) gain in decibels"
-                                    + (unavailable ? ", unavailable at current sample rate" : "")
-                            )
-                        }
-                        .frame(width: 58)
-                    }
-                }
-                .padding(.top, 2)
-                .padding(.bottom, 18)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Graphic EQ")
+                    .font(.headline)
+                Text("\(editablePoints.count) points")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
             }
-            .scrollIndicators(.visible)
+            HStack(spacing: 12) {
+                VStack(spacing: 4) {
+                    curvePreview
+                        .frame(minWidth: 360, minHeight: 300)
+                        .background(Color(nsColor: .textBackgroundColor))
+                        .overlay(Rectangle().stroke(Color.secondary.opacity(0.35), lineWidth: 1))
+                        .accessibilityLabel("Graphic EQ frequency response preview")
+                    frequencyLabels
+                }
+                pointTable
+                    .frame(width: 340)
+            }
+            statusMessage
         }
-        .onDisappear(perform: commitIfNeeded)
+        .onAppear(perform: schedulePreview)
+        .onDisappear {
+            previewTask?.cancel()
+            if let focusedField { commitField(focusedField) }
+            commitIfNeeded()
+        }
+        .onChange(of: focusedField) { previous, current in
+            guard previous != current, let previous else { return }
+            commitField(previous)
+        }
+        .focusedValue(\.m1GraphicEQSelectAllAction, selectAll)
+        .onDeleteCommand(perform: handleDeleteCommand)
+        .onMoveCommand(perform: moveSelection)
     }
 
-    private func gainBinding(at index: Int) -> Binding<Double> {
-        Binding(
-            get: { gains[index] },
-            set: { gains[index] = quantized($0) }
+    private var curvePreview: some View {
+        Canvas { context, size in
+            for gain in stride(from: -24.0, through: 24.0, by: 12.0) {
+                var grid = Path()
+                let y = M1GraphicEQPlot.y(for: gain, height: size.height)
+                grid.move(to: CGPoint(x: 0, y: y))
+                grid.addLine(to: CGPoint(x: size.width, y: y))
+                context.stroke(grid, with: .color(.secondary.opacity(gain == 0 ? 0.4 : 0.18)))
+            }
+            drawTargetCurve(context: &context, size: size)
+            drawCompiledCurve(context: &context, size: size)
+        }
+    }
+
+    private var frequencyLabels: some View {
+        HStack {
+            Text("20 Hz")
+            Spacer()
+            Text("100 Hz")
+            Spacer()
+            Text("1 kHz")
+            Spacer()
+            Text("10 kHz")
+            Spacer()
+            Text("20 kHz")
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder
+    private var statusMessage: some View {
+        if let validationMessage {
+            Text(validationMessage).foregroundStyle(.orange)
+        } else if let preview, preview.maximumErrorDB > M1ProcessingBuilder.graphicEQMaximumResponseErrorDB
+                    || preview.percentile99ErrorDB
+                        > M1ProcessingBuilder.graphicEQPercentile99ResponseErrorDB {
+            Text("FIR resolution: \(formatError(preview.maximumErrorDB)) max, "
+                + "\(formatError(preview.percentile99ErrorDB)) p99")
+                .foregroundStyle(.orange)
+        } else if sampleRate == nil {
+            Text("Target response only")
+                .foregroundStyle(.secondary)
+                .help("The compiled FIR response requires the output device's sample rate.")
+        }
+    }
+
+    private var pointTable: some View {
+        VStack(spacing: 4) {
+            HStack(spacing: 6) {
+                Text("Select").frame(width: 34)
+                Text("Frequency (Hz)").frame(width: 140, alignment: .leading)
+                Text("Gain (dB)").frame(width: 120, alignment: .leading)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
+
+            ScrollView {
+                LazyVStack(spacing: 1) {
+                    ForEach(editablePoints) { point in
+                        HStack(spacing: 6) {
+                            Button { selectRow(point.id) } label: {
+                                Image(systemName: selectedPointIDs.contains(point.id)
+                                    ? "checkmark.square.fill" : "square")
+                                    .font(.system(size: 18, weight: .medium))
+                                    .frame(width: 30, height: 28)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .frame(width: 34, height: 30)
+                            .help(selectedPointIDs.contains(point.id)
+                                ? "Deselect this point" : "Select this point")
+                            .accessibilityLabel(selectedPointIDs.contains(point.id)
+                                ? "Deselect control point" : "Select control point")
+
+                            TextField(
+                                "Frequency",
+                                text: frequencyTextBinding(for: point.id)
+                            )
+                            .textFieldStyle(.roundedBorder)
+                            .focused($focusedField, equals: .frequency(point.id))
+                            .onSubmit { focusedField = nil }
+                            .frame(width: 140)
+
+                            TextField(
+                                "Gain",
+                                text: gainTextBinding(for: point.id)
+                            )
+                            .textFieldStyle(.roundedBorder)
+                            .focused($focusedField, equals: .gain(point.id))
+                            .onSubmit { focusedField = nil }
+                            .multilineTextAlignment(.leading)
+                            .frame(width: 120)
+                        }
+                        .monospacedDigit()
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(selectedPointIDs.contains(point.id)
+                            ? Color.accentColor.opacity(0.12) : Color.clear)
+                    }
+                }
+            }
+            .background(Color(nsColor: .textBackgroundColor))
+            .overlay(Rectangle().stroke(Color.secondary.opacity(0.35), lineWidth: 1))
+
+            HStack(spacing: 8) {
+                toolButton("plus", "Add point", addPoint)
+                    .disabled(editablePoints.count == M1GraphicEQContract.maximumPointCount)
+                toolButton("minus", "Delete selected points", deleteSelected)
+                    .disabled(selectedPointIDs.isEmpty)
+                Button("Select All", action: selectAll)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("Select every point")
+                Button("Invert Selection", action: invertSelection)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("Select unselected points and deselect selected points")
+                Spacer()
+                toolButton("square.and.arrow.down", "Import", importCSV)
+                toolButton("square.and.arrow.up", "Export", exportCSV)
+            }
+            .buttonStyle(.borderless)
+
+            HStack(spacing: 6) {
+                labeledActionButton(
+                    "plus.forwardslash.minus",
+                    "Invert Gain",
+                    "Invert the gain of every point",
+                    invertResponse
+                )
+                labeledActionButton(
+                    "arrow.up.to.line",
+                    "Normalize Peak",
+                    "Move the highest gain to 0 dB",
+                    normalizeResponse
+                )
+                labeledActionButton(
+                    "0.circle",
+                    selectedPointIDs.isEmpty ? "Reset All" : "Reset Selected",
+                    selectedPointIDs.isEmpty
+                        ? "Reset every point to 0 dB"
+                        : "Reset selected points to 0 dB",
+                    resetSelection
+                )
+            }
+            .controlSize(.small)
+            .disabled(editablePoints.isEmpty)
+        }
+    }
+
+    private func toolButton(
+        _ systemName: String,
+        _ help: String,
+        _ action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .frame(width: 28, height: 24)
+                .contentShape(Rectangle())
+        }
+        .help(help)
+    }
+
+    private func labeledActionButton(
+        _ systemName: String,
+        _ title: String,
+        _ help: String,
+        _ action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemName)
+                .frame(maxWidth: .infinity)
+        }
+        .help(help)
+    }
+
+    private func drawTargetCurve(context: inout GraphicsContext, size: CGSize) {
+        var path = Path()
+        let processingPoints = M1ProcessingBuilder.graphicEQProcessingPoints(modelPoints)
+        for index in 0...256 {
+            let fraction = Double(index) / 256
+            let frequency = exp(
+                log(M1GraphicEQContract.minimumFrequencyHz)
+                    + (log(M1GraphicEQContract.maximumFrequencyHz)
+                        - log(M1GraphicEQContract.minimumFrequencyHz)) * fraction
+            )
+            let gain = M1ProcessingBuilder.graphicEQGainDB(
+                frequencyHz: frequency,
+                points: processingPoints
+            )
+            let position = CGPoint(
+                x: M1GraphicEQPlot.x(for: frequency, width: size.width),
+                y: M1GraphicEQPlot.y(for: gain, height: size.height)
+            )
+            if index == 0 { path.move(to: position) }
+            else { path.addLine(to: position) }
+        }
+        context.stroke(path, with: .color(.accentColor), lineWidth: 2)
+    }
+
+    private func drawCompiledCurve(context: inout GraphicsContext, size: CGSize) {
+        guard let preview else { return }
+        var path = Path()
+        for index in preview.frequenciesHz.indices {
+            let position = CGPoint(
+                x: M1GraphicEQPlot.x(for: preview.frequenciesHz[index], width: size.width),
+                y: M1GraphicEQPlot.y(for: preview.compiledGainDB[index], height: size.height)
+            )
+            if index == 0 { path.move(to: position) }
+            else { path.addLine(to: position) }
+        }
+        context.stroke(
+            path,
+            with: .color(.orange),
+            style: StrokeStyle(lineWidth: 1.25, dash: [5, 3])
         )
+    }
+
+    private var modelPoints: [M1GraphicEQPoint] {
+        editablePoints.map(\.point).sorted { $0.frequencyHz < $1.frequencyHz }
+    }
+
+    private func addPoint() {
+        guard editablePoints.count < M1GraphicEQContract.maximumPointCount else { return }
+        let frequencies = Array(Set(
+            [M1GraphicEQContract.minimumFrequencyHz]
+                + editablePoints.map(\.frequencyHz).filter {
+                    $0 > M1GraphicEQContract.minimumFrequencyHz
+                        && $0 < M1GraphicEQContract.maximumFrequencyHz
+                }
+                + [M1GraphicEQContract.maximumFrequencyHz]
+        )).sorted()
+        let pair = zip(frequencies, frequencies.dropFirst()).max {
+            log($0.1 / $0.0) < log($1.1 / $1.0)
+        }
+        guard let pair, pair.0 < pair.1 else { return }
+        var frequency = sqrt(pair.0 * pair.1)
+        while editablePoints.contains(where: { $0.frequencyHz == frequency }) {
+            frequency = min(frequency + 0.1, M1GraphicEQContract.maximumFrequencyHz)
+        }
+        let point = M1EditableGraphicEQPoint(point: M1GraphicEQPoint(
+            frequencyHz: frequency,
+            gainDB: M1ProcessingBuilder.graphicEQProcessingGainDB(
+                frequencyHz: frequency,
+                points: modelPoints
+            )
+        ))
+        editablePoints.append(point)
+        editablePoints.sort { $0.frequencyHz < $1.frequencyHz }
+        selectedPointIDs = [point.id]
+        validationMessage = nil
+        schedulePreview()
+    }
+
+    private func importCSV() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.commaSeparatedText, .plainText]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK else { return }
+        do {
+            let texts = try panel.urls.map { try String(contentsOf: $0, encoding: .utf8) }
+            let points = try M1GraphicEQCSVCodec.decode(texts)
+            editablePoints = points.map(M1EditableGraphicEQPoint.init)
+            selectedPointIDs.removeAll()
+            validationMessage = nil
+            schedulePreview()
+        } catch M1GraphicEQCSVCodecError.invalidPoints {
+            validationMessage = "Imported points violate the Graphic EQ range or uniqueness contract."
+        } catch {
+            validationMessage = "Import failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func exportCSV() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.commaSeparatedText]
+        panel.nameFieldStringValue = "graphic-eq.csv"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let text = M1GraphicEQCSVCodec.encode(modelPoints)
+        do {
+            try text.write(to: url, atomically: true, encoding: .utf8)
+            validationMessage = nil
+        } catch {
+            validationMessage = "Export failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func invertResponse() {
+        for index in editablePoints.indices {
+            editablePoints[index].gainDB = -editablePoints[index].gainDB
+            editablePoints[index].synchronizeGainText()
+        }
+        validationMessage = nil
+        schedulePreview()
+    }
+
+    private func normalizeResponse() {
+        guard let maximum = editablePoints.map(\.gainDB).max(), maximum != 0 else { return }
+        let candidate = editablePoints.map { point -> M1EditableGraphicEQPoint in
+            var point = point
+            point.gainDB -= maximum
+            point.synchronizeGainText()
+            return point
+        }
+        guard candidate.allSatisfy({ $0.gainDB >= M1GraphicEQContract.minimumGainDB }) else {
+            validationMessage = "Normalization would exceed -24 dB."
+            return
+        }
+        editablePoints = candidate
+        validationMessage = nil
+        schedulePreview()
+    }
+
+    private func frequencyTextBinding(for id: UUID) -> Binding<String> {
+        Binding(
+            get: { editablePoints.first(where: { $0.id == id })?.frequencyText ?? "" },
+            set: { text in
+                guard let index = editablePoints.firstIndex(where: { $0.id == id }) else { return }
+                editablePoints[index].frequencyText = text
+                editablePoints[index].isFrequencyTextDirty = true
+            }
+        )
+    }
+
+    private func gainTextBinding(for id: UUID) -> Binding<String> {
+        Binding(
+            get: { editablePoints.first(where: { $0.id == id })?.gainText ?? "" },
+            set: { text in
+                guard let index = editablePoints.firstIndex(where: { $0.id == id }) else { return }
+                editablePoints[index].gainText = text
+                editablePoints[index].isGainTextDirty = true
+            }
+        )
+    }
+
+    private func commitField(_ field: M1GraphicEQFocusedField) {
+        switch field {
+        case let .frequency(id):
+            guard let index = editablePoints.firstIndex(where: { $0.id == id }),
+                  editablePoints[index].isFrequencyTextDirty else { return }
+            let text = editablePoints[index].frequencyText
+            guard let value = parseNumber(text), value.isFinite, value > 0,
+                  !editablePoints.contains(where: {
+                      $0.id != id && $0.frequencyHz == value
+                  }) else {
+                editablePoints[index].synchronizeFrequencyText()
+                validationMessage = "Frequency must be positive, finite, and unique."
+                return
+            }
+            let changed = editablePoints[index].frequencyHz != value
+            editablePoints[index].frequencyHz = value
+            editablePoints[index].synchronizeFrequencyText()
+            editablePoints.sort { $0.frequencyHz < $1.frequencyHz }
+            validationMessage = nil
+            if changed { schedulePreview() }
+
+        case let .gain(id):
+            guard let index = editablePoints.firstIndex(where: { $0.id == id }),
+                  editablePoints[index].isGainTextDirty else { return }
+            let text = editablePoints[index].gainText
+            guard let value = parseNumber(text), value.isFinite,
+                  value >= M1GraphicEQContract.minimumGainDB,
+                  value <= M1GraphicEQContract.maximumGainDB else {
+                editablePoints[index].synchronizeGainText()
+                validationMessage = "Gain must be between -24 and +24 dB."
+                return
+            }
+            let changed = editablePoints[index].gainDB != value
+            editablePoints[index].gainDB = value
+            editablePoints[index].synchronizeGainText()
+            validationMessage = nil
+            if changed { schedulePreview() }
+        }
+    }
+
+    private func parseNumber(_ text: String) -> Double? {
+        try? FloatingPointFormatStyle<Double>.number.parseStrategy.parse(text)
+    }
+
+    private func handleDeleteCommand() {
+        if let textView = NSApp.keyWindow?.firstResponder as? NSTextView {
+            textView.deleteBackward(nil)
+        } else {
+            deleteSelected()
+        }
+    }
+
+    private func deleteSelected() {
+        guard !selectedPointIDs.isEmpty else { return }
+        editablePoints.removeAll { selectedPointIDs.contains($0.id) }
+        selectedPointIDs.removeAll()
+        validationMessage = nil
+        schedulePreview()
+    }
+
+    private func selectAll() {
+        selectedPointIDs = Set(editablePoints.map(\.id))
+    }
+
+    private func invertSelection() {
+        selectedPointIDs = Set(editablePoints.map(\.id)).subtracting(selectedPointIDs)
+    }
+
+    private func selectRow(_ id: UUID) {
+        if selectedPointIDs.contains(id) {
+            selectedPointIDs.remove(id)
+        } else {
+            selectedPointIDs.insert(id)
+        }
+    }
+
+    private func moveSelection(_ direction: MoveCommandDirection) {
+        if let textView = NSApp.keyWindow?.firstResponder as? NSTextView {
+            let action: Selector
+            switch direction {
+            case .up: action = #selector(NSText.moveUp(_:))
+            case .down: action = #selector(NSText.moveDown(_:))
+            case .left: action = #selector(NSText.moveLeft(_:))
+            case .right: action = #selector(NSText.moveRight(_:))
+            @unknown default: return
+            }
+            _ = textView.tryToPerform(action, with: nil)
+            return
+        }
+        guard !selectedPointIDs.isEmpty else { return }
+        var candidate = editablePoints
+        for index in candidate.indices where selectedPointIDs.contains(candidate[index].id) {
+            switch direction {
+            case .up:
+                candidate[index].gainDB += 1
+            case .down:
+                candidate[index].gainDB -= 1
+            case .left:
+                candidate[index].frequencyHz -= 1
+            case .right:
+                candidate[index].frequencyHz += 1
+            @unknown default:
+                return
+            }
+        }
+        candidate.sort { $0.frequencyHz < $1.frequencyHz }
+        guard candidate.allSatisfy({
+            $0.frequencyHz > 0
+                && $0.gainDB >= M1GraphicEQContract.minimumGainDB
+                && $0.gainDB <= M1GraphicEQContract.maximumGainDB
+        }), zip(candidate, candidate.dropFirst()).allSatisfy({ $0.0.frequencyHz < $0.1.frequencyHz })
+        else {
+            validationMessage = "The keyboard adjustment would exceed a range or duplicate a frequency."
+            return
+        }
+        editablePoints = candidate.map { point in
+            var point = point
+            point.synchronizeFrequencyText()
+            point.synchronizeGainText()
+            return point
+        }
+        validationMessage = nil
+        schedulePreview()
+    }
+
+    private func resetSelection() {
+        let targets = selectedPointIDs.isEmpty
+            ? Set(editablePoints.map(\.id))
+            : selectedPointIDs
+        for index in editablePoints.indices where targets.contains(editablePoints[index].id) {
+            editablePoints[index].gainDB = 0
+            editablePoints[index].synchronizeGainText()
+        }
+        validationMessage = nil
+        schedulePreview()
+    }
+
+    private func schedulePreview() {
+        previewTask?.cancel()
+        guard let sampleRate else {
+            preview = nil
+            return
+        }
+        let points = modelPoints
+        previewTask = Task.detached(priority: .userInitiated) {
+            do {
+                try await Task.sleep(for: .milliseconds(120))
+                try Task.checkCancellation()
+                let result = try M1ProcessingBuilder.graphicEQPreview(
+                    points: points,
+                    sampleRate: sampleRate
+                )
+                try Task.checkCancellation()
+                await MainActor.run { preview = result }
+            } catch {}
+        }
     }
 
     private func commitIfNeeded() {
         guard !didCommit else { return }
         didCommit = true
-        guard gains != initialGains else { return }
-        onCommit(gains)
+        let points = modelPoints
+        guard points != initialPoints else { return }
+        onCommit(points)
     }
 
-    private func isUnavailable(_ band: M1GraphicEQBand) -> Bool {
-        guard let sampleRate else { return false }
-        return band.frequencyHz >= sampleRate / 2
-    }
-
-    private func formatFrequency(_ frequencyHz: Double) -> String {
-        if frequencyHz >= 1_000 {
-            let kilohertz = frequencyHz / 1_000
-            return "\(kilohertz.formatted(.number.precision(.fractionLength(kilohertz == kilohertz.rounded() ? 0 : 1)))) kHz"
-        }
-        return "\(frequencyHz.formatted(.number.precision(.fractionLength(frequencyHz == frequencyHz.rounded() ? 0 : 1)))) Hz"
-    }
-
-    private func quantized(_ gain: Double) -> Double {
-        let bounded = min(
-            max(gain, M1GraphicEQContract.minimumGainDB),
-            M1GraphicEQContract.maximumGainDB
-        )
-        return (bounded / M1GraphicEQContract.gainStepDB).rounded()
-            * M1GraphicEQContract.gainStepDB
-    }
-}
-
-private struct M1GraphicEQFader: View {
-    @Binding var gainDB: Double
-
-    var body: some View {
-        GeometryReader { geometry in
-            let fraction = normalized(gainDB)
-            ZStack {
-                Capsule()
-                    .fill(Color.secondary.opacity(0.25))
-                    .frame(width: 4)
-                    .padding(.vertical, 6)
-                Capsule()
-                    .fill(Color.accentColor)
-                    .frame(width: 4, height: max(4, (geometry.size.height - 12) * fraction))
-                    .frame(maxHeight: .infinity, alignment: .bottom)
-                    .padding(.bottom, 6)
-                Circle()
-                    .fill(Color(nsColor: .controlBackgroundColor))
-                    .overlay(Circle().stroke(Color.accentColor, lineWidth: 2))
-                    .frame(width: 16, height: 16)
-                    .position(
-                        x: geometry.size.width / 2,
-                        y: 6 + (geometry.size.height - 12) * (1 - fraction)
-                    )
-            }
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 1)
-                    .onChanged { value in
-                        gainDB = gain(at: value.location.y, height: geometry.size.height)
-                    }
-            )
-        }
-        .accessibilityElement()
-        .accessibilityValue("\(gainDB.formatted(.number.precision(.fractionLength(1)))) dB")
-        .accessibilityAdjustableAction { direction in
-            let delta = direction == .increment
-                ? M1GraphicEQContract.gainStepDB
-                : -M1GraphicEQContract.gainStepDB
-            gainDB = quantized(gainDB + delta)
-        }
-    }
-
-    private func gain(at y: CGFloat, height: CGFloat) -> Double {
-        guard height > 12 else { return gainDB }
-        let fraction = 1 - min(max(Double(y - 6) / Double(height - 12), 0), 1)
-        let range = M1GraphicEQContract.maximumGainDB - M1GraphicEQContract.minimumGainDB
-        return quantized(M1GraphicEQContract.minimumGainDB + fraction * range)
-    }
-
-    private func normalized(_ gain: Double) -> Double {
-        let range = M1GraphicEQContract.maximumGainDB - M1GraphicEQContract.minimumGainDB
-        return (min(max(gain, M1GraphicEQContract.minimumGainDB), M1GraphicEQContract.maximumGainDB)
-            - M1GraphicEQContract.minimumGainDB) / range
-    }
-
-    private func quantized(_ gain: Double) -> Double {
-        let bounded = min(
-            max(gain, M1GraphicEQContract.minimumGainDB),
-            M1GraphicEQContract.maximumGainDB
-        )
-        return (bounded / M1GraphicEQContract.gainStepDB).rounded()
-            * M1GraphicEQContract.gainStepDB
+    private func formatError(_ value: Double) -> String {
+        "\(value.formatted(.number.precision(.fractionLength(2)))) dB"
     }
 }
 

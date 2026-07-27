@@ -1,13 +1,20 @@
+import Foundation
 import XCTest
 
 final class M1ProcessingBuilderTests: XCTestCase {
-    func testSwiftBridgeCreatesPreparedV2FromCompiledGraphicEQStages() throws {
-        var equalizer = M1ProcessingNode.graphicEQ(id: UUID())
-        equalizer.graphicEQBands[8].gainDB = 6
+    func testSwiftBridgeCreatesPreparedV3FromCompiledGraphicEQConvolution() throws {
+        var points = M1GraphicEQContract.legacyFlatPoints
+        points[8].gainDB = 6
+        let equalizer = M1ProcessingNode.graphicEQ(id: UUID(), points: points)
         let compiled = try M1ProcessingBuilder.build(
             nodes: [equalizer],
             layout: stereoLayout()
         )
+
+        guard case let .convolution(_, taps) = compiled.stagesByChannel[0][0] else {
+            return XCTFail("expected Graphic EQ convolution stage")
+        }
+        XCTAssertEqual(taps.count, M1ProcessingBuilder.graphicEQTapCount)
 
         let prepared = try M1RuntimePreparedStateFactory.create(
             stagesByChannel: compiled.stagesByChannel
@@ -410,11 +417,16 @@ final class M1ProcessingBuilderTests: XCTestCase {
         XCTAssertEqual(result.linearGainsByChannel[1], 1)
     }
 
-    func testGraphicEQCompilesOrderedScopedBiquadsAndOmitsFlatBands() throws {
+    func testGraphicEQCompilesScopedConvolutionAndOmitsFlatCurves() throws {
         let scopeID = UUID()
-        var eq = M1ProcessingNode.graphicEQ(id: UUID())
-        eq.graphicEQBands[0].gainDB = 3
-        eq.graphicEQBands[7].gainDB = -6
+        let eq = M1ProcessingNode.graphicEQ(
+            id: UUID(),
+            points: [
+                M1GraphicEQPoint(frequencyHz: 25, gainDB: 3),
+                M1GraphicEQPoint(frequencyHz: 630, gainDB: -6),
+                M1GraphicEQPoint(frequencyHz: 16_000, gainDB: 0),
+            ]
+        )
         let result = try M1ProcessingBuilder.build(
             nodes: [
                 .channels(id: scopeID, selection: .identifiers([identifier("L")])),
@@ -424,88 +436,412 @@ final class M1ProcessingBuilderTests: XCTestCase {
         )
 
         XCTAssertEqual(result.linearGainsByChannel, [1, 1])
-        XCTAssertEqual(result.stagesByChannel[0].count, 2)
+        XCTAssertEqual(result.stagesByChannel[0].count, 1)
         XCTAssertTrue(result.stagesByChannel[1].isEmpty)
-        guard case let .biquad(firstID, firstBand, firstCoefficients) = result.stagesByChannel[0][0],
-              case let .biquad(secondID, secondBand, secondCoefficients) = result.stagesByChannel[0][1]
-        else {
-            return XCTFail("expected ordered biquad stages")
+        guard case let .convolution(nodeID, taps) = result.stagesByChannel[0][0] else {
+            return XCTFail("expected Graphic EQ convolution stage")
         }
-        XCTAssertEqual(firstID, eq.id)
-        XCTAssertEqual(secondID, eq.id)
-        XCTAssertEqual([firstBand, secondBand], [0, 7])
-        XCTAssertTrue([firstCoefficients, secondCoefficients].allSatisfy {
-            [$0.b0, $0.b1, $0.b2, $0.a1, $0.a2].allSatisfy(\.isFinite)
-        })
+        XCTAssertEqual(nodeID, eq.id)
+        XCTAssertEqual(taps.count, M1ProcessingBuilder.graphicEQTapCount)
+        XCTAssertTrue(taps.contains { $0 != 0 })
 
-        let flat = try M1ProcessingBuilder.build(
+        let empty = try M1ProcessingBuilder.build(
             nodes: [.graphicEQ()],
             layout: stereoLayout()
         )
-        XCTAssertEqual(flat.stagesByChannel, [[], []])
+        XCTAssertEqual(empty.stagesByChannel, [[], []])
+
+        let allZero = try M1ProcessingBuilder.build(
+            nodes: [
+                .graphicEQ(
+                    points: [
+                        M1GraphicEQPoint(frequencyHz: 20, gainDB: 0),
+                        M1GraphicEQPoint(frequencyHz: 2_000, gainDB: 0),
+                        M1GraphicEQPoint(frequencyHz: 20_000, gainDB: 0),
+                    ]
+                )
+            ],
+            layout: stereoLayout()
+        )
+        XCTAssertEqual(allZero.stagesByChannel, [[], []])
     }
 
-    func testGraphicEQSkipsBandsAtOrAboveNyquistWithOwnedDiagnostic() throws {
-        var eq = M1ProcessingNode.graphicEQ(id: UUID())
-        eq.graphicEQBands[14].gainDB = 4
-        let layout = M1OutputLayoutSnapshot(
-            sampleRate: 32_000,
-            maximumFrameCount: 128,
-            bufferChannelCounts: [1],
-            semanticPositionsByChannelIndex: [.left]
-        )!
+    func testGraphicEQCurveUsesConstantEndpointsLogMidpointsAndAboveNyquistAnchors() {
+        let points = [
+            M1GraphicEQPoint(frequencyHz: 20, gainDB: -12),
+            M1GraphicEQPoint(frequencyHz: 2_000, gainDB: 12),
+            M1GraphicEQPoint(frequencyHz: 20_000, gainDB: 6),
+        ]
 
-        let result = try M1ProcessingBuilder.build(nodes: [eq], layout: layout)
-        XCTAssertTrue(result.stagesByChannel[0].isEmpty)
+        XCTAssertEqual(M1ProcessingBuilder.graphicEQGainDB(frequencyHz: 10, points: points), -12)
+        XCTAssertEqual(M1ProcessingBuilder.graphicEQGainDB(frequencyHz: 60_000, points: points), 6)
         XCTAssertEqual(
-            result.diagnostics.unavailableGraphicEQBands,
-            [M1UnavailableGraphicEQBandDiagnostic(nodeID: eq.id, frequencyHz: 16_000)]
+            M1ProcessingBuilder.graphicEQGainDB(
+                frequencyHz: sqrt(20 * 2_000),
+                points: points
+            ),
+            0,
+            accuracy: 1e-12
+        )
+
+        let highAnchorPoints = [
+            M1GraphicEQPoint(frequencyHz: 1_000, gainDB: -6),
+            M1GraphicEQPoint(frequencyHz: 20_000, gainDB: 6),
+        ]
+        let nyquist = 32_000.0 / 2
+        let expected = -6
+            + (log(nyquist) - log(1_000)) / (log(20_000) - log(1_000)) * 12
+        XCTAssertEqual(
+            M1ProcessingBuilder.graphicEQGainDB(
+                frequencyHz: nyquist,
+                points: highAnchorPoints
+            ),
+            expected,
+            accuracy: 1e-12
         )
     }
 
-    func testGraphicEQValidationRejectsInvalidBandShapeAndGain() {
-        let id = UUID()
-        var missingBand = M1ProcessingNode.graphicEQ(id: id)
-        missingBand.graphicEQBands.removeLast()
-        XCTAssertThrowsError(try M1ProcessingBuilder.validate(nodes: [missingBand])) {
-            XCTAssertEqual($0 as? M1ProcessingBuildError, .invalidGraphicEQBandCount(nodeID: id))
+    func testGraphicEQValidationRejectsInvalidPointShapeAndGain() {
+        let tooManyID = UUID()
+        let tooMany = M1ProcessingNode.graphicEQ(
+            id: tooManyID,
+            points: makeGraphicEQPoints(count: M1GraphicEQContract.maximumPointCount + 1)
+        )
+        XCTAssertThrowsError(try M1ProcessingBuilder.validate(nodes: [tooMany])) {
+            XCTAssertEqual(
+                $0 as? M1ProcessingBuildError,
+                .invalidGraphicEQBandCount(nodeID: tooManyID)
+            )
         }
 
-        var nonFinite = M1ProcessingNode.graphicEQ(id: id)
-        nonFinite.graphicEQBands[2].gainDB = .nan
+        let unsortedID = UUID()
+        let unsorted = M1ProcessingNode.graphicEQ(
+            id: unsortedID,
+            points: [
+                M1GraphicEQPoint(frequencyHz: 100, gainDB: 0),
+                M1GraphicEQPoint(frequencyHz: 20, gainDB: 0),
+            ]
+        )
+        XCTAssertThrowsError(try M1ProcessingBuilder.validate(nodes: [unsorted])) {
+            XCTAssertEqual(
+                $0 as? M1ProcessingBuildError,
+                .invalidGraphicEQFrequency(nodeID: unsortedID, bandIndex: 1)
+            )
+        }
+
+        let duplicateID = UUID()
+        let duplicate = M1ProcessingNode.graphicEQ(
+            id: duplicateID,
+            points: [
+                M1GraphicEQPoint(frequencyHz: 20, gainDB: 0),
+                M1GraphicEQPoint(frequencyHz: 20, gainDB: 1),
+            ]
+        )
+        XCTAssertThrowsError(try M1ProcessingBuilder.validate(nodes: [duplicate])) {
+            XCTAssertEqual(
+                $0 as? M1ProcessingBuildError,
+                .invalidGraphicEQFrequency(nodeID: duplicateID, bandIndex: 1)
+            )
+        }
+
+        let nonFiniteID = UUID()
+        let nonFinite = M1ProcessingNode.graphicEQ(
+            id: nonFiniteID,
+            points: [
+                M1GraphicEQPoint(frequencyHz: 20, gainDB: 0),
+                M1GraphicEQPoint(frequencyHz: 2_000, gainDB: .nan),
+            ]
+        )
         XCTAssertThrowsError(try M1ProcessingBuilder.validate(nodes: [nonFinite])) {
             XCTAssertEqual(
                 $0 as? M1ProcessingBuildError,
-                .nonFiniteGraphicEQGain(nodeID: id, bandIndex: 2)
+                .nonFiniteGraphicEQGain(nodeID: nonFiniteID, bandIndex: 1)
+            )
+        }
+
+        let outOfProcessingRange = M1ProcessingNode.graphicEQ(
+            points: [M1GraphicEQPoint(frequencyHz: 200_000, gainDB: 0)]
+        )
+        XCTAssertNoThrow(try M1ProcessingBuilder.validate(nodes: [outOfProcessingRange]))
+
+        let outOfRangeID = UUID()
+        let outOfRange = M1ProcessingNode.graphicEQ(
+            id: outOfRangeID,
+            points: [M1GraphicEQPoint(frequencyHz: 20, gainDB: 24.1)]
+        )
+        XCTAssertThrowsError(try M1ProcessingBuilder.validate(nodes: [outOfRange])) {
+            XCTAssertEqual(
+                $0 as? M1ProcessingBuildError,
+                .graphicEQGainOutOfRange(nodeID: outOfRangeID, bandIndex: 0)
             )
         }
     }
 
-    func testBuilderRejectsPreparedTotalStageCapacityBeforePublication() throws {
-        let equalizers = (0..<31).map { _ -> M1ProcessingNode in
-            var node = M1ProcessingNode.graphicEQ()
-            for index in node.graphicEQBands.indices {
-                node.graphicEQBands[index].gainDB = 1
-            }
-            return node
-        }
-        let layout = try XCTUnwrap(M1OutputLayoutSnapshot(
-            sampleRate: 48_000,
-            maximumFrameCount: 128,
-            bufferChannelCounts: [9],
-            semanticPositionsByChannelIndex: Array(repeating: nil, count: 9)
-        ))
+    func testGraphicEQPreservesButDoesNotProcessOutOfRangePoints() throws {
+        let outsideOnly = M1ProcessingNode.graphicEQ(points: [
+            M1GraphicEQPoint(frequencyHz: 10, gainDB: -6),
+            M1GraphicEQPoint(frequencyHz: 30_000, gainDB: 6),
+        ])
+        XCTAssertEqual(
+            try M1ProcessingBuilder.build(nodes: [outsideOnly], layout: monoLayout())
+                .stagesByChannel,
+            [[]]
+        )
 
-        XCTAssertThrowsError(try M1ProcessingBuilder.build(nodes: equalizers, layout: layout)) {
-            XCTAssertEqual($0 as? M1ProcessingBuildError, .totalStageCapacityExceeded)
+        let activePoints = [
+            M1GraphicEQPoint(frequencyHz: 1_000, gainDB: 3),
+        ]
+        let pointsWithOutside = [
+            M1GraphicEQPoint(frequencyHz: 10, gainDB: -6),
+            M1GraphicEQPoint(frequencyHz: 1_000, gainDB: 3),
+            M1GraphicEQPoint(frequencyHz: 30_000, gainDB: -6),
+        ]
+        for frequency in [20.0, 100.0, 1_000.0, 10_000.0, 20_000.0] {
+            XCTAssertEqual(
+                M1ProcessingBuilder.graphicEQProcessingGainDB(
+                    frequencyHz: frequency,
+                    points: pointsWithOutside
+                ),
+                M1ProcessingBuilder.graphicEQProcessingGainDB(
+                    frequencyHz: frequency,
+                    points: activePoints
+                ),
+                accuracy: 1e-12
+            )
+        }
+        XCTAssertEqual(
+            M1ProcessingBuilder.graphicEQProcessingGainDB(
+                frequencyHz: 30_000,
+                points: pointsWithOutside
+            ),
+            0
+        )
+
+        let activeBuild = try M1ProcessingBuilder.build(
+            nodes: [.graphicEQ(points: activePoints)],
+            layout: monoLayout()
+        )
+        let outsideBuild = try M1ProcessingBuilder.build(
+            nodes: [.graphicEQ(points: pointsWithOutside)],
+            layout: monoLayout()
+        )
+        guard case let .convolution(_, activeTaps) = activeBuild.stagesByChannel[0][0],
+              case let .convolution(_, outsideTaps) = outsideBuild.stagesByChannel[0][0] else {
+            return XCTFail("expected Graphic EQ convolution stages")
+        }
+        XCTAssertEqual(outsideTaps, activeTaps)
+    }
+
+    func testGraphicEQAndWAVConvolutionShareCapacityBudgets() throws {
+        let mono = monoLayout()
+        let eqNodes = (0..<7).map { offset in
+            nonFlatGraphicEQ(id: UUID(), gainDB: Double(offset + 1))
+        }
+
+        let shortReference = convolutionReference(storageID: UUID(), frameCount: 1)
+        let shortLoader = MockConvolutionIRLoader(loadedByStorageID: [
+            shortReference.storageID: M1LoadedConvolutionIR(
+                source: shortReference,
+                targetSampleRate: mono.sampleRate,
+                channels: [[1]]
+            )
+        ])
+        let passing = try M1ProcessingBuilder.build(
+            nodes: eqNodes + [.convolution(ir: shortReference)],
+            layout: mono,
+            irLoader: shortLoader
+        )
+        XCTAssertEqual(passing.stagesByChannel[0].count, 8)
+
+        XCTAssertThrowsError(try M1ProcessingBuilder.build(
+            nodes: eqNodes + [nonFlatGraphicEQ(id: UUID(), gainDB: 9), .convolution(ir: shortReference)],
+            layout: mono,
+            irLoader: shortLoader
+        )) {
+            XCTAssertEqual($0 as? M1ProcessingBuildError, .convolutionStageCapacityExceeded)
+        }
+
+        let longTapCount = M1ProcessingBuilder.maximumTotalConvolutionTaps
+            - 7 * M1ProcessingBuilder.graphicEQTapCount + 1
+        let longReference = convolutionReference(storageID: UUID(), frameCount: longTapCount)
+        let longLoader = MockConvolutionIRLoader(loadedByStorageID: [
+            longReference.storageID: M1LoadedConvolutionIR(
+                source: longReference,
+                targetSampleRate: mono.sampleRate,
+                channels: [impulse(count: longTapCount)]
+            )
+        ])
+        XCTAssertThrowsError(try M1ProcessingBuilder.build(
+            nodes: eqNodes + [.convolution(ir: longReference)],
+            layout: mono,
+            irLoader: longLoader
+        )) {
+            XCTAssertEqual($0 as? M1ProcessingBuildError, .convolutionTapCapacityExceeded)
         }
     }
 
-    func testCompiledScopedStagesProcessThroughRuntimeV2() throws {
+    func testGraphicEQRepresentativeFIRResponseStaysWithinBroadSlopeTolerance() throws {
+        let points = [
+            M1GraphicEQPoint(frequencyHz: 20, gainDB: -6),
+            M1GraphicEQPoint(frequencyHz: 80, gainDB: -3),
+            M1GraphicEQPoint(frequencyHz: 1_000, gainDB: 0),
+            M1GraphicEQPoint(frequencyHz: 8_000, gainDB: 3),
+            M1GraphicEQPoint(frequencyHz: 20_000, gainDB: 6),
+        ]
+
+        for sampleRate in [44_100.0, 48_000.0, 96_000.0, 192_000.0] {
+            let compiled = try M1ProcessingBuilder.build(
+                nodes: [M1ProcessingNode.graphicEQ(id: UUID(), points: points)],
+                layout: monoLayout(sampleRate: sampleRate)
+            )
+            guard case let .convolution(_, taps) = compiled.stagesByChannel[0][0] else {
+                return XCTFail("expected Graphic EQ convolution stage at \(sampleRate) Hz")
+            }
+
+            let frequencies = logarithmicFrequencies(
+                minimum: M1GraphicEQContract.minimumResponseEvaluationFrequencyHz,
+                maximum: min(
+                    M1GraphicEQContract.maximumResponseEvaluationFrequencyHz,
+                    sampleRate * 0.45
+                ),
+                count: 193
+            )
+            let errors = frequencies.map { frequencyHz in
+                abs(
+                    responseDB(taps: taps, frequencyHz: frequencyHz, sampleRate: sampleRate)
+                        - M1ProcessingBuilder.graphicEQProcessingGainDB(
+                            frequencyHz: frequencyHz,
+                            points: points
+                        )
+                )
+            }.sorted()
+            let p99Index = min(errors.count - 1, Int(Double(errors.count - 1) * 0.99))
+            let p99 = errors[p99Index]
+            let maximum = errors.last ?? .infinity
+
+            XCTAssertLessThanOrEqual(maximum, 0.75, "sampleRate=\(sampleRate) max=\(maximum)")
+            XCTAssertLessThanOrEqual(p99, 0.1, "sampleRate=\(sampleRate) p99=\(p99)")
+        }
+    }
+
+    func testGraphicEQConstantActiveCurveKeepsOutOfDomainTargetNeutral() throws {
+        let gainDB = 6.0
+        let result = try M1ProcessingBuilder.build(
+            nodes: [
+                .graphicEQ(points: [
+                    M1GraphicEQPoint(frequencyHz: 20, gainDB: gainDB),
+                    M1GraphicEQPoint(frequencyHz: 20_000, gainDB: gainDB),
+                ])
+            ],
+            layout: monoLayout()
+        )
+        guard case let .convolution(_, taps) = result.stagesByChannel[0][0] else {
+            return XCTFail("expected convolution")
+        }
+        XCTAssertEqual(
+            responseDB(taps: taps, frequencyHz: 1_000, sampleRate: 48_000),
+            gainDB,
+            accuracy: 0.1
+        )
+        XCTAssertEqual(
+            M1ProcessingBuilder.graphicEQProcessingGainDB(
+                frequencyHz: 10,
+                points: [
+                    M1GraphicEQPoint(frequencyHz: 20, gainDB: gainDB),
+                    M1GraphicEQPoint(frequencyHz: 20_000, gainDB: gainDB),
+                ]
+            ),
+            0
+        )
+        XCTAssertGreaterThan(taps.dropFirst().map { abs($0) }.max() ?? 0, 1e-5)
+    }
+
+    func testGraphicEQChannelInstancesUseSharedCapacityBoundary() throws {
+        let node = nonFlatGraphicEQ(gainDB: 6)
+        let eightChannels = try XCTUnwrap(M1OutputLayoutSnapshot(
+            sampleRate: 48_000,
+            maximumFrameCount: 256,
+            bufferChannelCounts: [8],
+            semanticPositionsByChannelIndex: Array(repeating: nil, count: 8)
+        ))
+        XCTAssertEqual(
+            try M1ProcessingBuilder.build(nodes: [node], layout: eightChannels)
+                .stagesByChannel.flatMap { $0 }.count,
+            8
+        )
+
+        let nineChannels = try XCTUnwrap(M1OutputLayoutSnapshot(
+            sampleRate: 48_000,
+            maximumFrameCount: 256,
+            bufferChannelCounts: [9],
+            semanticPositionsByChannelIndex: Array(repeating: nil, count: 9)
+        ))
+        XCTAssertThrowsError(try M1ProcessingBuilder.build(nodes: [node], layout: nineChannels)) {
+            XCTAssertEqual($0 as? M1ProcessingBuildError, .convolutionStageCapacityExceeded)
+        }
+    }
+
+    func testGraphicEQPreviewCoversNyquistOrTwentyKilohertz() throws {
+        let points = [
+            M1GraphicEQPoint(frequencyHz: 20, gainDB: 0),
+            M1GraphicEQPoint(frequencyHz: 1_000, gainDB: 6),
+            M1GraphicEQPoint(frequencyHz: 20_000, gainDB: 0),
+        ]
+        for sampleRate in [48_000.0, 96_000.0, 192_000.0] {
+            let preview = try M1ProcessingBuilder.graphicEQPreview(
+                points: points,
+                sampleRate: sampleRate
+            )
+            XCTAssertEqual(
+                try XCTUnwrap(preview.frequenciesHz.last),
+                min(20_000, sampleRate / 2),
+                accuracy: 1e-9
+            )
+        }
+    }
+
+    func testGraphicEQDenseCurveProducesOwnedResolutionDiagnostic() throws {
+        let nodeID = UUID()
+        let points = [
+            M1GraphicEQPoint(frequencyHz: 20, gainDB: -24),
+            M1GraphicEQPoint(frequencyHz: 21, gainDB: 24),
+            M1GraphicEQPoint(frequencyHz: 22, gainDB: -24),
+            M1GraphicEQPoint(frequencyHz: 20_000, gainDB: 0),
+        ]
+        let result = try M1ProcessingBuilder.build(
+            nodes: [.graphicEQ(id: nodeID, points: points)],
+            layout: monoLayout()
+        )
+        let diagnostic = try XCTUnwrap(result.diagnostics.graphicEQResolution.first)
+        XCTAssertEqual(diagnostic.nodeID, nodeID)
+        XCTAssertTrue(
+            diagnostic.maximumErrorDB > M1ProcessingBuilder.graphicEQMaximumResponseErrorDB
+                || diagnostic.percentile99ErrorDB
+                    > M1ProcessingBuilder.graphicEQPercentile99ResponseErrorDB
+        )
+
+        let preview = try M1ProcessingBuilder.graphicEQPreview(
+            points: points,
+            sampleRate: 48_000,
+            sampleCount: 193
+        )
+        XCTAssertTrue(
+            preview.maximumErrorDB > M1ProcessingBuilder.graphicEQMaximumResponseErrorDB
+                || preview.percentile99ErrorDB
+                    > M1ProcessingBuilder.graphicEQPercentile99ResponseErrorDB
+        )
+    }
+
+    func testCompiledScopedStagesProcessThroughRuntimeV3() throws {
         let left = identifier("L")
         let right = identifier("R")
-        var equalizer = M1ProcessingNode.graphicEQ()
-        equalizer.graphicEQBands[8].gainDB = 6
+        let equalizer = M1ProcessingNode.graphicEQ(
+            points: [
+                M1GraphicEQPoint(frequencyHz: 20, gainDB: 0),
+                M1GraphicEQPoint(frequencyHz: 1_000, gainDB: 6),
+                M1GraphicEQPoint(frequencyHz: 20_000, gainDB: 6),
+            ]
+        )
         let compiled = try M1ProcessingBuilder.build(
             nodes: [
                 .channels(selection: .identifiers([left])),
@@ -517,10 +853,10 @@ final class M1ProcessingBuilderTests: XCTestCase {
             layout: stereoLayout()
         )
         guard case let .gain(_, leftGain) = compiled.stagesByChannel[0][0],
-              case let .biquad(_, _, coefficients) = compiled.stagesByChannel[0][1],
+              case let .convolution(_, taps) = compiled.stagesByChannel[0][1],
               case let .gain(_, rightGain) = compiled.stagesByChannel[1][0]
         else {
-            return XCTFail("expected scoped Gain/Biquad execution plan")
+            return XCTFail("expected scoped Gain/Convolution execution plan")
         }
 
         var prepared: OpaquePointer? = try M1RuntimePreparedStateFactory.create(
@@ -549,8 +885,17 @@ final class M1ProcessingBuilderTests: XCTestCase {
             return EAUM1RuntimeProcess(retainedRuntime, &buffer, 1, 1)
         }
         XCTAssertEqual(Int(status), EAUM1StatusOK)
-        XCTAssertEqual(samples[0], Float(leftGain * coefficients.b0), accuracy: 1e-6)
+        XCTAssertEqual(samples[0], Float(leftGain) * taps[0], accuracy: 1e-5)
         XCTAssertEqual(samples[1], Float(rightGain), accuracy: 1e-6)
+    }
+
+    private func monoLayout(sampleRate: Double = 48_000) -> M1OutputLayoutSnapshot {
+        M1OutputLayoutSnapshot(
+            sampleRate: sampleRate,
+            maximumFrameCount: 512,
+            bufferChannelCounts: [1],
+            semanticPositionsByChannelIndex: [.left]
+        )!
     }
 
     private func stereoLayout() -> M1OutputLayoutSnapshot {
@@ -564,6 +909,81 @@ final class M1ProcessingBuilderTests: XCTestCase {
 
     private func identifier(_ value: String) -> M1ChannelIdentifier {
         M1ChannelIdentifier(value)!
+    }
+
+    private func nonFlatGraphicEQ(id: UUID = UUID(), gainDB: Double) -> M1ProcessingNode {
+        M1ProcessingNode.graphicEQ(
+            id: id,
+            points: [
+                M1GraphicEQPoint(frequencyHz: 20, gainDB: 0),
+                M1GraphicEQPoint(frequencyHz: 1_000, gainDB: gainDB),
+                M1GraphicEQPoint(frequencyHz: 20_000, gainDB: gainDB),
+            ]
+        )
+    }
+
+    private func convolutionReference(
+        storageID: UUID,
+        frameCount: Int,
+        sampleRate: Double = 48_000
+    ) -> M1ConvolutionIRReference {
+        M1ConvolutionIRReference(
+            storageID: storageID,
+            originalFileName: "fixture.wav",
+            sha256: String(repeating: "a", count: 64),
+            sampleRate: sampleRate,
+            channelCount: 1,
+            frameCount: frameCount
+        )
+    }
+
+    private func impulse(count: Int) -> [Float] {
+        var taps = Array(repeating: Float.zero, count: count)
+        if !taps.isEmpty { taps[0] = 1 }
+        return taps
+    }
+
+    private func logarithmicFrequencies(
+        minimum: Double,
+        maximum: Double,
+        count: Int
+    ) -> [Double] {
+        guard count > 1 else { return [minimum] }
+        let lower = log(minimum)
+        let upper = log(maximum)
+        return (0..<count).map { index in
+            let fraction = Double(index) / Double(count - 1)
+            return exp(lower + (upper - lower) * fraction)
+        }
+    }
+
+    private func responseDB(
+        taps: [Float],
+        frequencyHz: Double,
+        sampleRate: Double
+    ) -> Double {
+        let omega = -2 * Double.pi * frequencyHz / sampleRate
+        var real = 0.0
+        var imag = 0.0
+        for (index, tap) in taps.enumerated() {
+            let angle = omega * Double(index)
+            real += Double(tap) * cos(angle)
+            imag += Double(tap) * sin(angle)
+        }
+        return 20 * log10(max(hypot(real, imag), 1e-12))
+    }
+
+    private func makeGraphicEQPoints(count: Int) -> [M1GraphicEQPoint] {
+        guard count > 0 else { return [] }
+        let lower = log(M1GraphicEQContract.minimumFrequencyHz)
+        let upper = log(M1GraphicEQContract.maximumFrequencyHz)
+        return (0..<count).map { index in
+            let fraction = count == 1 ? 0.0 : Double(index) / Double(count - 1)
+            return M1GraphicEQPoint(
+                frequencyHz: exp(lower + (upper - lower) * fraction),
+                gainDB: -24 + 48 * fraction
+            )
+        }
     }
 
     private func buildAllChannels(totalGainDB: Double) throws -> M1CompiledPreampTargets {
@@ -600,5 +1020,27 @@ final class M1ProcessingBuilderTests: XCTestCase {
         channels: M1ChannelSelection
     ) -> M1PreampNode {
         M1PreampNode(id: id, isEnabled: true, gainDB: gainDB, channels: channels)
+    }
+}
+
+private struct MockConvolutionIRLoader: M1ConvolutionIRLoading {
+    let loadedByStorageID: [UUID: M1LoadedConvolutionIR]
+
+    func validate(reference: M1ConvolutionIRReference) throws {
+        _ = try load(reference: reference, targetSampleRate: reference.sampleRate)
+    }
+
+    func load(
+        reference: M1ConvolutionIRReference,
+        targetSampleRate: Double
+    ) throws -> M1LoadedConvolutionIR {
+        guard let loaded = loadedByStorageID[reference.storageID] else {
+            throw M1ConvolutionIRError.missingResource
+        }
+        return M1LoadedConvolutionIR(
+            source: loaded.source,
+            targetSampleRate: targetSampleRate,
+            channels: loaded.channels
+        )
     }
 }

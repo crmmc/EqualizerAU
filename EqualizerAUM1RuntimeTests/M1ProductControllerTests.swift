@@ -186,10 +186,16 @@ final class M1ProductControllerTests: XCTestCase {
         XCTAssertEqual(starts.last?.nodes.first?.gainDB, 6)
     }
 
-    func testGraphicEQDraftPublishesScopedBiquadStagesOnlyAfterSave() async throws {
+    func testGraphicEQDraftPublishesScopedConvolutionStagesOnlyAfterSave() async throws {
         let fixture = makeFixture()
         let channelsID = UUID()
         let equalizerID = UUID()
+        let points = M1GraphicEQContract.legacyFlatPoints.enumerated().map { index, point in
+            M1GraphicEQPoint(
+                frequencyHz: point.frequencyHz,
+                gainDB: index == 8 ? 6 : point.gainDB
+            )
+        }
         await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
         try await fixture.controller.start()
         try await fixture.controller.addChannels(
@@ -197,11 +203,7 @@ final class M1ProductControllerTests: XCTestCase {
             selection: .identifiers([M1ChannelIdentifier("L")!])
         )
         try await fixture.controller.addGraphicEQ(nodeID: equalizerID)
-        try await fixture.controller.setGraphicEQGainDB(
-            id: equalizerID,
-            bandIndex: 8,
-            gainDB: 6
-        )
+        try await fixture.controller.setGraphicEQPoints(id: equalizerID, points: points)
 
         var commits = await fixture.store.commits
         var publishedStages = await fixture.audio.publishedStagesByChannel
@@ -213,15 +215,15 @@ final class M1ProductControllerTests: XCTestCase {
         commits = await fixture.store.commits
         publishedStages = await fixture.audio.publishedStagesByChannel
         XCTAssertEqual(commits.last?.snapshot.nodes.map(\.kind), [.preamp, .channels, .graphicEQ])
-        XCTAssertEqual(commits.last?.snapshot.nodes.last?.graphicEQBands[8].gainDB, 6)
+        XCTAssertEqual(commits.last?.snapshot.nodes.last?.graphicEQPoints, points)
         XCTAssertEqual(publishedStages.count, 1)
         XCTAssertEqual(publishedStages[0][0].count, 1)
         XCTAssertTrue(publishedStages[0][1].isEmpty)
-        guard case let .biquad(nodeID, bandIndex, _) = publishedStages[0][0][0] else {
-            return XCTFail("Expected a scoped Graphic EQ biquad")
+        guard case let .convolution(nodeID, taps) = publishedStages[0][0][0] else {
+            return XCTFail("Expected a scoped Graphic EQ convolution")
         }
         XCTAssertEqual(nodeID, equalizerID)
-        XCTAssertEqual(bandIndex, 8)
+        XCTAssertEqual(taps.count, M1ProcessingBuilder.graphicEQTapCount)
     }
 
     func testEffectsToggleUpdatesRuntimeAndPersistsWithoutPublishingChain() async throws {
