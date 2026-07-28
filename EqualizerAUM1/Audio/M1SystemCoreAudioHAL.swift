@@ -29,7 +29,7 @@ private struct M1HALPropertyAddress {
 }
 
 private struct M1HALPropertyReader {
-    func value<T>(
+    func value<T: BitwiseCopyable>(
         objectID: AudioObjectID,
         address: M1HALPropertyAddress,
         initialValue: T,
@@ -48,7 +48,7 @@ private struct M1HALPropertyReader {
         return value
     }
 
-    func qualifiedValue<Q, T>(
+    func qualifiedValue<Q: BitwiseCopyable, T: BitwiseCopyable>(
         objectID: AudioObjectID,
         address: M1HALPropertyAddress,
         qualifier: Q,
@@ -221,16 +221,14 @@ enum M1CoreAudioDataParser {
             throw M1CoreAudioStatusError(operation: "Parse AudioChannelLayout", status: kAudio_ParamError)
         }
         guard let tagOffset = MemoryLayout<AudioChannelLayout>.offset(of: \AudioChannelLayout.mChannelLayoutTag),
-              let bitmapOffset = MemoryLayout<AudioChannelLayout>.offset(of: \AudioChannelLayout.mChannelBitmap),
-              let countOffset = MemoryLayout<AudioChannelLayout>.offset(of: \AudioChannelLayout.mNumberChannelDescriptions)
+              let bitmapOffset = MemoryLayout<AudioChannelLayout>.offset(of: \AudioChannelLayout.mChannelBitmap)
         else {
             throw M1CoreAudioStatusError(operation: "Parse AudioChannelLayout offsets", status: kAudio_ParamError)
         }
-        let (tag, bitmap, descriptionCount) = data.withUnsafeBytes { bytes in
+        let (tag, bitmap) = data.withUnsafeBytes { bytes in
             (
                 bytes.loadUnaligned(fromByteOffset: tagOffset, as: AudioChannelLayoutTag.self),
-                bytes.loadUnaligned(fromByteOffset: bitmapOffset, as: AudioChannelBitmap.self),
-                bytes.loadUnaligned(fromByteOffset: countOffset, as: UInt32.self)
+                bytes.loadUnaligned(fromByteOffset: bitmapOffset, as: AudioChannelBitmap.self)
             )
         }
         if tag != kAudioChannelLayoutTag_UseChannelDescriptions {
