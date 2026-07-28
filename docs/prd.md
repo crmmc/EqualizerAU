@@ -355,6 +355,5 @@ M0 已完成，详见 [`milestones/M0-native-route.md`](./milestones/M0-native-r
 ## 12. 待确认产品事项
 
 - MVP 是否允许选择非默认输出设备；
-- IR 最大时长、文件大小和多声道映射；
 - EqualizerAPO 配置导入范围；
 - 是否需要菜单栏入口和登录启动。

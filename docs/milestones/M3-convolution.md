@@ -1,6 +1,6 @@
 # M3：Convolution
 
-> **当前状态**：实现与 hostless 自动化已完成；等待 hosted GUI 与真实音频验收
+> **当前状态**：已完成并关闭；hostless 实现由 M4 T10–T15 真实音频和 M5-B 编辑器人工验收补齐
 
 ## 1. 目标
 
@@ -37,10 +37,19 @@ M3 在 M2 有序处理链和双槽发布基础上加入 WAV IR 导入、格式�
 - `verify-m1-realtime.sh` 审计 29 个显式 Runtime/host callback helpers；
 - 五 target isolation、独立 C++ `-Wall -Wextra -Werror`、shell syntax 与 diff whitespace 门禁通过。
 
-## 5. 待验收边界
+## 5. 历史待验收边界与后续验收
 
-- 未启动 hosted test bundle、GUI、NSOpenPanel、真实音频、Tap、Aggregate、设备 IO 或系统路由；
-- 尚需人工确认 Add/Replace/取消文件选择、长名称与多声道 metadata 布局；
-- 尚需真实音频确认 delta 透明、短/长 IR、运行中替换、Processing A/B 与切换无爆音；
-- 不支持 true-stereo/矩阵 IR、压缩音频、Float64 WAV 或超过 2 秒的 IR；
-- sidecar 自动垃圾回收不属于首版 M3，previous 配置可能引用的资源不会被提前删除。
+M3 完成时未启动 hosted test bundle、GUI、NSOpenPanel、真实音频、Tap、Aggregate、设备 IO 或
+系统路线，因此当时保留 Add/Replace/取消、metadata 布局、IR 听感和切换稳定性的人工边界。
+后续证据已补齐：
+
+- M4 T10–T15 由用户在签名应用中确认合法 WAV 导入、取消 Replace、损坏/超时长拒绝、不可变
+  sidecar 重启恢复，以及短回声 IR 的 Processing A/B 和无爆音、静音或恢复循环；
+- M5-B 由用户确认 Convolution 常显文件名、采样率、声道、时长、Replace 和具体 IR 错误模态，
+  并通过最终处理器行 GUI 人工验收；
+- 不支持 true-stereo/矩阵 IR、压缩音频、Float64 WAV 或超过 2 秒的 IR，仍是明确产品边界而非
+  未完成实现；
+- sidecar 自动垃圾回收不属于 M3。现有孤儿回收需求只有出现独立、可复现数据生命周期问题后
+  才重新立项。
+
+因此 M3 没有剩余活动验收任务，本文保留为 schema v4、ABI v3 和 IR 契约的历史依据。

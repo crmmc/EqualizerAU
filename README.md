@@ -27,10 +27,11 @@ M1.3 已完成多选与键盘选择、typed 剪贴板、组移动与 Option-copy
 正式 `EqualizerAU` 产品身份和用户明确执行的真实音频验收。M1 已关闭。M2 已加入 schema v3
 的固定 15 段 Graphic EQ、有序 Channels/Preamp/Graphic EQ 编译、Runtime ABI v2 biquad chain、
 10 ms 双槽切换，以及通用节点行中的频段编辑器。M3 已加入 schema v4 Convolution、严格 WAV
-IR sidecar、控制线程 SRC、Runtime ABI v3 zero-latency hybrid convolution 和安全链切换；M2/M3
-真实音频与 hosted GUI 验收尚未执行。M4 已加入设备与 sleep/wake 监听、持久 UID 复核、
-有界自动恢复、权限提示和恢复状态；人工验收发现音频恢复循环、单实例和单主窗口三个
-M4 收尾问题，音频恢复循环、单进程和单主窗口均已通过修复后人工复测。采样率切换恢复已完成
+IR sidecar、控制线程 SRC、Runtime ABI v3 zero-latency hybrid convolution 和安全链切换。M2 的
+固定 15 段产品模型已由 M6 任意点 Graphic EQ 取代，原待验收项不再执行；M3 的 IR 导入、错误、
+sidecar 恢复、处理器交互和真实音频已由 M4 T10–T15 与 M5-B 人工验收补齐。M4 已加入设备与
+sleep/wake 监听、持久 UID 复核、有界自动恢复、权限提示和恢复状态；人工验收发现音频恢复循环、
+单实例和单主窗口三个 M4 收尾问题，音频恢复循环、单进程和单主窗口均已通过修复后人工复测。采样率切换恢复已完成
 稳定格式确认、近零点释放和跨代 muted Tap
 handover，并通过签名应用人工复测；第一版权限候选虽通过 275 项 hostless，但签名应用在撤权
 后冷启动 Start 时仍会静音。修订候选改为在实际路线 Tap 上完成启动前权限探测和 mute 转换，
@@ -118,7 +119,7 @@ flowchart TD
 | [`docs/milestones/M1-processing-chain-foundation.md`](docs/milestones/M1-processing-chain-foundation.md) | M1 范围、工作包、验证计划和退出条件 |
 | [`docs/milestones/M1.0-runtime-kernel.md`](docs/milestones/M1.0-runtime-kernel.md) | M1.0 独立 target、运行时 ABI、所有权、实施顺序和阶段门槛 |
 | [`docs/milestones/M2-graphic-equalizer.md`](docs/milestones/M2-graphic-equalizer.md) | M2 Graphic EQ 范围、前置基础、验证计划和阶段证据 |
-| [`docs/milestones/M3-convolution.md`](docs/milestones/M3-convolution.md) | M3 Convolution 文件契约、DSP 边界、自动化证据和待验收范围 |
+| [`docs/milestones/M3-convolution.md`](docs/milestones/M3-convolution.md) | M3 Convolution 文件契约、DSP 边界、自动化证据和后续验收闭环 |
 | [`docs/milestones/M4-mvp-stabilization.md`](docs/milestones/M4-mvp-stabilization.md) | M4 设备/权限/睡眠恢复、资源所有权、自动化证据和发布待验收范围 |
 | [`docs/milestones/M5-equalizerapo-editor-parity.md`](docs/milestones/M5-equalizerapo-editor-parity.md) | M5 EqualizerAPO 编辑器对齐目标、探索门禁、范围与退出条件 |
 | [`docs/milestones/M6-arbitrary-point-graphic-equalizer.md`](docs/milestones/M6-arbitrary-point-graphic-equalizer.md) | M6 任意频率 Graphic EQ 目标、决策门禁、范围与退出条件 |

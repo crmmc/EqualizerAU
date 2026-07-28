@@ -1,6 +1,6 @@
 # M2：Graphic EQ
 
-> **当前状态**：实现与 hostless 自动化已完成；等待 hosted GUI 与真实音频验收
+> **当前状态**：历史实现已完成；固定 15 段产品模型已由 M6 任意点模型取代，原待验收项不再执行
 
 ## 1. 目标
 
@@ -41,10 +41,16 @@ M2 在已经关闭的 M1 原生路线、可靠持久化和安全发布基础上�
 - 完整 hostless `EqualizerAUM1RuntimeTests` 共 188 项通过，零失败；
 - 五 target 隔离、Plist/project/scheme、shell syntax 与 diff whitespace 门禁通过。
 
-## 5. 待验收边界
+## 5. 历史待验收边界与后续结论
 
-- 未启动 hosted test bundle、GUI、真实音频、Tap、Aggregate、设备 IO 或系统路由；
-- 尚需人工确认 15 段编辑布局、直接输入、滚动和诊断可读性；
-- 尚需真实音频确认 flat 透明、boost/cut 听感、运行中 Save、Processing A/B 与无爆音；
-- M2 不改变 Core Audio 路线、Tap/Aggregate 生命周期或实时诊断计数 ABI；
-- EqualizerAPO FIR 逐点兼容、31 段/可变频点和频响曲线视图不属于首版 M2。
+M2 完成时尚未启动 hosted test bundle、GUI、真实音频、Tap、Aggregate、设备 IO 或系统路线，
+因此当时只形成以下待验收项：
+
+- 15 段编辑布局、直接输入、滚动和诊断可读性；
+- flat 透明、boost/cut 听感、运行中 Save、Processing A/B 与无爆音；
+- M2 不改变 Core Audio 路线、Tap/Aggregate 生命周期或实时诊断计数 ABI。
+
+这些项目没有被追记为“固定 15 段验收通过”。M4 人工验收否决固定 15 段作为最终产品模型，M6
+随后以 schema v7 任意点模型和 minimum-phase FIR 完整替换，并通过当前 Graphic EQ 的签名应用
+GUI 与真实音频验收。EqualizerAPO FIR 逐点兼容、可变频点和频响曲线已由 M6 实现；M2 仅保留为
+schema v3-v5 迁移与 ABI v2 历史依据，不再有活动验收任务。
