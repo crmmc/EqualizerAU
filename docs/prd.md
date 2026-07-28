@@ -349,6 +349,7 @@ MVP 完成需满足：
 | M4 MVP 稳定化 | 设备变化、权限异常、睡眠、系统服务及运行期自动恢复、签名和发布验收完成 |
 | M5 EqualizerAPO 编辑器对齐 | 处理器编排和处理器交互经本地源码对齐后形成一致、紧凑且可流畅操作的编辑器 |
 | M6 任意频率 Graphic EQ | 用户可编辑任意频率控制点，可见曲线、保存配置和实际频响遵循同一契约 |
+| M7 开源技术预览发布 | GPL 来源完整、源码与 arm64 ad-hoc Release ZIP 可验证重放，用户可按逐应用 Gatekeeper 流程安装 |
 
 M0 已完成，详见 [`milestones/M0-native-route.md`](./milestones/M0-native-route.md)。
 

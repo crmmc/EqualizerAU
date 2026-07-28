@@ -44,6 +44,8 @@ FIR 数值探针和 ABI v3 Release 性能基线；ADR 0013 已获批准，schema
 最终任意点编辑器均已实现并通过 hostless 回归、签名应用原生 GUI 和真实音频验收。Graphic EQ
 原样保存所有正有限频率点，只使用 20 Hz...20 kHz 内的点设置 EQ 目标；域外点原样保留但不参与
 插值或 FIR 设计，域外目标为 0 dB，有限 FIR 的自然域外影响不做硬切。M6 已完成并关闭。
+M7 已确定采用无 Developer ID、未 notarize 的 arm64 开源技术预览：源码与 GPL 归属、ad-hoc
+Release ZIP、SHA-256 和逐应用 Gatekeeper 授权构成发布契约，不加入付费 Apple Developer Program。
 M0 的源码、测试和构建产物只作参考，不被 M1 复用。BlackHole 只作为未启用的后备路线，
 不是当前依赖，也无需安装。
 
@@ -98,6 +100,30 @@ xcodebuild \
   build-for-testing CODE_SIGNING_ALLOWED=NO
 ```
 
+## 开源技术预览
+
+M7 技术预览不使用 Developer ID，也未经 Apple notarization。打包脚本生成 arm64 Release App，
+应用免费的 ad-hoc 签名和 Hardened Runtime，随包附带许可证、上游归属、源码 commit 和 SHA-256：
+
+```bash
+./scripts/package-adhoc-preview.zsh
+```
+
+脚本默认拒绝未提交的源码输入，防止二进制与对应 commit 不一致。本地验证当前改动时可以显式运行：
+
+```bash
+ALLOW_DIRTY=1 ./scripts/package-adhoc-preview.zsh
+```
+
+产物位于 `.build/release/`。ad-hoc 签名只验证包内代码完整性，不证明发布者身份，也不会获得
+Gatekeeper 信任。使用者应先校验 `.sha256`，解压后将 `EqualizerAU.app` 移到 `/Applications`，
+尝试打开一次；若 macOS 阻止启动，在“系统设置 → 隐私与安全性”中对 EqualizerAU 选择
+“仍要打开”。这是 [Apple 官方支持的逐应用例外流程](https://support.apple.com/en-us/102445)，
+不需要也不建议全局关闭 Gatekeeper。
+
+用户也可以忽略预编译 ZIP，审阅对应源码并自行构建。技术预览的具体边界和用户验收清单见
+[`M7 开源技术预览发布`](docs/milestones/M7-open-source-preview-release.md)。
+
 ## 文档导航
 
 ```mermaid
@@ -123,8 +149,15 @@ flowchart TD
 | [`docs/milestones/M4-mvp-stabilization.md`](docs/milestones/M4-mvp-stabilization.md) | M4 设备/权限/睡眠恢复、资源所有权、自动化证据和发布待验收范围 |
 | [`docs/milestones/M5-equalizerapo-editor-parity.md`](docs/milestones/M5-equalizerapo-editor-parity.md) | M5 EqualizerAPO 编辑器对齐目标、探索门禁、范围与退出条件 |
 | [`docs/milestones/M6-arbitrary-point-graphic-equalizer.md`](docs/milestones/M6-arbitrary-point-graphic-equalizer.md) | M6 任意频率 Graphic EQ 目标、决策门禁、范围与退出条件 |
+| [`docs/milestones/M7-open-source-preview-release.md`](docs/milestones/M7-open-source-preview-release.md) | M7 无 Developer ID 的 arm64 开源技术预览发布契约与验收门禁 |
 | [`docs/future-equalizerapo-import.md`](docs/future-equalizerapo-import.md) | 未排期的 EqualizerAPO 导入与多文件 Include 未来需求池，可按需求卡选择范围 |
 | [`CONTEXT.md`](CONTEXT.md) | 产品与处理链的规范领域词汇 |
 | [`AGENTS.md`](AGENTS.md) | 编码 Agent 的仓库工作规范 |
 
 自动化测试是行为契约；里程碑文档保存重要实验事实，不重复描述当前代码。
+
+## License
+
+EqualizerAU 使用 [`GPL-3.0-or-later`](LICENSE) 发布。Graphic EQ minimum-phase、插值和 CSV
+兼容实现的 EqualizerAPO 来源及其他算法/依赖边界见
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
