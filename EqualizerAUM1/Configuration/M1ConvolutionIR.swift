@@ -1,4 +1,3 @@
-import CryptoKit
 import Darwin
 import Foundation
 
@@ -10,31 +9,24 @@ enum M1ConvolutionIRError: Error, Equatable, Sendable {
     case emptyAudio
     case durationExceeded
     case invalidSample
-    case storageAlreadyExists
     case missingResource
-    case hashMismatch
-    case metadataMismatch
     case resourceIO
 }
 
 struct M1LoadedConvolutionIR: Equatable, Sendable {
     let source: M1ConvolutionIRReference
+    let sourceSampleRate: Double
+    let sourceChannelCount: Int
+    let sourceFrameCount: Int
     let targetSampleRate: Double
     let channels: [[Float]]
 }
 
 protocol M1ConvolutionIRLoading: Sendable {
-    func validate(reference: M1ConvolutionIRReference) throws
     func load(
         reference: M1ConvolutionIRReference,
         targetSampleRate: Double
     ) throws -> M1LoadedConvolutionIR
-}
-
-extension M1ConvolutionIRLoading {
-    func validate(reference: M1ConvolutionIRReference) throws {
-        _ = try load(reference: reference, targetSampleRate: reference.sampleRate)
-    }
 }
 
 struct M1ConvolutionIRStore: M1ConvolutionIRLoading, Sendable {
@@ -54,66 +46,15 @@ struct M1ConvolutionIRStore: M1ConvolutionIRLoading, Sendable {
             .appendingPathComponent("Library/Application Support/EqualizerAU/IRs", isDirectory: true)
     }
 
-    func importWAV(at sourceURL: URL, storageID: UUID = UUID()) throws -> M1ConvolutionIRReference {
-        try Task.checkCancellation()
-        let data: Data
-        do {
-            data = try Data(contentsOf: sourceURL, options: .mappedIfSafe)
-        } catch {
-            throw M1ConvolutionIRError.resourceIO
-        }
-        guard data.count <= Self.maximumFileSize else { throw M1ConvolutionIRError.fileTooLarge }
-        let decoded = try M1WAVDecoder.decode(data)
-        try Task.checkCancellation()
+    static func reference(sourceURL: URL) -> M1ConvolutionIRReference {
+        M1ConvolutionIRReference(sourcePath: sourceURL.standardizedFileURL.path)
+    }
 
-        let reference = M1ConvolutionIRReference(
-            storageID: storageID,
-            originalFileName: sourceURL.lastPathComponent,
-            sha256: Self.sha256(data),
-            sampleRate: decoded.sampleRate,
-            channelCount: decoded.channels.count,
-            frameCount: decoded.channels[0].count
+    static func legacyReference(storageID: UUID) -> M1ConvolutionIRReference {
+        reference(
+            sourceURL: productionDirectoryURL
+                .appendingPathComponent("\(storageID.uuidString).wav", isDirectory: false)
         )
-        do {
-            var isDirectory = ObjCBool(false)
-            if FileManager.default.fileExists(
-                atPath: directoryURL.path,
-                isDirectory: &isDirectory
-            ) {
-                guard isDirectory.boolValue else { throw M1ConvolutionIRError.resourceIO }
-            } else {
-                try FileManager.default.createDirectory(
-                    at: directoryURL,
-                    withIntermediateDirectories: false
-                )
-            }
-            try synchronizeDirectory(at: directoryURL.deletingLastPathComponent())
-        } catch {
-            throw M1ConvolutionIRError.resourceIO
-        }
-        let destination = resourceURL(storageID: storageID)
-        guard !FileManager.default.fileExists(atPath: destination.path) else {
-            throw M1ConvolutionIRError.storageAlreadyExists
-        }
-        let temporary = directoryURL.appendingPathComponent(".\(storageID.uuidString).\(UUID().uuidString).tmp")
-        defer { try? FileManager.default.removeItem(at: temporary) }
-        do {
-            try data.write(to: temporary, options: .withoutOverwriting)
-            try synchronizeFile(at: temporary)
-        } catch {
-            throw M1ConvolutionIRError.resourceIO
-        }
-        try Task.checkCancellation()
-        do {
-            try FileManager.default.moveItem(at: temporary, to: destination)
-        } catch {
-            if FileManager.default.fileExists(atPath: destination.path) {
-                throw M1ConvolutionIRError.storageAlreadyExists
-            }
-            throw M1ConvolutionIRError.resourceIO
-        }
-        try synchronizeDirectory(at: directoryURL)
-        return reference
     }
 
     func load(
@@ -126,27 +67,9 @@ struct M1ConvolutionIRStore: M1ConvolutionIRLoading, Sendable {
         else {
             throw M1ConvolutionIRError.invalidMetadata
         }
-        let url = resourceURL(storageID: reference.storageID)
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            throw M1ConvolutionIRError.missingResource
-        }
-        let data: Data
-        do {
-            data = try Data(contentsOf: url, options: .mappedIfSafe)
-        } catch {
-            throw M1ConvolutionIRError.resourceIO
-        }
-        guard data.count <= Self.maximumFileSize else { throw M1ConvolutionIRError.fileTooLarge }
-        try Task.checkCancellation()
-        guard Self.sha256(data) == reference.sha256 else { throw M1ConvolutionIRError.hashMismatch }
-        try Task.checkCancellation()
+        let url = URL(fileURLWithPath: reference.sourcePath)
+        let data = try readData(at: url)
         let decoded = try M1WAVDecoder.decode(data)
-        guard decoded.sampleRate == reference.sampleRate,
-              decoded.channels.count == reference.channelCount,
-              decoded.channels.first?.count == reference.frameCount
-        else {
-            throw M1ConvolutionIRError.metadataMismatch
-        }
         let channels = try decoded.sampleRate == targetSampleRate
             ? decoded.channels
             : decoded.channels.map {
@@ -173,31 +96,58 @@ struct M1ConvolutionIRStore: M1ConvolutionIRLoading, Sendable {
         }
         return M1LoadedConvolutionIR(
             source: reference,
+            sourceSampleRate: decoded.sampleRate,
+            sourceChannelCount: decoded.channels.count,
+            sourceFrameCount: decoded.channels[0].count,
             targetSampleRate: targetSampleRate,
             channels: channels
         )
     }
-
-    private func resourceURL(storageID: UUID) -> URL {
-        directoryURL.appendingPathComponent("\(storageID.uuidString).wav", isDirectory: false)
-    }
-
-    private func synchronizeFile(at url: URL) throws {
-        let descriptor = open(url.path, O_RDONLY | O_CLOEXEC)
-        guard descriptor >= 0 else { throw M1ConvolutionIRError.resourceIO }
+    private func readData(at url: URL) throws -> Data {
+        try Task.checkCancellation()
+        let descriptor = open(url.path, O_RDONLY | O_CLOEXEC | O_NONBLOCK)
+        guard descriptor >= 0 else {
+            let openError = errno
+            try Task.checkCancellation()
+            if openError == ENOENT || openError == ENOTDIR {
+                throw M1ConvolutionIRError.missingResource
+            }
+            throw M1ConvolutionIRError.resourceIO
+        }
         defer { close(descriptor) }
-        guard fsync(descriptor) == 0 else { throw M1ConvolutionIRError.resourceIO }
-    }
 
-    private func synchronizeDirectory(at url: URL) throws {
-        let descriptor = open(url.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
-        guard descriptor >= 0 else { throw M1ConvolutionIRError.resourceIO }
-        defer { close(descriptor) }
-        guard fsync(descriptor) == 0 else { throw M1ConvolutionIRError.resourceIO }
-    }
+        var status = stat()
+        guard fstat(descriptor, &status) == 0 else {
+            try Task.checkCancellation()
+            throw M1ConvolutionIRError.resourceIO
+        }
+        guard status.st_mode & S_IFMT == S_IFREG else {
+            try Task.checkCancellation()
+            throw M1ConvolutionIRError.resourceIO
+        }
+        guard status.st_size >= 0, status.st_size <= Self.maximumFileSize else {
+            throw M1ConvolutionIRError.fileTooLarge
+        }
 
-    private static func sha256(_ data: Data) -> String {
-        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        var data = Data()
+        data.reserveCapacity(Int(status.st_size))
+        var buffer = [UInt8](repeating: 0, count: 64 * 1024)
+        while true {
+            try Task.checkCancellation()
+            let count = read(descriptor, &buffer, buffer.count)
+            if count == 0 { break }
+            if count < 0 {
+                if errno == EINTR { continue }
+                try Task.checkCancellation()
+                throw M1ConvolutionIRError.resourceIO
+            }
+            guard data.count + count <= Self.maximumFileSize else {
+                throw M1ConvolutionIRError.fileTooLarge
+            }
+            data.append(buffer, count: count)
+        }
+        try Task.checkCancellation()
+        return data
     }
 }
 

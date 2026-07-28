@@ -388,25 +388,6 @@ actor M1NativeAudioRouteCoordinator {
             )
         }
         try M1ProcessingBuilder.validate(nodes: configuration.nodes)
-        let convolutionNodes = configuration.nodes.filter { $0.kind == .convolution && $0.isEnabled }
-        guard convolutionNodes.count <= M1ProcessingBuilder.maximumConvolutionStages else {
-            throw M1ProcessingBuildError.convolutionStageCapacityExceeded
-        }
-        let irLoader = irLoader
-        try await detachedValue {
-            var validatedReferences: [M1ConvolutionIRReference] = []
-            for node in convolutionNodes {
-                try Task.checkCancellation()
-                let ir = node.convolutionIR!
-                guard !validatedReferences.contains(ir) else { continue }
-                do {
-                    try irLoader.validate(reference: ir)
-                } catch let error as M1ConvolutionIRError {
-                    throw M1ProcessingBuildError.convolutionIRLoadFailed(nodeID: node.id, error: error)
-                }
-                validatedReferences.append(ir)
-            }
-        }
         guard current == nil, !operationInProgress, nextGeneration < UInt64.max else {
             return .waitingForOutput
         }

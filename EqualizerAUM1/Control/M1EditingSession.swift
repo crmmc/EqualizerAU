@@ -31,7 +31,7 @@ struct M1EncodedNodeEnvelope: Equatable, Sendable {
 }
 
 enum M1NodeEnvelopeCodec {
-    static let schemaVersion = 7
+    static let schemaVersion = 8
     static let maximumDataSize = M1ConfigurationCodec.maximumDataSize
 
     static func encode(_ nodes: [M1ProcessingNode]) throws -> M1EncodedNodeEnvelope {
@@ -93,6 +93,10 @@ enum M1NodeEnvelopeCodec {
                 try M1JSONShapeValidator.validateNodeEnvelope(data, schemaVersion: 6)
                 let wire = try JSONDecoder().decode(M1NodeEnvelopeWire.self, from: data)
                 return try encode(try wire.nodes.map { try $0.node(schemaVersion: 6) })
+            case 7:
+                try M1JSONShapeValidator.validateNodeEnvelope(data, schemaVersion: 7)
+                let wire = try JSONDecoder().decode(M1NodeEnvelopeWire.self, from: data)
+                return try encode(try wire.nodes.map { try $0.node(schemaVersion: 7) })
             case schemaVersion:
                 try M1JSONShapeValidator.validateNodeEnvelope(data, schemaVersion: schemaVersion)
                 let wire = try JSONDecoder().decode(M1NodeEnvelopeWire.self, from: data)

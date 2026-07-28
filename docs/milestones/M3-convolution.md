@@ -2,6 +2,11 @@
 
 > **当前状态**：已完成并关闭；hostless 实现由 M4 T10–T15 真实音频和 M5-B 编辑器人工验收补齐
 
+本文记录 M3 当时的 schema v4 immutable sidecar 契约。2026-07-28 批准的
+[`ADR-0014`](../adr/0014-convolution-source-path-loading.md) 和
+[`M8`](./M8-convolution-source-path.md) 已取代资源复制、storage ID、预检及资源错误整批失败语义；
+ABI v3 hybrid convolution、WAV/SRC、声道映射、容量与实时边界继续有效。
+
 ## 1. 目标
 
 M3 在 M2 有序处理链和双槽发布基础上加入 WAV IR 导入、格式适配、实时卷积与安全替换。

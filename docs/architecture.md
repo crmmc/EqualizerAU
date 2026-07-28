@@ -13,16 +13,16 @@ bundle ID 为 `com.ruimingchen.EqualizerAU`。M1 正常构建产物位于 config
 
 `EqualizerAUM1Runtime` 提供正式 C ABI v3、有限值 Gain/Biquad/Convolution chain、10 ms 双槽切换、Prepared
 发布和退休回收；`EqualizerAUM1` 独立拥有原生 Tap、Aggregate、捕获、输出和代次生命周期。
-配置层使用有序的 typed processing-node 快照以及版本化规范 JSON。schema v7 当前包含
+配置层使用有序的 typed processing-node 快照以及版本化规范 JSON。schema v8 当前包含
 非 DSP 的 Channels 作用域节点，以及 Preamp、任意频率控制点 Graphic EQ 和 Convolution 效果节点：
 启用的 Channels 选择后续效果的目标声道，直到下一个启用的 Channels 节点覆盖；停用的 Channels
 不改变作用域，所有节点的 `isEnabled` 均由 typed 字段持久化，效果节点不重复保存声道字段。
 schema v1 读取时按有效作用域
 变化确定性插入 Channels 节点，保留原 Preamp UUID/顺序，并以确定性加盐避开任何已有 UUID；
-下一次 Save 写出 v7；schema v2/v3/v4/v5/v6 也会在读取后规范化为 v7，其中旧版 Channels 缺省迁移为
+下一次 Save 写出 v8；schema v2/v3/v4/v5/v6/v7 也会在读取后规范化为 v8，其中旧版 Channels 缺省迁移为
 启用，schema v3-v5 的固定 15 段 Graphic EQ 在按旧契约严格验证后逐点迁移；schema v6 的
-20...30 kHz 点原样保留。编码结果按键排序、可读格式、
-保留 slash 并以 LF 结尾，最终 UTF-8
+20...30 kHz 点原样保留；schema v4-v7 的 Convolution `storageID` 确定性映射为现有历史
+sidecar 的绝对路径，迁移不读取或删除文件。编码结果按键排序、可读格式、
 数据上限为 `4 MiB`。设备无关校验不依赖输出布局。
 
 输出声道标识优先采用设备 `preferred channel layout` 的标准 speaker labels；布局未标注的声道再由
@@ -31,13 +31,15 @@ schema v1 读取时按有效作用域
 布局语义变完整后使旧配置失效；不根据总声道数推断 5.1/7.1 顺序。应用启动、停止、保存及重新激活时可
 被动刷新默认输出布局，此发现不创建 Tap/Aggregate 或启动音频。
 
-Convolution 配置只引用应用数据目录中的不可变 WAV sidecar，不保存外部路径或 WAV bytes。
-导入接受最大 `32 MiB`、最长 2 秒、1...64 声道、8...768 kHz 的 RIFF/WAVE linear PCM 8/16/24/32 或
-Float32，拒绝空、非有限及 subnormal 样本。文件和目录同步后才返回引用；加载时重新验证
-SHA-256 与来源元数据。控制线程按真实输出采样率执行 windowed-sinc SRC；单声道 IR 广播，
-多声道 IR 必须与当前有效 Channels 作用域严格等宽并按作用域顺序映射。
-没有可发现输出或路线正在转换时，Save 仍先验证启用节点的 IR sidecar 存在性、hash、WAV 与来源
-metadata；只有依赖真实布局的 SRC、声道映射和容量编译可以等待输出。
+Convolution 配置保存用户选择 WAV 的标准化绝对源路径，不复制、移动、删除或监听外部文件。
+Add/Replace 只修改草稿引用；Start、运行中 Save、路线重建和输出格式恢复在 detached 控制路径
+重新读取最大 `32 MiB`、最长 2 秒、1...64 声道、8...768 kHz 的 RIFF/WAVE linear PCM
+8/16/24/32 或 Float32，拒绝空、非有限和 subnormal 样本，并按真实输出采样率执行 windowed-sinc
+SRC。单声道 IR 广播，多声道 IR 必须与当前有效 Channels 作用域严格等宽并按作用域顺序映射。
+文件不可用、不可读、损坏、超限、不支持或声道不匹配时，该节点在对应 Prepared 中有效旁路并
+产生 owned diagnostic，配置 `isEnabled` 不变；下一次生效重新尝试。schema、stage、tap 和
+Prepared 全局容量错误仍整批失败。没有可发现输出时 Save 只做设备无关结构校验，资源读取延后到
+真正得到布局的生效边界。
 
 Graphic EQ 保存 `0...512` 个按频率严格升序的正有限频率控制点，不设输入频率上限，gain 为
 `-24...+24 dB`。Builder 先排除 20 Hz...20 kHz 之外的点，再用域内点按对数频率插值；域外点
@@ -54,7 +56,8 @@ Runtime ABI v3 的 Convolution stage 引用 Prepared 中的 planar taps。Graphi
 逐样本直接卷积，余下 tail 使用 256-frame partition、512-point FFT 的 overlap-add，因此不引入
 算法延迟并可与 Gain/Biquad 任意排序。所有 taps 复制、FFT plan 和频谱预计算均在控制线程完成；
 回调只使用预分配状态。单 Prepared 最多 8 个 Convolution stages，所有声道实例 taps 合计最多
-131072；未引用 descriptor、格式错误和容量超限均在发布前失败。
+131072；未引用 descriptor、格式错误和全局容量超限均在发布前失败。WAV taps 在每次生效时重新
+生成并由新 Prepared 深拷贝持有，不使用跨生效周期的长期 IR 缓存。
 
 `M1ConfigurationStore` actor 串行化完整快照提交。它通过同目录临时文件、文件同步、原子
 替换和目录同步维护 `config.json` 与上一版完整 `config.previous.json`；首次创建和 Repair

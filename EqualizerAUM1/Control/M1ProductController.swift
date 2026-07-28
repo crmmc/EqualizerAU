@@ -703,6 +703,8 @@ actor M1ProductController {
         pendingRecoveryReason = nil
         audioRecovery = .inactive
         audioState = .starting
+        expectedDiagnostics = nil
+        expectedConfigurationGeneration = nil
         visibleError = nil
         return startupConfiguration
     }
@@ -1094,6 +1096,7 @@ actor M1ProductController {
         layout = startedLayout
         availableLayout = startedLayout
         activeDiagnostics = diagnostics
+        expectedDiagnostics = nil
         if diagnostics != nil { activeConfigurationGeneration = commitGeneration }
         expectedConfigurationGeneration = nil
         persistence = draft == saved ? .clean : .modified
@@ -1135,9 +1138,25 @@ actor M1ProductController {
         let result = await store.retryUncertain(generation: generation)
         applyPersistenceResult(result)
         if case .succeeded = result, let application = uncertainApplication {
+            let preparation: M1AudioConfigurationPreparation
+            do {
+                preparation = try await audio.prepare(configuration: application.snapshot)
+            } catch {
+                uncertainApplication = nil
+                persistence = .savedPendingStart
+                expectedDiagnostics = nil
+                expectedConfigurationGeneration = nil
+                visibleError = String(describing: error)
+                throw error
+            }
+            let refreshedApplication = PendingApplication(
+                generation: application.generation,
+                snapshot: application.snapshot,
+                preparation: preparation
+            )
             uncertainApplication = nil
             await invalidatePendingApplication()
-            try await publishIfRunning(application)
+            try await publishIfRunning(refreshedApplication)
         }
         if case .uncertain = result { return }
         try await persistPendingEffects()

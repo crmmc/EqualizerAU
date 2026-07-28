@@ -2,11 +2,18 @@
 
 | 属性 | 内容 |
 |---|---|
-| 状态 | 已接受并实现 |
+| 状态 | 部分被 ADR-0014 取代；DSP/ABI 决策仍有效 |
 | 日期 | 2026-07-21 |
 | 范围 | WAV IR、配置引用、SRC、Runtime ABI 与实时卷积 |
 | 产品需求 | [`prd.md`](../prd.md) |
 | 前置决策 | [`0003-prepared-dsp-chain-publication.md`](0003-prepared-dsp-chain-publication.md) |
+
+## 后续修订
+
+2026-07-28，ADR-0014 取代本文关于 immutable sidecar、storage ID、导入时复制、hash/metadata
+预检和资源失败整批拒绝的决策。当前 schema v8 保存外部绝对源路径，在每次真正生效时读取；
+资源局部失败只旁路所属节点。本文的 WAV 格式边界、SRC、声道映射、ABI v3 hybrid kernel、
+容量、Prepared 所有权和实时线程约束继续有效。
 
 ## 背景
 

@@ -221,11 +221,12 @@ flowchart LR
 ### 7.5 卷积
 
 - 至少支持 WAV IR；
-- 展示文件名、采样率、声道数和时长；
-- IR 与运行格式不兼容时自动适配或给出明确错误；
-- 单声道 IR 可用于常见双声道输出；
-- 多声道映射规则必须在支持前明确；
-- 损坏、超限或不支持的文件不得替换上一份有效处理；
+- 展示文件名、完整源路径、最后成功加载的采样率、声道数和时长；
+- 配置只保存外部绝对源路径，不复制、移动、删除或自动监听用户 WAV；
+- Start、运行中 Save、路线重建和格式恢复时重新读取、校验并按当前输出格式加载；
+- 文件不可用、损坏、超限、不支持或声道不匹配时，仅旁路所属节点并显示原因，不改写其启用状态；
+- 单声道 IR 可用于常见双声道输出，多声道严格按当前有效 Channels 作用域顺序映射；
+- schema 或全局 stage/tap/Prepared 容量错误仍整批拒绝，不得静默丢弃合法节点；
 - 展示该节点引入的处理延迟。
 
 ### 7.6 配置管理
@@ -350,8 +351,10 @@ MVP 完成需满足：
 | M5 EqualizerAPO 编辑器对齐 | 处理器编排和处理器交互经本地源码对齐后形成一致、紧凑且可流畅操作的编辑器 |
 | M6 任意频率 Graphic EQ | 用户可编辑任意频率控制点，可见曲线、保存配置和实际频响遵循同一契约 |
 | M7 开源技术预览发布 | GPL 来源完整、源码与 arm64 ad-hoc Release ZIP 可验证重放，用户可按逐应用 Gatekeeper 流程安装 |
+| M8 Convolution 外部源路径 | schema v8 不复制 WAV，每次生效重新加载，资源局部故障可见旁路并自动恢复 |
 
-M0 已完成，详见 [`milestones/M0-native-route.md`](./milestones/M0-native-route.md)。
+M0 已完成，详见 [`milestones/M0-native-route.md`](./milestones/M0-native-route.md)。M8 已完成并关闭，
+验收证据见 [`milestones/M8-convolution-source-path.md`](./milestones/M8-convolution-source-path.md)。
 
 ## 12. 待确认产品事项
 

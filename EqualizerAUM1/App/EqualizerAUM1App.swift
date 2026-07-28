@@ -102,22 +102,14 @@ final class M1AppModel: ObservableObject {
 
     func importConvolution(before id: UUID?) {
         guard let url = selectWAV() else { return }
-        performEdit(onError: { self.presentConvolutionError($0, fileName: url.lastPathComponent) }) {
-            let ir = try await Task.detached {
-                try M1ConvolutionIRStore().importWAV(at: url)
-            }.value
-            try await self.controller.addConvolution(before: id, ir: ir)
-        }
+        let ir = M1ConvolutionIRStore.reference(sourceURL: url)
+        performEdit { try await self.controller.addConvolution(before: id, ir: ir) }
     }
 
     func replaceConvolutionIR(id: UUID) {
         guard let url = selectWAV() else { return }
-        performEdit(onError: { self.presentConvolutionError($0, fileName: url.lastPathComponent) }) {
-            let ir = try await Task.detached {
-                try M1ConvolutionIRStore().importWAV(at: url)
-            }.value
-            try await self.controller.setConvolutionIR(id: id, ir: ir)
-        }
+        let ir = M1ConvolutionIRStore.reference(sourceURL: url)
+        performEdit { try await self.controller.setConvolutionIR(id: id, ir: ir) }
     }
 
     func delete(_ id: UUID) {
@@ -291,45 +283,6 @@ final class M1AppModel: ObservableObject {
         return panel.runModal() == .OK ? panel.url : nil
     }
 
-    private func presentConvolutionError(_ error: any Error, fileName: String) {
-        let reason: String
-        if let error = error as? M1ConvolutionIRError {
-            switch error {
-            case .fileTooLarge:
-                reason = "The file exceeds the 32 MiB import limit."
-            case .invalidWAV:
-                reason = "The file is not a valid RIFF/WAVE file or is structurally damaged."
-            case .unsupportedEncoding:
-                reason = "The WAV encoding is unsupported. Use PCM 8/16/24/32-bit or Float32 audio."
-            case .invalidMetadata:
-                reason = "The WAV sample rate, channel count, or block metadata is invalid."
-            case .emptyAudio:
-                reason = "The WAV file contains no audio frames."
-            case .durationExceeded:
-                reason = "The impulse response exceeds the 2-second duration limit."
-            case .invalidSample:
-                reason = "The audio contains a non-finite, subnormal, or otherwise invalid sample."
-            case .storageAlreadyExists:
-                reason = "The imported resource conflicts with an existing stored impulse response."
-            case .missingResource:
-                reason = "The stored impulse-response resource is missing."
-            case .hashMismatch:
-                reason = "The stored impulse-response resource failed its integrity check."
-            case .metadataMismatch:
-                reason = "The stored impulse-response metadata no longer matches its audio data."
-            case .resourceIO:
-                reason = "The file or impulse-response storage could not be read or written."
-            }
-        } else {
-            reason = "The impulse response could not be applied to the current configuration."
-        }
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Unable to Import Impulse Response"
-        alert.informativeText = "\(fileName) was not imported. \(reason) The existing configuration was not changed."
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
-    }
 
     func presentDiagnostics() {
         guard !terminationPending else { return }
@@ -1042,6 +995,9 @@ private struct M1EditorView: View {
             }
             details.append("Graphic EQ FIR resolution: \(errors.joined(separator: ", "))")
         }
+        if !diagnostics.convolutionBypasses.isEmpty {
+            details.append("Convolution bypassed: \(diagnostics.convolutionBypasses.count)")
+        }
         return details
     }
 
@@ -1256,17 +1212,31 @@ private struct M1EditorView: View {
 
     private func convolutionEditor(_ node: M1ProcessingNode) -> some View {
         let ir = node.convolutionIR!
-        let duration = Double(ir.frameCount) / ir.sampleRate
+        let source = convolutionSourceDiagnostic(nodeID: node.id, reference: ir)
+        let bypass = convolutionBypassDiagnostic(nodeID: node.id, reference: ir)
         return HStack(spacing: 8) {
             VStack(alignment: .trailing, spacing: 2) {
-                Text(ir.originalFileName)
+                Text(ir.sourcePath)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .help(ir.originalFileName)
-                Text("\(Int(ir.sampleRate)) Hz · \(ir.channelCount) ch · \(duration.formatted(.number.precision(.fractionLength(3)))) s")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .help(ir.sourcePath)
+                if let bypass {
+                    Text("Bypassed · \(convolutionBypassText(bypass.reason))")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .lineLimit(1)
+                } else if let source {
+                    let duration = Double(source.sourceFrameCount) / source.sourceSampleRate
+                    Text("\(Int(source.sourceSampleRate)) Hz · \(source.sourceChannelCount) ch · \(duration.formatted(.number.precision(.fractionLength(3)))) s")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else {
+                    Text("Not loaded · Save or Start to apply")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
             Button { model.replaceConvolutionIR(id: node.id) } label: {
@@ -1276,6 +1246,43 @@ private struct M1EditorView: View {
             .buttonStyle(.plain)
             .help("Replace impulse response")
             .accessibilityLabel("Replace impulse response")
+        }
+    }
+
+    private func convolutionSourceDiagnostic(
+        nodeID: UUID,
+        reference: M1ConvolutionIRReference
+    ) -> M1ConvolutionSourceDiagnostic? {
+        let diagnostics = model.snapshot.expectedDiagnostics ?? model.snapshot.activeDiagnostics
+        return diagnostics?.convolutionSources.first {
+            $0.nodeID == nodeID && $0.source == reference
+        }
+    }
+
+    private func convolutionBypassDiagnostic(
+        nodeID: UUID,
+        reference: M1ConvolutionIRReference
+    ) -> M1ConvolutionBypassDiagnostic? {
+        let diagnostics = model.snapshot.expectedDiagnostics ?? model.snapshot.activeDiagnostics
+        return diagnostics?.convolutionBypasses.first {
+            $0.nodeID == nodeID && $0.source == reference
+        }
+    }
+
+    private func convolutionBypassText(_ reason: M1ConvolutionBypassReason) -> String {
+        switch reason {
+        case .resource(.missingResource): return "source unavailable"
+        case .resource(.resourceIO): return "source unreadable"
+        case .resource(.fileTooLarge): return "file exceeds 32 MiB"
+        case .resource(.invalidWAV): return "invalid WAV"
+        case .resource(.unsupportedEncoding): return "unsupported WAV encoding"
+        case .resource(.invalidMetadata): return "invalid WAV metadata"
+        case .resource(.emptyAudio): return "empty WAV"
+        case .resource(.durationExceeded): return "IR exceeds 2 seconds"
+        case .resource(.invalidSample): return "invalid audio sample"
+        case .resource: return "source invalid"
+        case let .channelCountMismatch(expected, actual):
+            return "expected \(expected) ch, found \(actual)"
         }
     }
 

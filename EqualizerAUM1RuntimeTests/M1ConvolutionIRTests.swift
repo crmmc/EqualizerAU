@@ -14,32 +14,29 @@ final class M1ConvolutionIRTests: XCTestCase {
         try? FileManager.default.removeItem(at: temporaryDirectory)
     }
 
-    func testPCM16ImportPersistsImmutableSidecarAndReloadsVerifiedMetadata() throws {
+    func testPCM16SourcePathLoadsMetadataWithoutCreatingSidecar() throws {
         let source = temporaryDirectory.appendingPathComponent("Room IR.wav")
         try wavPCM16(sampleRate: 48_000, channels: [[0, 0.5, -0.5, 0]]).write(to: source)
-        let store = M1ConvolutionIRStore(directoryURL: temporaryDirectory.appendingPathComponent("store"))
+        let storeDirectory = temporaryDirectory.appendingPathComponent("store")
+        let store = M1ConvolutionIRStore(directoryURL: storeDirectory)
 
-        let reference = try store.importWAV(at: source)
+        let reference = M1ConvolutionIRStore.reference(sourceURL: source)
         let loaded = try store.load(reference: reference, targetSampleRate: 48_000)
 
+        XCTAssertEqual(reference.sourcePath, source.standardizedFileURL.path)
         XCTAssertEqual(reference.originalFileName, "Room IR.wav")
-        XCTAssertEqual(reference.sampleRate, 48_000)
-        XCTAssertEqual(reference.channelCount, 1)
-        XCTAssertEqual(reference.frameCount, 4)
-        XCTAssertEqual(reference.sha256.count, 64)
+        XCTAssertEqual(loaded.sourceSampleRate, 48_000)
+        XCTAssertEqual(loaded.sourceChannelCount, 1)
+        XCTAssertEqual(loaded.sourceFrameCount, 4)
         XCTAssertFloatArraysEqual(loaded.channels[0], [0, 0.5, -0.5, 0], accuracy: 0.000_1)
-        let sidecar = store.directoryURL.appendingPathComponent("\(reference.storageID.uuidString).wav")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: sidecar.path))
-        XCTAssertThrowsError(try store.importWAV(at: source, storageID: reference.storageID)) {
-            XCTAssertEqual($0 as? M1ConvolutionIRError, .storageAlreadyExists)
-        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: storeDirectory.path))
     }
 
     func testFloat32ImportAndWindowedSincSampleRateConversion() throws {
         let source = temporaryDirectory.appendingPathComponent("delta.wav")
         try wavFloat32(sampleRate: 24_000, channels: [[1, 0, 0, 0]]).write(to: source)
         let store = M1ConvolutionIRStore(directoryURL: temporaryDirectory.appendingPathComponent("store"))
-        let reference = try store.importWAV(at: source)
+        let reference = M1ConvolutionIRStore.reference(sourceURL: source)
 
         let loaded = try store.load(reference: reference, targetSampleRate: 48_000)
 
@@ -54,7 +51,7 @@ final class M1ConvolutionIRTests: XCTestCase {
         let source = temporaryDirectory.appendingPathComponent("high-frequency.wav")
         try wavFloat32(sampleRate: 768_000, channels: [samples]).write(to: source)
         let store = M1ConvolutionIRStore(directoryURL: temporaryDirectory.appendingPathComponent("store"))
-        let reference = try store.importWAV(at: source)
+        let reference = M1ConvolutionIRStore.reference(sourceURL: source)
 
         let loaded = try store.load(reference: reference, targetSampleRate: 48_000)
         let interior = loaded.channels[0].dropFirst(32).dropLast(32)
@@ -67,14 +64,14 @@ final class M1ConvolutionIRTests: XCTestCase {
         let store = M1ConvolutionIRStore(directoryURL: temporaryDirectory.appendingPathComponent("store"))
         let downsampleSource = temporaryDirectory.appendingPathComponent("single-768k.wav")
         try wavFloat32(sampleRate: 768_000, channels: [[1]]).write(to: downsampleSource)
-        let downsampleReference = try store.importWAV(at: downsampleSource)
+        let downsampleReference = M1ConvolutionIRStore.reference(sourceURL: downsampleSource)
         let downsampled = try store.load(reference: downsampleReference, targetSampleRate: 8_000)
         XCTAssertEqual(downsampled.channels[0].count, 1)
         XCTAssertEqual(downsampled.channels[0][0], 1, accuracy: 0.0001)
 
         let upsampleSource = temporaryDirectory.appendingPathComponent("single-8k.wav")
         try wavFloat32(sampleRate: 8_000, channels: [[1]]).write(to: upsampleSource)
-        let upsampleReference = try store.importWAV(at: upsampleSource)
+        let upsampleReference = M1ConvolutionIRStore.reference(sourceURL: upsampleSource)
         let upsampled = try store.load(reference: upsampleReference, targetSampleRate: 768_000)
         XCTAssertEqual(upsampled.channels[0].count, 96)
         XCTAssertEqual(upsampled.channels[0][0], 1.0 / 96.0, accuracy: 0.0001)
@@ -84,7 +81,7 @@ final class M1ConvolutionIRTests: XCTestCase {
         var centeredDelta = Array(repeating: Float.zero, count: 65)
         centeredDelta[32] = 1
         try wavFloat32(sampleRate: 8_000, channels: [centeredDelta]).write(to: centeredSource)
-        let centeredReference = try store.importWAV(at: centeredSource)
+        let centeredReference = M1ConvolutionIRStore.reference(sourceURL: centeredSource)
         let centered = try store.load(reference: centeredReference, targetSampleRate: 768_000)
         XCTAssertEqual(centered.channels[0].reduce(0, +), 1, accuracy: 0.001)
     }
@@ -104,14 +101,16 @@ final class M1ConvolutionIRTests: XCTestCase {
         for (name, data, expected) in fixtures {
             let url = temporaryDirectory.appendingPathComponent(name)
             try data.write(to: url)
-            XCTAssertThrowsError(try store.importWAV(at: url), name) {
+            let reference = M1ConvolutionIRStore.reference(sourceURL: url)
+            XCTAssertThrowsError(try store.load(reference: reference, targetSampleRate: 48_000), name) {
                 XCTAssertEqual($0 as? M1ConvolutionIRError, expected, name)
             }
         }
 
         let oversized = temporaryDirectory.appendingPathComponent("oversized.wav")
         try Data(repeating: 0, count: M1ConvolutionIRStore.maximumFileSize + 1).write(to: oversized)
-        XCTAssertThrowsError(try store.importWAV(at: oversized)) {
+        let oversizedReference = M1ConvolutionIRStore.reference(sourceURL: oversized)
+        XCTAssertThrowsError(try store.load(reference: oversizedReference, targetSampleRate: 48_000)) {
             XCTAssertEqual($0 as? M1ConvolutionIRError, .fileTooLarge)
         }
     }
@@ -120,19 +119,22 @@ final class M1ConvolutionIRTests: XCTestCase {
         let store = M1ConvolutionIRStore(directoryURL: temporaryDirectory.appendingPathComponent("store"))
         let malformed = temporaryDirectory.appendingPathComponent("malformed-extensible.wav")
         try wavExtensible(subformatEncoding: 0x0001_0001).write(to: malformed)
-        XCTAssertThrowsError(try store.importWAV(at: malformed)) {
+        let malformedReference = M1ConvolutionIRStore.reference(sourceURL: malformed)
+        XCTAssertThrowsError(try store.load(reference: malformedReference, targetSampleRate: 48_000)) {
             XCTAssertEqual($0 as? M1ConvolutionIRError, .unsupportedEncoding)
         }
 
         let excessiveRate = temporaryDirectory.appendingPathComponent("excessive-rate.wav")
         try wavPCM16(sampleRate: 768_001, channels: [[1]]).write(to: excessiveRate)
-        XCTAssertThrowsError(try store.importWAV(at: excessiveRate)) {
+        let excessiveReference = M1ConvolutionIRStore.reference(sourceURL: excessiveRate)
+        XCTAssertThrowsError(try store.load(reference: excessiveReference, targetSampleRate: 48_000)) {
             XCTAssertEqual($0 as? M1ConvolutionIRError, .invalidMetadata)
         }
 
         let insufficientRate = temporaryDirectory.appendingPathComponent("insufficient-rate.wav")
         try wavPCM16(sampleRate: 7_999, channels: [[1]]).write(to: insufficientRate)
-        XCTAssertThrowsError(try store.importWAV(at: insufficientRate)) {
+        let insufficientReference = M1ConvolutionIRStore.reference(sourceURL: insufficientRate)
+        XCTAssertThrowsError(try store.load(reference: insufficientReference, targetSampleRate: 48_000)) {
             XCTAssertEqual($0 as? M1ConvolutionIRError, .invalidMetadata)
         }
 
@@ -151,37 +153,74 @@ final class M1ConvolutionIRTests: XCTestCase {
         }
     }
 
-    func testLoadRejectsMissingTamperedAndMetadataMismatch() throws {
+    func testLoadUsesCurrentSourceContentsAndReportsMissingFile() throws {
         let source = temporaryDirectory.appendingPathComponent("valid.wav")
         try wavPCM16(sampleRate: 48_000, channels: [[1, 0]]).write(to: source)
         let store = M1ConvolutionIRStore(directoryURL: temporaryDirectory.appendingPathComponent("store"))
-        let reference = try store.importWAV(at: source)
-        let sidecar = store.directoryURL.appendingPathComponent("\(reference.storageID.uuidString).wav")
+        let reference = M1ConvolutionIRStore.reference(sourceURL: source)
 
-        var tampered = try Data(contentsOf: sidecar)
-        tampered[tampered.count - 1] ^= 1
-        try tampered.write(to: sidecar)
-        XCTAssertThrowsError(try store.load(reference: reference, targetSampleRate: 48_000)) {
-            XCTAssertEqual($0 as? M1ConvolutionIRError, .hashMismatch)
-        }
+        let first = try store.load(reference: reference, targetSampleRate: 48_000)
+        XCTAssertEqual(first.channels[0][0], 0.999_969, accuracy: 0.000_1)
 
-        try FileManager.default.removeItem(at: sidecar)
+        try wavPCM16(sampleRate: 48_000, channels: [[0.25, 0]]).write(to: source)
+        let reloaded = try store.load(reference: reference, targetSampleRate: 48_000)
+        XCTAssertEqual(reloaded.channels[0][0], 0.25, accuracy: 0.000_1)
+
+        try FileManager.default.removeItem(at: source)
         XCTAssertThrowsError(try store.load(reference: reference, targetSampleRate: 48_000)) {
             XCTAssertEqual($0 as? M1ConvolutionIRError, .missingResource)
         }
+    }
 
-        let second = try store.importWAV(at: source)
-        let wrong = M1ConvolutionIRReference(
-            storageID: second.storageID,
-            originalFileName: second.originalFileName,
-            sha256: second.sha256,
-            sampleRate: second.sampleRate,
-            channelCount: second.channelCount,
-            frameCount: second.frameCount + 1
+    func testBuilderBypassesMissingSourceAndRestoresItOnNextBuild() throws {
+        let source = temporaryDirectory.appendingPathComponent("recoverable.wav")
+        let reference = M1ConvolutionIRStore.reference(sourceURL: source)
+        let node = M1ProcessingNode.convolution(ir: reference)
+        let store = M1ConvolutionIRStore(directoryURL: temporaryDirectory)
+
+        let missing = try M1ProcessingBuilder.build(
+            nodes: [node],
+            layout: stereoLayout(),
+            irLoader: store
         )
-        XCTAssertThrowsError(try store.load(reference: wrong, targetSampleRate: 48_000)) {
-            XCTAssertEqual($0 as? M1ConvolutionIRError, .metadataMismatch)
-        }
+        XCTAssertEqual(missing.stagesByChannel, [[], []])
+        XCTAssertEqual(
+            missing.diagnostics.convolutionBypasses,
+            [
+                M1ConvolutionBypassDiagnostic(
+                    nodeID: node.id,
+                    source: reference,
+                    reason: .resource(.missingResource)
+                ),
+            ]
+        )
+
+        try wavFloat32(sampleRate: 48_000, channels: [[1, 0]]).write(to: source)
+        let restored = try M1ProcessingBuilder.build(
+            nodes: [node],
+            layout: stereoLayout(),
+            irLoader: store
+        )
+        XCTAssertTrue(restored.diagnostics.convolutionBypasses.isEmpty)
+        XCTAssertEqual(restored.diagnostics.convolutionSources.map(\.nodeID), [node.id])
+        XCTAssertEqual(restored.stagesByChannel.map(\.count), [1, 1])
+    }
+
+    func testCancelledMissingSourceLoadPreservesCancellation() async {
+        let reference = M1ConvolutionIRReference(sourcePath: "/missing/cancelled.wav")
+        let store = M1ConvolutionIRStore()
+        let cancelled = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            do {
+                _ = try store.load(reference: reference, targetSampleRate: 48_000)
+                return false
+            } catch is CancellationError {
+                return true
+            } catch {
+                return false
+            }
+        }.value
+        XCTAssertTrue(cancelled)
     }
 
     func testBuilderBroadcastsMonoFlushesGainAndReportsLatencyAndSource() throws {
@@ -226,16 +265,22 @@ final class M1ConvolutionIRTests: XCTestCase {
         XCTAssertEqual(rightTaps[0], 0.25, accuracy: 0.000_1)
         XCTAssertEqual(leftTaps[0], 0.75, accuracy: 0.000_1)
 
-        XCTAssertThrowsError(try M1ProcessingBuilder.build(
+        let mismatched = try M1ProcessingBuilder.build(
             nodes: [.channels(selection: .identifiers([left])), convolution],
             layout: stereoLayout(),
             irLoader: fixture.store
-        )) {
-            XCTAssertEqual(
-                $0 as? M1ProcessingBuildError,
-                .convolutionChannelCountMismatch(nodeID: convolution.id, expected: 1, actual: 2)
-            )
-        }
+        )
+        XCTAssertEqual(mismatched.stagesByChannel, [[], []])
+        XCTAssertEqual(
+            mismatched.diagnostics.convolutionBypasses,
+            [
+                M1ConvolutionBypassDiagnostic(
+                    nodeID: convolution.id,
+                    source: reference,
+                    reason: .channelCountMismatch(expected: 1, actual: 2)
+                ),
+            ]
+        )
     }
 
     func testBuilderDoesNotLoadForEntirelyUnresolvedScopeAndEnforcesConvolutionCapacity() throws {
@@ -308,18 +353,11 @@ final class M1ConvolutionIRTests: XCTestCase {
         let store = M1ConvolutionIRStore(
             directoryURL: temporaryDirectory.appendingPathComponent("store-\(UUID().uuidString)")
         )
-        return (store, try store.importWAV(at: source))
+        return (store, M1ConvolutionIRStore.reference(sourceURL: source))
     }
 
     private func reference(storageID: UUID) -> M1ConvolutionIRReference {
-        M1ConvolutionIRReference(
-            storageID: storageID,
-            originalFileName: "missing.wav",
-            sha256: String(repeating: "0", count: 64),
-            sampleRate: 48_000,
-            channelCount: 1,
-            frameCount: 1
-        )
+        M1ConvolutionIRReference(sourcePath: "/missing/\(storageID.uuidString).wav")
     }
 
     private func stereoLayout() -> M1OutputLayoutSnapshot {

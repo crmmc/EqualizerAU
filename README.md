@@ -46,6 +46,8 @@ FIR 数值探针和 ABI v3 Release 性能基线；ADR 0013 已获批准，schema
 插值或 FIR 设计，域外目标为 0 dB，有限 FIR 的自然域外影响不做硬切。M6 已完成并关闭。
 M7 已确定采用无 Developer ID、未 notarize 的 arm64 开源技术预览：源码与 GPL 归属、ad-hoc
 Release ZIP、SHA-256 和逐应用 Gatekeeper 授权构成发布契约，不加入付费 Apple Developer Program。
+M8 已将 Convolution 升级为 schema v8 外部源路径：不复制 WAV，每次生效重新读取，资源局部
+故障只旁路所属节点并保留用户启用意图；自动化、原生 GUI 与真实音频验收均已通过，M8 已完成并关闭。
 M0 的源码、测试和构建产物只作参考，不被 M1 复用。BlackHole 只作为未启用的后备路线，
 不是当前依赖，也无需安装。
 
@@ -150,6 +152,7 @@ flowchart TD
 | [`docs/milestones/M5-equalizerapo-editor-parity.md`](docs/milestones/M5-equalizerapo-editor-parity.md) | M5 EqualizerAPO 编辑器对齐目标、探索门禁、范围与退出条件 |
 | [`docs/milestones/M6-arbitrary-point-graphic-equalizer.md`](docs/milestones/M6-arbitrary-point-graphic-equalizer.md) | M6 任意频率 Graphic EQ 目标、决策门禁、范围与退出条件 |
 | [`docs/milestones/M7-open-source-preview-release.md`](docs/milestones/M7-open-source-preview-release.md) | M7 无 Developer ID 的 arm64 开源技术预览发布契约与验收门禁 |
+| [`docs/milestones/M8-convolution-source-path.md`](docs/milestones/M8-convolution-source-path.md) | M8 Convolution 外部源路径、schema v8、生效时加载和有效旁路契约 |
 | [`docs/future-equalizerapo-import.md`](docs/future-equalizerapo-import.md) | 未排期的 EqualizerAPO 导入与多文件 Include 未来需求池，可按需求卡选择范围 |
 | [`CONTEXT.md`](CONTEXT.md) | 产品与处理链的规范领域词汇 |
 | [`AGENTS.md`](AGENTS.md) | 编码 Agent 的仓库工作规范 |

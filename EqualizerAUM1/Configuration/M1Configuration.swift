@@ -1,7 +1,7 @@
 import Foundation
 
 struct M1ConfigurationSnapshot: Equatable, Sendable {
-    static let schemaVersion = 7
+    static let schemaVersion = 8
 
     var effectsEnabled: Bool
     var nodes: [M1ProcessingNode]
@@ -120,6 +120,10 @@ enum M1ConfigurationCodec {
             try M1JSONShapeValidator.validateConfiguration(data, schemaVersion: 6)
             let wire = try JSONDecoder().decode(M1ConfigurationWire.self, from: data)
             snapshot = try wire.snapshot(expectedSchemaVersion: 6)
+        case 7:
+            try M1JSONShapeValidator.validateConfiguration(data, schemaVersion: 7)
+            let wire = try JSONDecoder().decode(M1ConfigurationWire.self, from: data)
+            snapshot = try wire.snapshot(expectedSchemaVersion: 7)
         case M1ConfigurationSnapshot.schemaVersion:
             try M1JSONShapeValidator.validateConfiguration(
                 data,
@@ -203,12 +207,16 @@ enum M1JSONShapeValidator {
                     throw M1ConfigurationCodecError.invalidJSON
                 case M1ProcessingNodeKind.convolution.rawValue where schemaVersion >= 4:
                     allowedKeys = ["id", "type", "isEnabled", "ir"]
-                    guard let ir = node["ir"] as? [String: Any],
-                          Set(ir.keys) == [
-                              "storageID", "originalFileName", "sha256", "sampleRate",
-                              "channelCount", "frameCount",
-                          ]
-                    else {
+                    guard let ir = node["ir"] as? [String: Any] else {
+                        throw M1ConfigurationCodecError.invalidJSON
+                    }
+                    let irKeys: Set<String> = schemaVersion >= 8
+                        ? ["sourcePath"]
+                        : [
+                            "storageID", "originalFileName", "sha256", "sampleRate",
+                            "channelCount", "frameCount",
+                        ]
+                    guard Set(ir.keys) == irKeys else {
                         throw M1ConfigurationCodecError.invalidJSON
                     }
                 case M1ProcessingNodeKind.convolution.rawValue:
@@ -486,7 +494,11 @@ struct M1ProcessingNodeWire: Codable {
                   bands == nil else {
                 throw M1ConfigurationCodecError.invalidJSON
             }
-            return .convolution(id: id, isEnabled: isEnabled, ir: ir.reference)
+            return .convolution(
+                id: id,
+                isEnabled: isEnabled,
+                ir: try ir.reference(schemaVersion: schemaVersion)
+            )
         default:
             throw M1ConfigurationCodecError.unknownNodeType(type)
         }
@@ -494,31 +506,55 @@ struct M1ProcessingNodeWire: Codable {
 }
 
 struct M1ConvolutionIRReferenceWire: Codable {
-    let storageID: UUID
-    let originalFileName: String
-    let sha256: String
-    let sampleRate: Double
-    let channelCount: Int
-    let frameCount: Int
+    let sourcePath: String?
+    let storageID: UUID?
+    let originalFileName: String?
+    let sha256: String?
+    let sampleRate: Double?
+    let channelCount: Int?
+    let frameCount: Int?
 
     init(_ reference: M1ConvolutionIRReference) {
-        storageID = reference.storageID
-        originalFileName = reference.originalFileName
-        sha256 = reference.sha256
-        sampleRate = reference.sampleRate
-        channelCount = reference.channelCount
-        frameCount = reference.frameCount
+        sourcePath = reference.sourcePath
+        storageID = nil
+        originalFileName = nil
+        sha256 = nil
+        sampleRate = nil
+        channelCount = nil
+        frameCount = nil
     }
 
-    var reference: M1ConvolutionIRReference {
-        M1ConvolutionIRReference(
-            storageID: storageID,
-            originalFileName: originalFileName,
-            sha256: sha256,
-            sampleRate: sampleRate,
-            channelCount: channelCount,
-            frameCount: frameCount
-        )
+    func reference(schemaVersion: Int) throws -> M1ConvolutionIRReference {
+        if schemaVersion >= 8 {
+            guard let sourcePath, storageID == nil, originalFileName == nil, sha256 == nil,
+                  sampleRate == nil, channelCount == nil, frameCount == nil
+            else {
+                throw M1ConfigurationCodecError.invalidJSON
+            }
+            return M1ConvolutionIRReference(sourcePath: sourcePath)
+        }
+        guard sourcePath == nil, let storageID, let originalFileName, let sha256,
+              let sampleRate, let channelCount, let frameCount
+        else {
+            throw M1ConfigurationCodecError.invalidJSON
+        }
+        guard !originalFileName.isEmpty,
+              originalFileName == (originalFileName as NSString).lastPathComponent,
+              sha256.utf8.count == 64,
+              sha256.utf8.allSatisfy({
+                  (UInt8(ascii: "0")...UInt8(ascii: "9")).contains($0)
+                      || (UInt8(ascii: "a")...UInt8(ascii: "f")).contains($0)
+              }),
+              sampleRate.isFinite,
+              sampleRate >= M1ConvolutionIRStore.minimumSampleRate,
+              sampleRate <= M1ConvolutionIRStore.maximumSampleRate,
+              (1...64).contains(channelCount),
+              frameCount > 0,
+              Double(frameCount) / sampleRate <= M1ConvolutionIRStore.maximumDurationSeconds
+        else {
+            throw M1ConfigurationCodecError.invalidJSON
+        }
+        return M1ConvolutionIRStore.legacyReference(storageID: storageID)
     }
 }
 

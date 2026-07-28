@@ -35,12 +35,11 @@ enum M1ProcessingNodeKind: String, Sendable {
 }
 
 struct M1ConvolutionIRReference: Equatable, Sendable {
-    let storageID: UUID
-    let originalFileName: String
-    let sha256: String
-    let sampleRate: Double
-    let channelCount: Int
-    let frameCount: Int
+    let sourcePath: String
+
+    var originalFileName: String {
+        URL(fileURLWithPath: sourcePath).lastPathComponent
+    }
 }
 
 struct M1GraphicEQPoint: Equatable, Sendable {

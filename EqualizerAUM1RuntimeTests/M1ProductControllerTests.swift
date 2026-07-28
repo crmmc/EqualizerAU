@@ -489,9 +489,65 @@ final class M1ProductControllerTests: XCTestCase {
         try await fixture.controller.retryUncertainPersistence()
 
         let published = await fixture.audio.publishedGenerations
+        let calls = await fixture.audio.calls
         let snapshot = await fixture.controller.snapshot()
         XCTAssertEqual(published, [1])
+        XCTAssertEqual(calls.filter { $0 == "prepare" }.count, 2)
         XCTAssertEqual(snapshot.persistence, .clean)
+    }
+
+    func testUncertainRetryPrepareFailureLeavesConfirmedConfigurationPendingStart() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        try await fixture.controller.setGainDB(id: fixture.nodeID, gainDB: 5)
+        let candidate = await fixture.controller.snapshot().draft
+        await fixture.store.setNextResult(.uncertain(
+            generation: 1,
+            snapshot: candidate,
+            bootstrapOrigin: nil
+        ))
+        try await fixture.controller.save()
+
+        await fixture.store.setRetryResult(.succeeded(generation: 1, snapshot: candidate))
+        await fixture.audio.setPreparationFailure(true)
+        await XCTAssertThrowsErrorAsync {
+            try await fixture.controller.retryUncertainPersistence()
+        }
+        let snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(snapshot.persistence, .savedPendingStart)
+        XCTAssertEqual(snapshot.draft, candidate)
+    }
+
+    func testStartClearsStoppedSaveExpectedDiagnostics() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.setGainDB(id: fixture.nodeID, gainDB: 2)
+        try await fixture.controller.save()
+        let saved = await fixture.controller.snapshot()
+        XCTAssertNotNil(saved.expectedDiagnostics)
+
+        try await fixture.controller.start()
+        let started = await fixture.controller.snapshot()
+        XCTAssertNil(started.expectedDiagnostics)
+        XCTAssertNil(started.expectedConfigurationGeneration)
+    }
+
+    func testFailedStartDoesNotRetainStoppedSaveExpectedDiagnostics() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.setGainDB(id: fixture.nodeID, gainDB: 2)
+        try await fixture.controller.save()
+        await fixture.audio.setStartFailure(
+            state: .cleanupRequired(generation: M1AudioRouteGeneration(rawValue: 1))
+        )
+
+        await XCTAssertThrowsErrorAsync {
+            try await fixture.controller.start()
+        }
+        let snapshot = await fixture.controller.snapshot()
+        XCTAssertNil(snapshot.expectedDiagnostics)
+        XCTAssertNil(snapshot.expectedConfigurationGeneration)
     }
 
     func testRecoveryAllowsUnchangedRepairAndStartsTransparentRuntimeBaseline() async throws {
@@ -1661,14 +1717,7 @@ final class M1ProductControllerTests: XCTestCase {
 }
 
 private func productConvolutionIR(storageID: UUID, fileName: String) -> M1ConvolutionIRReference {
-    M1ConvolutionIRReference(
-        storageID: storageID,
-        originalFileName: fileName,
-        sha256: String(repeating: "a", count: 64),
-        sampleRate: 48_000,
-        channelCount: 1,
-        frameCount: 48_000
-    )
+    M1ConvolutionIRReference(sourcePath: "/tmp/\(storageID.uuidString)-\(fileName)")
 }
 
 private struct ProductFixture {

@@ -1,15 +1,8 @@
 import XCTest
 
 final class M1ProcessingModelTests: XCTestCase {
-    func testConvolutionCopyPreservesImmutableIRAndInheritsChannelsScope() {
-        let reference = M1ConvolutionIRReference(
-            storageID: UUID(),
-            originalFileName: "room.wav",
-            sha256: String(repeating: "a", count: 64),
-            sampleRate: 48_000,
-            channelCount: 1,
-            frameCount: 128
-        )
+    func testConvolutionCopyPreservesSourcePathAndInheritsChannelsScope() {
+        let reference = M1ConvolutionIRReference(sourcePath: "/tmp/room.wav")
         let node = M1ProcessingNode.convolution(ir: reference)
         let copy = node.copied(id: UUID())
         let scope = M1ProcessingNode.channels(

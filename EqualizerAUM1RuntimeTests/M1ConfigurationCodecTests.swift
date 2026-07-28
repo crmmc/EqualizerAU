@@ -70,10 +70,10 @@ final class M1ConfigurationCodecTests: XCTestCase {
     func testUnsupportedSchemaAndUnknownNodeAreRejected() {
         let id = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
         let unsupported = Data(
-            "{\"schemaVersion\":8,\"effectsEnabled\":true,\"nodes\":[]}".utf8
+            "{\"schemaVersion\":9,\"effectsEnabled\":true,\"nodes\":[]}".utf8
         )
         XCTAssertThrowsError(try M1ConfigurationCodec.decode(unsupported)) { error in
-            XCTAssertEqual(error as? M1ConfigurationCodecError, .unsupportedSchema(8))
+            XCTAssertEqual(error as? M1ConfigurationCodecError, .unsupportedSchema(9))
         }
 
         let unknown = Data(
@@ -97,7 +97,7 @@ final class M1ConfigurationCodecTests: XCTestCase {
         XCTAssertEqual(first.snapshot.nodes.map(\.kind), [.channels, .preamp])
         XCTAssertEqual(first.snapshot.nodes[1].id, id)
         let text = try XCTUnwrap(String(data: first.data, encoding: .utf8))
-        XCTAssertTrue(text.contains("\"schemaVersion\" : 7"))
+        XCTAssertTrue(text.contains("\"schemaVersion\" : 8"))
         XCTAssertTrue(text.contains("\"type\" : \"channels\""))
         XCTAssertFalse(text.contains("\"channels\" : \"all\""))
     }
@@ -110,7 +110,7 @@ final class M1ConfigurationCodecTests: XCTestCase {
 
         let decoded = try M1ConfigurationCodec.decode(source)
         XCTAssertEqual(decoded.snapshot.nodes.map(\.kind), [.preamp])
-        XCTAssertTrue(String(decoding: decoded.data, as: UTF8.self).contains("\"schemaVersion\" : 7"))
+        XCTAssertTrue(String(decoding: decoded.data, as: UTF8.self).contains("\"schemaVersion\" : 8"))
     }
 
     func testVersionThreeDecodesAndCanonicalizesToVersionFive() throws {
@@ -121,7 +121,7 @@ final class M1ConfigurationCodecTests: XCTestCase {
 
         let decoded = try M1ConfigurationCodec.decode(source)
         XCTAssertEqual(decoded.snapshot.nodes.map(\.kind), [.preamp])
-        XCTAssertTrue(String(decoding: decoded.data, as: UTF8.self).contains("\"schemaVersion\" : 7"))
+        XCTAssertTrue(String(decoding: decoded.data, as: UTF8.self).contains("\"schemaVersion\" : 8"))
     }
 
     func testVersionFourChannelsMigrateEnabledAndVersionFiveRequiresExplicitState() throws {
@@ -156,15 +156,8 @@ final class M1ConfigurationCodecTests: XCTestCase {
         XCTAssertThrowsError(try M1ConfigurationCodec.decode(unexpectedLegacyState))
     }
 
-    func testConvolutionVersionFiveRoundTripHasExactTypedShapeWithoutReadingResource() throws {
-        let reference = M1ConvolutionIRReference(
-            storageID: UUID(uuidString: "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC")!,
-            originalFileName: "Hall IR.wav",
-            sha256: String(repeating: "a", count: 64),
-            sampleRate: 48_000,
-            channelCount: 2,
-            frameCount: 96_000
-        )
+    func testConvolutionVersionEightRoundTripHasExactTypedShapeWithoutReadingResource() throws {
+        let reference = M1ConvolutionIRReference(sourcePath: "/Users/test/Hall IR.wav")
         let node = M1ProcessingNode.convolution(
             id: UUID(uuidString: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")!,
             isEnabled: false,
@@ -181,9 +174,39 @@ final class M1ConfigurationCodecTests: XCTestCase {
         let nodes = try XCTUnwrap(object["nodes"] as? [[String: Any]])
         XCTAssertEqual(Set(nodes[0].keys), ["id", "type", "isEnabled", "ir"])
         let ir = try XCTUnwrap(nodes[0]["ir"] as? [String: Any])
-        XCTAssertEqual(Set(ir.keys), [
-            "storageID", "originalFileName", "sha256", "sampleRate", "channelCount", "frameCount",
-        ])
+        XCTAssertEqual(Set(ir.keys), ["sourcePath"])
+        XCTAssertEqual(ir["sourcePath"] as? String, reference.sourcePath)
+    }
+
+    func testConvolutionSchemasFourThroughSevenMigrateToLegacySidecarPath() throws {
+        let nodeID = UUID()
+        let storageID = UUID()
+        let legacyIR = "\"storageID\":\"\(storageID)\",\"originalFileName\":\"room.wav\",\"sha256\":\"\(String(repeating: "a", count: 64))\",\"sampleRate\":48000,\"channelCount\":1,\"frameCount\":48000"
+        for schemaVersion in 4...7 {
+            let data = Data(
+                "{\"schemaVersion\":\(schemaVersion),\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(nodeID)\",\"type\":\"convolution\",\"isEnabled\":true,\"ir\":{\(legacyIR)}}]}".utf8
+            )
+            let decoded = try M1ConfigurationCodec.decode(data)
+            XCTAssertEqual(
+                decoded.snapshot.nodes.first?.convolutionIR,
+                M1ConvolutionIRStore.legacyReference(storageID: storageID)
+            )
+            let canonical = String(decoding: decoded.data, as: UTF8.self)
+            XCTAssertTrue(canonical.contains("\"schemaVersion\" : 8"))
+            XCTAssertTrue(canonical.contains("\"sourcePath\""))
+            XCTAssertFalse(canonical.contains("\"storageID\""))
+        }
+    }
+
+    func testConvolutionSchemaEightRejectsInvalidSourcePaths() {
+        let nodeID = UUID()
+        let paths = ["", "relative/room.wav", "/tmp/../room.wav", "/tmp/room\\u0000.wav"]
+        for sourcePath in paths {
+            let data = Data(
+                "{\"schemaVersion\":8,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(nodeID)\",\"type\":\"convolution\",\"isEnabled\":true,\"ir\":{\"sourcePath\":\"\(sourcePath)\"}}]}".utf8
+            )
+            XCTAssertThrowsError(try M1ConfigurationCodec.decode(data), sourcePath)
+        }
     }
 
     func testConvolutionRejectsUnknownDuplicateAndCrossKindFields() {
@@ -242,7 +265,7 @@ final class M1ConfigurationCodecTests: XCTestCase {
             XCTAssertEqual(node.graphicEQPoints, expected)
             XCTAssertFalse(decoded.snapshot.effectsEnabled)
             let canonical = String(decoding: decoded.data, as: UTF8.self)
-            XCTAssertTrue(canonical.contains("\"schemaVersion\" : 7"))
+            XCTAssertTrue(canonical.contains("\"schemaVersion\" : 8"))
             XCTAssertTrue(canonical.contains("\"points\""))
             XCTAssertFalse(canonical.contains("\"bands\""))
         }
@@ -263,7 +286,7 @@ final class M1ConfigurationCodecTests: XCTestCase {
             oldPoints
         )
         let canonical = String(decoding: decoded.data, as: UTF8.self)
-        XCTAssertTrue(canonical.contains("\"schemaVersion\" : 7"))
+        XCTAssertTrue(canonical.contains("\"schemaVersion\" : 8"))
         XCTAssertTrue(canonical.contains("\"frequencyHz\" : 30000"))
     }
 
@@ -296,7 +319,7 @@ final class M1ConfigurationCodecTests: XCTestCase {
 
         XCTAssertEqual(decoded.snapshot.nodes, [empty, single, maximum, outside])
         XCTAssertEqual(decoded, encoded)
-        XCTAssertTrue(text.contains("\"schemaVersion\" : 7"))
+        XCTAssertTrue(text.contains("\"schemaVersion\" : 8"))
         XCTAssertTrue(text.contains("\"points\""))
         XCTAssertFalse(text.contains("\"bands\""))
     }

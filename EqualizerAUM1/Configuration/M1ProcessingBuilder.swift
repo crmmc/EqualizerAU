@@ -14,8 +14,6 @@ enum M1ProcessingBuildError: Error, Equatable, Sendable {
     case graphicEQFIRGenerationFailed(nodeID: UUID)
     case invalidGraphicEQTaps(nodeID: UUID)
     case invalidConvolutionIRReference(nodeID: UUID)
-    case convolutionIRLoadFailed(nodeID: UUID, error: M1ConvolutionIRError)
-    case convolutionChannelCountMismatch(nodeID: UUID, expected: Int, actual: Int)
     case convolutionStageCapacityExceeded
     case convolutionTapCapacityExceeded
     case stageCapacityExceeded(channel: M1ChannelIdentifier)
@@ -57,27 +55,44 @@ struct M1ProcessingBuildDiagnostics: Equatable, Sendable {
     let gainBoundaries: [M1GainBoundaryDiagnostic]
     let graphicEQResolution: [M1GraphicEQResolutionDiagnostic]
     let convolutionSources: [M1ConvolutionSourceDiagnostic]
+    let convolutionBypasses: [M1ConvolutionBypassDiagnostic]
 
     init(
         unresolvedChannels: [M1UnresolvedChannelDiagnostic],
         clippingRiskChannels: [M1ChannelIdentifier],
         gainBoundaries: [M1GainBoundaryDiagnostic],
         graphicEQResolution: [M1GraphicEQResolutionDiagnostic] = [],
-        convolutionSources: [M1ConvolutionSourceDiagnostic] = []
+        convolutionSources: [M1ConvolutionSourceDiagnostic] = [],
+        convolutionBypasses: [M1ConvolutionBypassDiagnostic] = []
     ) {
         self.unresolvedChannels = unresolvedChannels
         self.clippingRiskChannels = clippingRiskChannels
         self.gainBoundaries = gainBoundaries
         self.graphicEQResolution = graphicEQResolution
         self.convolutionSources = convolutionSources
+        self.convolutionBypasses = convolutionBypasses
     }
 }
 
 struct M1ConvolutionSourceDiagnostic: Equatable, Sendable {
     let nodeID: UUID
     let source: M1ConvolutionIRReference
+    let sourceSampleRate: Double
+    let sourceChannelCount: Int
+    let sourceFrameCount: Int
     let targetSampleRate: Double
     let targetFrameCount: Int
+}
+
+enum M1ConvolutionBypassReason: Equatable, Sendable {
+    case resource(M1ConvolutionIRError)
+    case channelCountMismatch(expected: Int, actual: Int)
+}
+
+struct M1ConvolutionBypassDiagnostic: Equatable, Sendable {
+    let nodeID: UUID
+    let source: M1ConvolutionIRReference
+    let reason: M1ConvolutionBypassReason
 }
 
 struct M1BiquadCoefficients: Equatable, Sendable {
@@ -139,6 +154,7 @@ enum M1ProcessingBuilder {
         var unresolvedDiagnostics: [M1UnresolvedChannelDiagnostic] = []
         var graphicEQResolutionDiagnostics: [M1GraphicEQResolutionDiagnostic] = []
         var convolutionSources: [M1ConvolutionSourceDiagnostic] = []
+        var convolutionBypasses: [M1ConvolutionBypassDiagnostic] = []
         var convolutionStageCount = 0
         var totalConvolutionTaps = 0
         var latencyByChannel = Array(repeating: 0, count: layout.channels.count)
@@ -253,29 +269,46 @@ enum M1ProcessingBuilder {
                         targetSampleRate: layout.sampleRate
                     )
                 } catch let error as M1ConvolutionIRError {
-                    throw M1ProcessingBuildError.convolutionIRLoadFailed(
-                        nodeID: node.id,
-                        error: error
+                    convolutionBypasses.append(
+                        M1ConvolutionBypassDiagnostic(
+                            nodeID: node.id,
+                            source: reference,
+                            reason: .resource(error)
+                        )
                     )
+                    continue
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch {
-                    throw M1ProcessingBuildError.convolutionIRLoadFailed(
-                        nodeID: node.id,
-                        error: .resourceIO
+                    convolutionBypasses.append(
+                        M1ConvolutionBypassDiagnostic(
+                            nodeID: node.id,
+                            source: reference,
+                            reason: .resource(.resourceIO)
+                        )
                     )
+                    continue
                 }
                 guard loaded.channels.count == 1 || loaded.channels.count == selectedIndexes.count else {
-                    throw M1ProcessingBuildError.convolutionChannelCountMismatch(
-                        nodeID: node.id,
-                        expected: selectedIndexes.count,
-                        actual: loaded.channels.count
+                    convolutionBypasses.append(
+                        M1ConvolutionBypassDiagnostic(
+                            nodeID: node.id,
+                            source: reference,
+                            reason: .channelCountMismatch(
+                                expected: selectedIndexes.count,
+                                actual: loaded.channels.count
+                            )
+                        )
                     )
+                    continue
                 }
                 convolutionSources.append(
                     M1ConvolutionSourceDiagnostic(
                         nodeID: node.id,
                         source: loaded.source,
+                        sourceSampleRate: loaded.sourceSampleRate,
+                        sourceChannelCount: loaded.sourceChannelCount,
+                        sourceFrameCount: loaded.sourceFrameCount,
                         targetSampleRate: loaded.targetSampleRate,
                         targetFrameCount: loaded.channels[0].count
                     )
@@ -380,7 +413,8 @@ enum M1ProcessingBuilder {
                 clippingRiskChannels: clippingRiskChannels,
                 gainBoundaries: gainBoundaryDiagnostics,
                 graphicEQResolution: graphicEQResolutionDiagnostics,
-                convolutionSources: convolutionSources
+                convolutionSources: convolutionSources,
+                convolutionBypasses: convolutionBypasses
             ),
             processingLatencyFrames: latencyByChannel.max() ?? 0
         )
@@ -434,23 +468,12 @@ enum M1ProcessingBuilder {
             }
             if node.kind == .convolution {
                 guard let reference = node.convolutionIR,
-                      !reference.originalFileName.isEmpty,
-                      reference.originalFileName == (reference.originalFileName as NSString).lastPathComponent,
-                      reference.sha256.utf8.count == 64,
-                      reference.sha256.utf8.allSatisfy({
-                          (UInt8(ascii: "0")...UInt8(ascii: "9")).contains($0)
-                              || (UInt8(ascii: "a")...UInt8(ascii: "f")).contains($0)
-                      }),
-                      reference.sampleRate.isFinite,
-                      reference.sampleRate >= M1ConvolutionIRStore.minimumSampleRate,
-                      (1...64).contains(reference.channelCount),
-                      reference.frameCount > 0,
-                      Double(reference.frameCount) / reference.sampleRate
-                        <= M1ConvolutionIRStore.maximumDurationSeconds
+                      !reference.sourcePath.isEmpty,
+                      !reference.sourcePath.contains("\0"),
+                      (reference.sourcePath as NSString).isAbsolutePath,
+                      reference.sourcePath == URL(fileURLWithPath: reference.sourcePath).standardizedFileURL.path,
+                      !reference.originalFileName.isEmpty
                 else {
-                    throw M1ProcessingBuildError.invalidConvolutionIRReference(nodeID: node.id)
-                }
-                guard node.convolutionIR!.sampleRate <= M1ConvolutionIRStore.maximumSampleRate else {
                     throw M1ProcessingBuildError.invalidConvolutionIRReference(nodeID: node.id)
                 }
             }

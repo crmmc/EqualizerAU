@@ -409,7 +409,7 @@ final class M1AudioRouteResourceControllerTests: XCTestCase {
         XCTAssertTrue(retainedExistingRuntime === existingRuntime)
     }
 
-    func testPrepareRejectsMissingIRBeforeOutputDiscovery() async throws {
+    func testPrepareBypassesMissingIRAfterOutputDiscovery() async throws {
         let hal = TestHALRouteOperations()
         let runtimeAccess = M1RuntimeLeaseAccess(stopHandler: { _, _ in })
         let coordinator = M1NativeAudioRouteCoordinator(
@@ -429,30 +429,27 @@ final class M1AudioRouteResourceControllerTests: XCTestCase {
                     .appendingPathComponent("missing-ir-\(UUID().uuidString)")
             )
         )
-        let ir = M1ConvolutionIRReference(
-            storageID: UUID(),
-            originalFileName: "missing.wav",
-            sha256: String(repeating: "0", count: 64),
-            sampleRate: 48_000,
-            channelCount: 1,
-            frameCount: 1
-        )
+        let ir = M1ConvolutionIRReference(sourcePath: "/missing/ir.wav")
         let node = M1ProcessingNode.convolution(ir: ir)
         let configuration = M1ConfigurationSnapshot(effectsEnabled: true, nodes: [node])
 
-        do {
-            _ = try await coordinator.prepare(configuration: configuration)
-            XCTFail("missing IR must fail before waiting for output")
-        } catch let error as M1ProcessingBuildError {
-            XCTAssertEqual(
-                error,
-                .convolutionIRLoadFailed(nodeID: node.id, error: .missingResource)
-            )
-        }
-        XCTAssertEqual(hal.defaultOutputReadCount, 0)
+        let preparation = try await coordinator.prepare(configuration: configuration)
+        XCTAssertNotNil(preparation.layout)
+        XCTAssertEqual(preparation.compiled?.stagesByChannel, [[], []])
+        XCTAssertEqual(
+            preparation.compiled?.diagnostics.convolutionBypasses,
+            [
+                M1ConvolutionBypassDiagnostic(
+                    nodeID: node.id,
+                    source: ir,
+                    reason: .resource(.missingResource)
+                ),
+            ]
+        )
+        XCTAssertEqual(hal.defaultOutputReadCount, 1)
     }
 
-    func testPrepareBoundsAndDeduplicatesIRPreflightBeforeUnavailableOutput() async throws {
+    func testPrepareDefersIRLoadingAndCapacityUntilOutputIsAvailable() async throws {
         let hal = TestHALRouteOperations()
         hal.defaultOutputError = .noOutputDevice
         let loader = CountingIRLoader()
@@ -471,75 +468,14 @@ final class M1AudioRouteResourceControllerTests: XCTestCase {
             ),
             irLoader: loader
         )
-        let ir = M1ConvolutionIRReference(
-            storageID: UUID(),
-            originalFileName: "shared.wav",
-            sha256: String(repeating: "0", count: 64),
-            sampleRate: 48_000,
-            channelCount: 1,
-            frameCount: 1
-        )
+        let ir = M1ConvolutionIRReference(sourcePath: "/missing/shared.wav")
 
         let waiting = try await coordinator.prepare(configuration: M1ConfigurationSnapshot(
             effectsEnabled: true,
-            nodes: [.convolution(ir: ir), .convolution(ir: ir)]
+            nodes: (0...M1ProcessingBuilder.maximumConvolutionStages).map { _ in .convolution(ir: ir) }
         ))
         XCTAssertEqual(waiting, .waitingForOutput)
-        XCTAssertEqual(loader.validationCount, 1)
-
-        do {
-            _ = try await coordinator.prepare(configuration: M1ConfigurationSnapshot(
-                effectsEnabled: true,
-                nodes: (0...M1ProcessingBuilder.maximumConvolutionStages).map { _ in .convolution(ir: ir) }
-            ))
-            XCTFail("stage capacity must fail before IR I/O")
-        } catch let error as M1ProcessingBuildError {
-            XCTAssertEqual(error, .convolutionStageCapacityExceeded)
-        }
-        XCTAssertEqual(loader.validationCount, 1)
-    }
-
-    func testCancellingPrepareCancelsDetachedIRPreflightBeforeOutputDiscovery() async throws {
-        let entered = expectation(description: "IR validation entered")
-        let hal = TestHALRouteOperations()
-        let loader = CancellationObservingIRLoader { entered.fulfill() }
-        let runtimeAccess = M1RuntimeLeaseAccess(stopHandler: { _, _ in })
-        let coordinator = M1NativeAudioRouteCoordinator(
-            routeResources: M1AudioRouteResourceController(operations: hal),
-            audioIO: M1AudioIOController(
-                operations: UnexpectedAudioIOOperations(),
-                timing: M1AudioIOControlTiming(nowNanoseconds: { 0 }, sleep: { _ in })
-            ),
-            runtimeFactory: TestRuntimeFactory(),
-            runtimeAccess: runtimeAccess,
-            retirementMaintenance: M1RetirementMaintenanceCoordinator(
-                access: runtimeAccess,
-                timing: M1RetirementMaintenanceTiming(nowNanoseconds: { 0 }, sleep: { _ in })
-            ),
-            irLoader: loader
-        )
-        let ir = M1ConvolutionIRReference(
-            storageID: UUID(),
-            originalFileName: "cancel.wav",
-            sha256: String(repeating: "0", count: 64),
-            sampleRate: 48_000,
-            channelCount: 1,
-            frameCount: 1
-        )
-        let prepare = Task {
-            try await coordinator.prepare(configuration: M1ConfigurationSnapshot(
-                effectsEnabled: true,
-                nodes: [.convolution(ir: ir)]
-            ))
-        }
-
-        await fulfillment(of: [entered], timeout: 1)
-        prepare.cancel()
-        do {
-            _ = try await prepare.value
-            XCTFail("cancelled prepare must fail")
-        } catch is CancellationError {}
-        XCTAssertEqual(hal.defaultOutputReadCount, 0)
+        XCTAssertEqual(loader.validationCount, 0)
     }
 
     func testCancellingPrepareCancelsDetachedIRCompileAfterOutputDiscovery() async throws {
@@ -561,14 +497,7 @@ final class M1AudioRouteResourceControllerTests: XCTestCase {
             ),
             irLoader: loader
         )
-        let ir = M1ConvolutionIRReference(
-            storageID: UUID(),
-            originalFileName: "cancel-compile.wav",
-            sha256: String(repeating: "0", count: 64),
-            sampleRate: 48_000,
-            channelCount: 1,
-            frameCount: 1
-        )
+        let ir = M1ConvolutionIRReference(sourcePath: "/tmp/cancel-compile.wav")
         let prepare = Task {
             try await coordinator.prepare(configuration: M1ConfigurationSnapshot(
                 effectsEnabled: true,
@@ -703,6 +632,87 @@ final class M1AudioRouteResourceControllerTests: XCTestCase {
         XCTAssertEqual(hal.defaultOutputReadCount, 1)
         XCTAssertEqual(hal.tapRequests.count, 1)
     }
+
+    func testFormatRecoveryPropagatesCancellationDuringStabilityDelay() async throws {
+        let hal = TestHALRouteOperations()
+        let runtimeAccess = M1RuntimeLeaseAccess(stopHandler: { _, _ in })
+        let coordinator = M1NativeAudioRouteCoordinator(
+            routeResources: M1AudioRouteResourceController(operations: hal),
+            audioIO: M1AudioIOController(
+                operations: UnexpectedAudioIOOperations(),
+                timing: M1AudioIOControlTiming(nowNanoseconds: { 0 }, sleep: { _ in })
+            ),
+            runtimeFactory: TestRuntimeFactory(),
+            runtimeAccess: runtimeAccess,
+            retirementMaintenance: M1RetirementMaintenanceCoordinator(
+                access: runtimeAccess,
+                timing: M1RetirementMaintenanceTiming(nowNanoseconds: { 0 }, sleep: { _ in })
+            ),
+            outputFormatStabilityTiming: M1OutputFormatStabilityTiming(
+                maximumObservations: 6,
+                delayNanoseconds: 1,
+                sleep: { _ in throw CancellationError() }
+            )
+        )
+
+        do {
+            try await coordinator.start(
+                configuration: .transparentRecovery,
+                mode: .outputFormatRecovery(
+                    expectedOutput: M1MonitoredOutputIdentity(
+                        objectID: 42,
+                        persistentUID: "device.uid"
+                    )
+                )
+            )
+            XCTFail("cancelled stability wait must fail")
+        } catch is CancellationError {}
+
+        XCTAssertEqual(hal.defaultOutputReadCount, 1)
+        XCTAssertTrue(hal.tapRequests.isEmpty)
+    }
+
+    func testFormatRecoveryKeepsOldMutedTapUntilNewRouteIsRunning() async throws {
+        let events = RouteEventLog()
+        let hal = TestHALRouteOperations()
+        hal.eventLog = events
+        hal.tapObjectIDs = [101, 102]
+        hal.tapDataByObjectID[102] = M1HALTapData(uid: "tap.new", format: hal.supportedFormat)
+        let coordinator = makeWorkingRouteCoordinator(hal: hal, eventLog: events)
+        let output = M1MonitoredOutputIdentity(objectID: 42, persistentUID: "device.uid")
+
+        try await coordinator.start(configuration: .transparentRecovery)
+        try await coordinator.stopForOutputFormatRecovery(expectedOutput: output)
+
+        let handoverState = await coordinator.state()
+        XCTAssertEqual(handoverState, .stopped)
+        XCTAssertEqual(hal.destroyOrder, ["aggregate:202"])
+        XCTAssertTrue(hal.destroyedTapIDs.isEmpty)
+
+        events.events.removeAll()
+        hal.defaultOutputs = [48_000, 48_000].map { hal.outputData(sampleRate: $0) }
+        try await coordinator.start(
+            configuration: .transparentRecovery,
+            mode: .outputFormatRecovery(expectedOutput: output)
+        )
+
+        XCTAssertEqual(hal.tapRequests.count, 2)
+        XCTAssertEqual(hal.destroyedTapIDs, [101])
+        XCTAssertLessThan(
+            try XCTUnwrap(events.events.firstIndex(of: "outputStarted")),
+            try XCTUnwrap(events.events.firstIndex(of: "tapDestroyed:101"))
+        )
+        let runningState = await coordinator.state()
+        XCTAssertEqual(runningState, .running(
+            generation: M1AudioRouteGeneration(rawValue: 2),
+            bridgeGeneration: 2
+        ))
+
+        try await coordinator.stop()
+        XCTAssertEqual(hal.destroyedTapIDs, [101, 102])
+        let stoppedState = await coordinator.state()
+        XCTAssertEqual(stoppedState, .stopped)
+    }
     func testFormatRecoveryAdoptsReusedTapObjectIDWithoutLeakingNewTap() async throws {
         let hal = TestHALRouteOperations()
         hal.tapObjectIDs = [101, 101]
@@ -802,87 +812,6 @@ final class M1AudioRouteResourceControllerTests: XCTestCase {
         XCTAssertEqual(hal.destroyedTapIDs, [101])
         try await coordinator.stop()
         XCTAssertEqual(hal.destroyedTapIDs, [101, 102])
-    }
-
-    func testFormatRecoveryPropagatesCancellationDuringStabilityDelay() async throws {
-        let hal = TestHALRouteOperations()
-        let runtimeAccess = M1RuntimeLeaseAccess(stopHandler: { _, _ in })
-        let coordinator = M1NativeAudioRouteCoordinator(
-            routeResources: M1AudioRouteResourceController(operations: hal),
-            audioIO: M1AudioIOController(
-                operations: UnexpectedAudioIOOperations(),
-                timing: M1AudioIOControlTiming(nowNanoseconds: { 0 }, sleep: { _ in })
-            ),
-            runtimeFactory: TestRuntimeFactory(),
-            runtimeAccess: runtimeAccess,
-            retirementMaintenance: M1RetirementMaintenanceCoordinator(
-                access: runtimeAccess,
-                timing: M1RetirementMaintenanceTiming(nowNanoseconds: { 0 }, sleep: { _ in })
-            ),
-            outputFormatStabilityTiming: M1OutputFormatStabilityTiming(
-                maximumObservations: 6,
-                delayNanoseconds: 1,
-                sleep: { _ in throw CancellationError() }
-            )
-        )
-
-        do {
-            try await coordinator.start(
-                configuration: .transparentRecovery,
-                mode: .outputFormatRecovery(
-                    expectedOutput: M1MonitoredOutputIdentity(
-                        objectID: 42,
-                        persistentUID: "device.uid"
-                    )
-                )
-            )
-            XCTFail("cancelled stability wait must fail")
-        } catch is CancellationError {}
-
-        XCTAssertEqual(hal.defaultOutputReadCount, 1)
-        XCTAssertTrue(hal.tapRequests.isEmpty)
-    }
-
-    func testFormatRecoveryKeepsOldMutedTapUntilNewRouteIsRunning() async throws {
-        let events = RouteEventLog()
-        let hal = TestHALRouteOperations()
-        hal.eventLog = events
-        hal.tapObjectIDs = [101, 102]
-        hal.tapDataByObjectID[102] = M1HALTapData(uid: "tap.new", format: hal.supportedFormat)
-        let coordinator = makeWorkingRouteCoordinator(hal: hal, eventLog: events)
-        let output = M1MonitoredOutputIdentity(objectID: 42, persistentUID: "device.uid")
-
-        try await coordinator.start(configuration: .transparentRecovery)
-        try await coordinator.stopForOutputFormatRecovery(expectedOutput: output)
-
-        let handoverState = await coordinator.state()
-        XCTAssertEqual(handoverState, .stopped)
-        XCTAssertEqual(hal.destroyOrder, ["aggregate:202"])
-        XCTAssertTrue(hal.destroyedTapIDs.isEmpty)
-
-        events.events.removeAll()
-        hal.defaultOutputs = [48_000, 48_000].map { hal.outputData(sampleRate: $0) }
-        try await coordinator.start(
-            configuration: .transparentRecovery,
-            mode: .outputFormatRecovery(expectedOutput: output)
-        )
-
-        XCTAssertEqual(hal.tapRequests.count, 2)
-        XCTAssertEqual(hal.destroyedTapIDs, [101])
-        XCTAssertLessThan(
-            try XCTUnwrap(events.events.firstIndex(of: "outputStarted")),
-            try XCTUnwrap(events.events.firstIndex(of: "tapDestroyed:101"))
-        )
-        let runningState = await coordinator.state()
-        XCTAssertEqual(runningState, .running(
-            generation: M1AudioRouteGeneration(rawValue: 2),
-            bridgeGeneration: 2
-        ))
-
-        try await coordinator.stop()
-        XCTAssertEqual(hal.destroyedTapIDs, [101, 102])
-        let stoppedState = await coordinator.state()
-        XCTAssertEqual(stoppedState, .stopped)
     }
 
     func testFormatRecoveryGuardDestroyFailureIsRetainedForExplicitStopRetry() async throws {

@@ -219,9 +219,9 @@ final class M1EditingSessionTests: XCTestCase {
     }
 
     func testClipboardRejectsUnsupportedSchemaMalformedAndOversizedData() {
-        let unsupported = Data("{\"nodes\":[],\"schemaVersion\":8}\n".utf8)
+        let unsupported = Data("{\"nodes\":[],\"schemaVersion\":9}\n".utf8)
         XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(unsupported)) {
-            XCTAssertEqual($0 as? M1EditingSessionError, .unsupportedClipboardSchema(8))
+            XCTAssertEqual($0 as? M1EditingSessionError, .unsupportedClipboardSchema(9))
         }
         XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(Data("nope".utf8)))
         XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(Data(
@@ -376,12 +376,12 @@ final class M1EditingSessionTests: XCTestCase {
         let v6 = Data(
             "{\"schemaVersion\":6,\"nodes\":[{\"id\":\"\(ids[4])\",\"type\":\"graphicEQ\",\"isEnabled\":true,\"points\":[\(currentPoints)]}]}".utf8
         )
-        let ir = convolutionIR(storageID: ids[2])
+        let legacyStorageID = ids[2]
         let v4 = Data(
             "{\"schemaVersion\":4,\"nodes\":[{\"id\":\"\(ids[3])\",\"type\":\"channels\",\"channels\":[\"L\"]}]}".utf8
         )
         let v5 = Data(
-            "{\"schemaVersion\":5,\"nodes\":[{\"id\":\"\(ids[3])\",\"type\":\"convolution\",\"isEnabled\":true,\"ir\":{\"storageID\":\"\(ir.storageID)\",\"originalFileName\":\"\(ir.originalFileName)\",\"sha256\":\"\(ir.sha256)\",\"sampleRate\":\(ir.sampleRate),\"channelCount\":\(ir.channelCount),\"frameCount\":\(ir.frameCount)}}]}".utf8
+            "{\"schemaVersion\":5,\"nodes\":[{\"id\":\"\(ids[3])\",\"type\":\"convolution\",\"isEnabled\":true,\"ir\":{\"storageID\":\"\(legacyStorageID)\",\"originalFileName\":\"Room IR.wav\",\"sha256\":\"\(String(repeating: "a", count: 64))\",\"sampleRate\":48000,\"channelCount\":1,\"frameCount\":48000}}]}".utf8
         )
 
         XCTAssertEqual(try M1NodeEnvelopeCodec.decode(v1).nodes.map(\.kind), [.preamp])
@@ -407,7 +407,25 @@ final class M1EditingSessionTests: XCTestCase {
         let migratedV4 = try M1NodeEnvelopeCodec.decode(v4)
         XCTAssertEqual(migratedV4.nodes.map(\.kind), [.channels])
         XCTAssertTrue(try XCTUnwrap(migratedV4.nodes.first).isEnabled)
-        XCTAssertEqual(try M1NodeEnvelopeCodec.decode(v5).nodes.map(\.kind), [.convolution])
+        let migratedV5 = try M1NodeEnvelopeCodec.decode(v5)
+        XCTAssertEqual(migratedV5.nodes.map(\.kind), [.convolution])
+        XCTAssertEqual(
+            migratedV5.nodes.first?.convolutionIR,
+            M1ConvolutionIRStore.legacyReference(storageID: legacyStorageID)
+        )
+        for schemaVersion in 4...7 {
+            let legacyConvolution = Data(
+                "{\"schemaVersion\":\(schemaVersion),\"nodes\":[{\"id\":\"\(ids[3])\",\"type\":\"convolution\",\"isEnabled\":true,\"ir\":{\"storageID\":\"\(legacyStorageID)\",\"originalFileName\":\"Room IR.wav\",\"sha256\":\"\(String(repeating: "a", count: 64))\",\"sampleRate\":48000,\"channelCount\":1,\"frameCount\":48000}}]}".utf8
+            )
+            let migrated = try M1NodeEnvelopeCodec.decode(legacyConvolution)
+            XCTAssertEqual(
+                migrated.nodes.first?.convolutionIR,
+                M1ConvolutionIRStore.legacyReference(storageID: legacyStorageID)
+            )
+            let canonical = String(decoding: migrated.data, as: UTF8.self)
+            XCTAssertTrue(canonical.contains("\"schemaVersion\" : 8"))
+            XCTAssertFalse(canonical.contains("\"storageID\""))
+        }
         let decodedV6 = try M1NodeEnvelopeCodec.decode(v6)
         XCTAssertEqual(decodedV6.nodes.map(\.kind), [.graphicEQ])
         XCTAssertEqual(
@@ -419,7 +437,7 @@ final class M1EditingSessionTests: XCTestCase {
             ]
         )
         XCTAssertTrue(String(decoding: decodedV6.data, as: UTF8.self)
-            .contains("\"schemaVersion\" : 7"))
+            .contains("\"schemaVersion\" : 8"))
     }
 
     func testConvolutionClipboardRoundTripAndCopyPreserveImmutableIRWithNewNodeIdentity() throws {
@@ -439,7 +457,7 @@ final class M1EditingSessionTests: XCTestCase {
         )
         XCTAssertEqual(session.nodes.map(\.id), [ids[0], ids[1]])
         XCTAssertEqual(session.nodes[1].convolutionIR, ir)
-        XCTAssertEqual(session.nodes[1].convolutionIR?.storageID, source.convolutionIR?.storageID)
+        XCTAssertEqual(session.nodes[1].convolutionIR?.sourcePath, source.convolutionIR?.sourcePath)
     }
 
     func testConvolutionAddReplaceEnableAndWrongKindContracts() throws {
@@ -482,12 +500,7 @@ final class M1EditingSessionTests: XCTestCase {
         fileName: String = "Room IR.wav"
     ) -> M1ConvolutionIRReference {
         M1ConvolutionIRReference(
-            storageID: storageID,
-            originalFileName: fileName,
-            sha256: String(repeating: "a", count: 64),
-            sampleRate: 48_000,
-            channelCount: 1,
-            frameCount: 48_000
+            sourcePath: "/tmp/\(storageID.uuidString)-\(fileName)"
         )
     }
 

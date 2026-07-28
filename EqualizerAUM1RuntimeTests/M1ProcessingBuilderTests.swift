@@ -658,9 +658,12 @@ final class M1ProcessingBuilderTests: XCTestCase {
         }
 
         let shortReference = convolutionReference(storageID: UUID(), frameCount: 1)
-        let shortLoader = MockConvolutionIRLoader(loadedByStorageID: [
-            shortReference.storageID: M1LoadedConvolutionIR(
+        let shortLoader = MockConvolutionIRLoader(loadedBySourcePath: [
+            shortReference.sourcePath: M1LoadedConvolutionIR(
                 source: shortReference,
+                sourceSampleRate: mono.sampleRate,
+                sourceChannelCount: 1,
+                sourceFrameCount: 1,
                 targetSampleRate: mono.sampleRate,
                 channels: [[1]]
             )
@@ -683,9 +686,12 @@ final class M1ProcessingBuilderTests: XCTestCase {
         let longTapCount = M1ProcessingBuilder.maximumTotalConvolutionTaps
             - 7 * M1ProcessingBuilder.graphicEQTapCount + 1
         let longReference = convolutionReference(storageID: UUID(), frameCount: longTapCount)
-        let longLoader = MockConvolutionIRLoader(loadedByStorageID: [
-            longReference.storageID: M1LoadedConvolutionIR(
+        let longLoader = MockConvolutionIRLoader(loadedBySourcePath: [
+            longReference.sourcePath: M1LoadedConvolutionIR(
                 source: longReference,
+                sourceSampleRate: mono.sampleRate,
+                sourceChannelCount: 1,
+                sourceFrameCount: longTapCount,
                 targetSampleRate: mono.sampleRate,
                 channels: [impulse(count: longTapCount)]
             )
@@ -947,12 +953,7 @@ final class M1ProcessingBuilderTests: XCTestCase {
         sampleRate: Double = 48_000
     ) -> M1ConvolutionIRReference {
         M1ConvolutionIRReference(
-            storageID: storageID,
-            originalFileName: "fixture.wav",
-            sha256: String(repeating: "a", count: 64),
-            sampleRate: sampleRate,
-            channelCount: 1,
-            frameCount: frameCount
+            sourcePath: "/tmp/\(storageID.uuidString).wav"
         )
     }
 
@@ -1043,21 +1044,20 @@ final class M1ProcessingBuilderTests: XCTestCase {
 }
 
 private struct MockConvolutionIRLoader: M1ConvolutionIRLoading {
-    let loadedByStorageID: [UUID: M1LoadedConvolutionIR]
-
-    func validate(reference: M1ConvolutionIRReference) throws {
-        _ = try load(reference: reference, targetSampleRate: reference.sampleRate)
-    }
+    let loadedBySourcePath: [String: M1LoadedConvolutionIR]
 
     func load(
         reference: M1ConvolutionIRReference,
         targetSampleRate: Double
     ) throws -> M1LoadedConvolutionIR {
-        guard let loaded = loadedByStorageID[reference.storageID] else {
+        guard let loaded = loadedBySourcePath[reference.sourcePath] else {
             throw M1ConvolutionIRError.missingResource
         }
         return M1LoadedConvolutionIR(
             source: loaded.source,
+            sourceSampleRate: loaded.sourceSampleRate,
+            sourceChannelCount: loaded.sourceChannelCount,
+            sourceFrameCount: loaded.sourceFrameCount,
             targetSampleRate: targetSampleRate,
             channels: loaded.channels
         )
