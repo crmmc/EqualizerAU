@@ -2,6 +2,20 @@ import Foundation
 import XCTest
 
 final class M1ProductControllerTests: XCTestCase {
+    @MainActor
+    func testPendingEditorCommitCoordinatorCommitsRegisteredEditorBeforeUnregister() {
+        let coordinator = M1PendingEditorCommitCoordinator()
+        var commitCount = 0
+        let id = coordinator.register { commitCount += 1 }
+
+        coordinator.commitPendingEditor()
+        XCTAssertEqual(commitCount, 1)
+
+        coordinator.unregister(id)
+        coordinator.commitPendingEditor()
+        XCTAssertEqual(commitCount, 1)
+    }
+
     func testBootstrapDiscoversAvailableOutputWithoutStartingAudio() async {
         let fixture = makeFixture()
 
@@ -654,6 +668,23 @@ final class M1ProductControllerTests: XCTestCase {
         let commits = await fixture.store.commits
         XCTAssertEqual(commits.last?.snapshot.effectsEnabled, true)
     }
+    func testNodeEditRemainsValidWhileEffectsRuntimeUpdateIsBlocked() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        let gate = ProductTestGate()
+        await fixture.audio.setEffectsGate(gate)
+
+        let disableTask = Task { try await fixture.controller.setEffectsEnabled(false) }
+        await waitUntil { await fixture.audio.calls.contains("effects:false") }
+        try await fixture.controller.setGainDB(id: fixture.nodeID, gainDB: 5)
+        await gate.open()
+        try await disableTask.value
+
+        let snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(snapshot.draft.nodes.first?.gainDB, 5)
+        XCTAssertFalse(snapshot.draft.effectsEnabled)
+    }
 
     func testStopDuringPendingPublicationBecomesSavedPendingStart() async throws {
         let fixture = makeFixture()
@@ -797,7 +828,72 @@ final class M1ProductControllerTests: XCTestCase {
         XCTAssertEqual(commits[1].snapshot.nodes.first?.gainDB, 0)
         XCTAssertFalse(commits[1].snapshot.effectsEnabled)
         let snapshot = await fixture.controller.snapshot()
-        XCTAssertEqual(snapshot.persistence, .modified)
+        XCTAssertEqual(snapshot.persistence, .failed("replaceMain"))
+        XCTAssertEqual(snapshot.visibleError, "replaceMain")
+        XCTAssertEqual(snapshot.draft.nodes.first?.gainDB, 8)
+        XCTAssertEqual(snapshot.draft.effectsEnabled, false)
+    }
+    func testFailedNodeSaveDoesNotMaskUncertainEffectsContinuation() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        var uncertainEffects = await fixture.controller.snapshot().draft
+        uncertainEffects.effectsEnabled = false
+        try await fixture.controller.setGainDB(id: fixture.nodeID, gainDB: 8)
+        let gate = ProductTestGate()
+        await fixture.store.setCommitGate(gate)
+        await fixture.store.setNextResults([
+            .failed(generation: 1, reason: .replaceMain),
+            .uncertain(
+                generation: 2,
+                snapshot: uncertainEffects,
+                bootstrapOrigin: nil
+            ),
+        ])
+
+        let saveTask = Task { try await fixture.controller.save() }
+        await waitUntil { await fixture.store.commits.count == 1 }
+        try await fixture.controller.setEffectsEnabled(false)
+        await gate.open()
+        try await saveTask.value
+
+        let snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(snapshot.persistence, .uncertain(generation: 2))
+        XCTAssertEqual(snapshot.visibleError, "Configuration durability is uncertain")
+        XCTAssertFalse(snapshot.canEdit)
+    }
+    func testOlderPendingPublicationDoesNotMaskUncertainEffectsContinuation() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        let publicationGate = ProductTestGate()
+        await fixture.audio.setPublication(disposition: .pending, gate: publicationGate)
+        try await fixture.controller.setGainDB(id: fixture.nodeID, gainDB: 2)
+        try await fixture.controller.save()
+
+        var uncertainEffects = await fixture.controller.snapshot().draft
+        uncertainEffects.effectsEnabled = false
+        try await fixture.controller.setGainDB(id: fixture.nodeID, gainDB: 8)
+        let commitGate = ProductTestGate()
+        await fixture.store.setCommitGate(commitGate)
+        await fixture.store.setNextResults([
+            .failed(generation: 2, reason: .replaceMain),
+            .uncertain(generation: 3, snapshot: uncertainEffects, bootstrapOrigin: nil),
+        ])
+
+        let saveTask = Task { try await fixture.controller.save() }
+        await waitUntil { await fixture.store.commits.count == 2 }
+        try await fixture.controller.setEffectsEnabled(false)
+        await commitGate.open()
+        try await saveTask.value
+        let beforePromotion = await fixture.controller.snapshot()
+        XCTAssertEqual(beforePromotion.persistence, .uncertain(generation: 3))
+
+        await publicationGate.open()
+        await fixture.controller.waitForPendingApplication()
+        let snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(snapshot.persistence, .uncertain(generation: 3))
+        XCTAssertFalse(snapshot.canEdit)
     }
 
     func testShutdownClosesAdmissionWhileWaitingForAcceptedSave() async throws {
@@ -1619,7 +1715,7 @@ private actor ProductStoreFake: M1ConfigurationStoring {
     var commits: [Commit] = []
     var retryGenerations: [UInt64] = []
     var bootstrapCount = 0
-    private var nextResult: M1ConfigurationCommitResult?
+    private var nextResults: [M1ConfigurationCommitResult] = []
     private var retryResult: M1ConfigurationCommitResult?
     private var commitGate: ProductTestGate?
     private var bootstrapGate: ProductTestGate?
@@ -1641,9 +1737,8 @@ private actor ProductStoreFake: M1ConfigurationStoring {
     ) async -> M1ConfigurationCommitResult {
         commits.append(Commit(generation: generation, snapshot: candidate.snapshot, mode: mode))
         if let commitGate { await commitGate.wait() }
-        if let nextResult {
-            self.nextResult = nil
-            return nextResult
+        if !nextResults.isEmpty {
+            return nextResults.removeFirst()
         }
         return .succeeded(generation: generation, snapshot: candidate.snapshot)
     }
@@ -1653,7 +1748,8 @@ private actor ProductStoreFake: M1ConfigurationStoring {
         return retryResult ?? .failed(generation: generation, reason: .persistenceRestricted)
     }
 
-    func setNextResult(_ result: M1ConfigurationCommitResult) { nextResult = result }
+    func setNextResult(_ result: M1ConfigurationCommitResult) { nextResults = [result] }
+    func setNextResults(_ results: [M1ConfigurationCommitResult]) { nextResults = results }
     func setRetryResult(_ result: M1ConfigurationCommitResult) { retryResult = result }
     func setCommitGate(_ gate: ProductTestGate?) { commitGate = gate }
     func setBootstrapGate(_ gate: ProductTestGate?) { bootstrapGate = gate }

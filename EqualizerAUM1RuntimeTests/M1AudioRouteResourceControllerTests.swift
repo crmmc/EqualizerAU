@@ -68,6 +68,44 @@ final class M1AudioRouteResourceControllerTests: XCTestCase {
         XCTAssertFalse(pendingAfterRetry)
         XCTAssertEqual(hal.destroyedTapIDs, [101, 101])
     }
+    func testReusedTapValidationRollbackInvalidatesDestroyedHandoverGuard() async throws {
+        let hal = TestHALRouteOperations()
+        hal.tapObjectIDs = [101, 101, 102]
+        let controller = M1AudioRouteResourceController(operations: hal)
+        let firstGeneration = M1AudioRouteGeneration(rawValue: 1)
+        let firstOutput = try await controller.discoverOutput(generation: firstGeneration)
+        let handoverGuard = try await controller.createTap(
+            generation: firstGeneration,
+            output: firstOutput
+        )
+
+        let secondGeneration = M1AudioRouteGeneration(rawValue: 2)
+        let secondOutput = try await controller.discoverOutput(generation: secondGeneration)
+        hal.tapDataByObjectID[101] = M1HALTapData(uid: "", format: hal.supportedFormat)
+        hal.tapDestroyFailuresRemaining = 1
+        do {
+            _ = try await controller.createTap(
+                generation: secondGeneration,
+                output: secondOutput,
+                handoverGuard: handoverGuard
+            )
+            XCTFail("invalid replacement tap must fail")
+        } catch let error as M1AudioRouteError {
+            XCTAssertEqual(error, .invalidTap("unsupported tap UID or format"))
+        }
+
+        try await controller.cleanupPendingResources()
+        let guardIsOwned = await controller.ownsTap(handoverGuard)
+        XCTAssertFalse(guardIsOwned)
+        try await controller.destroyTap(handoverGuard)
+        hal.tapDataByObjectID[102] = M1HALTapData(uid: "tap.retry", format: hal.supportedFormat)
+        let replacement = try await controller.createTap(
+            generation: secondGeneration,
+            output: secondOutput
+        )
+        try await controller.destroyTap(replacement)
+        XCTAssertEqual(hal.destroyedTapIDs, [101, 101, 102])
+    }
 
     func testTapFormatReadFailureRollsBackUsingPreviouslyReadUID() async throws {
         let hal = TestHALRouteOperations()
@@ -664,6 +702,106 @@ final class M1AudioRouteResourceControllerTests: XCTestCase {
 
         XCTAssertEqual(hal.defaultOutputReadCount, 1)
         XCTAssertEqual(hal.tapRequests.count, 1)
+    }
+    func testFormatRecoveryAdoptsReusedTapObjectIDWithoutLeakingNewTap() async throws {
+        let hal = TestHALRouteOperations()
+        hal.tapObjectIDs = [101, 101]
+        let coordinator = makeWorkingRouteCoordinator(hal: hal)
+        let output = M1MonitoredOutputIdentity(objectID: 42, persistentUID: "device.uid")
+
+        try await coordinator.start(configuration: .transparentRecovery)
+        try await coordinator.stopForOutputFormatRecovery(expectedOutput: output)
+
+        hal.tapDataByObjectID[101] = M1HALTapData(uid: "tap.reused", format: hal.supportedFormat)
+        hal.defaultOutputs = [48_000, 48_000].map { hal.outputData(sampleRate: $0) }
+        try await coordinator.start(
+            configuration: .transparentRecovery,
+            mode: .outputFormatRecovery(expectedOutput: output)
+        )
+
+        let runningState = await coordinator.state()
+        XCTAssertEqual(
+            runningState,
+            .running(generation: M1AudioRouteGeneration(rawValue: 2), bridgeGeneration: 2)
+        )
+        XCTAssertTrue(hal.destroyedTapIDs.isEmpty)
+
+        try await coordinator.stop()
+        XCTAssertEqual(hal.destroyedTapIDs, [101])
+        let stoppedState = await coordinator.state()
+        XCTAssertEqual(stoppedState, .stopped)
+    }
+    func testFormatRecoveryRetryUsesReplacementTapAfterReusedObjectIDStartFailure() async throws {
+        let hal = TestHALRouteOperations()
+        hal.tapObjectIDs = [101, 101, 102]
+        let coordinator = makeWorkingRouteCoordinator(hal: hal)
+        let output = M1MonitoredOutputIdentity(objectID: 42, persistentUID: "device.uid")
+
+        try await coordinator.start(configuration: .transparentRecovery)
+        try await coordinator.stopForOutputFormatRecovery(expectedOutput: output)
+        hal.tapDataByObjectID[101] = M1HALTapData(uid: "tap.reused", format: hal.supportedFormat)
+        hal.defaultOutputs = [48_000, 48_000].map { hal.outputData(sampleRate: $0) }
+        hal.probeAndMuteError = TestFailure.injected
+
+        do {
+            try await coordinator.start(
+                configuration: .transparentRecovery,
+                mode: .outputFormatRecovery(expectedOutput: output)
+            )
+            XCTFail("injected post-handover failure must fail the first recovery attempt")
+        } catch TestFailure.injected {}
+
+        hal.probeAndMuteError = nil
+        hal.tapDataByObjectID[102] = M1HALTapData(uid: "tap.retry", format: hal.supportedFormat)
+        hal.defaultOutputs = [48_000, 48_000].map { hal.outputData(sampleRate: $0) }
+        try await coordinator.start(
+            configuration: .transparentRecovery,
+            mode: .outputFormatRecovery(expectedOutput: output)
+        )
+
+        let runningState = await coordinator.state()
+        XCTAssertEqual(
+            runningState,
+            .running(generation: M1AudioRouteGeneration(rawValue: 3), bridgeGeneration: 3)
+        )
+        XCTAssertEqual(hal.destroyedTapIDs, [101])
+        try await coordinator.stop()
+        XCTAssertEqual(hal.destroyedTapIDs, [101, 102])
+    }
+    func testFormatRecoveryClearsDestroyedReusedGuardAfterTapValidationFailure() async throws {
+        let hal = TestHALRouteOperations()
+        hal.tapObjectIDs = [101, 101, 102]
+        let coordinator = makeWorkingRouteCoordinator(hal: hal)
+        let output = M1MonitoredOutputIdentity(objectID: 42, persistentUID: "device.uid")
+
+        try await coordinator.start(configuration: .transparentRecovery)
+        try await coordinator.stopForOutputFormatRecovery(expectedOutput: output)
+        hal.tapDataByObjectID[101] = M1HALTapData(uid: "", format: hal.supportedFormat)
+        hal.defaultOutputs = [48_000, 48_000].map { hal.outputData(sampleRate: $0) }
+        do {
+            try await coordinator.start(
+                configuration: .transparentRecovery,
+                mode: .outputFormatRecovery(expectedOutput: output)
+            )
+            XCTFail("invalid replacement tap must fail")
+        } catch let error as M1AudioRouteError {
+            XCTAssertEqual(error, .invalidTap("unsupported tap UID or format"))
+        }
+
+        hal.tapDataByObjectID[102] = M1HALTapData(uid: "tap.retry", format: hal.supportedFormat)
+        hal.defaultOutputs = [48_000, 48_000].map { hal.outputData(sampleRate: $0) }
+        try await coordinator.start(
+            configuration: .transparentRecovery,
+            mode: .outputFormatRecovery(expectedOutput: output)
+        )
+        let runningState = await coordinator.state()
+        XCTAssertEqual(
+            runningState,
+            .running(generation: M1AudioRouteGeneration(rawValue: 3), bridgeGeneration: 3)
+        )
+        XCTAssertEqual(hal.destroyedTapIDs, [101])
+        try await coordinator.stop()
+        XCTAssertEqual(hal.destroyedTapIDs, [101, 102])
     }
 
     func testFormatRecoveryPropagatesCancellationDuringStabilityDelay() async throws {

@@ -45,7 +45,11 @@ final class M1AppModel: ObservableObject {
     private var stopTask: Task<Void, Never>?
     private var commandSequence: UInt64 = 0
     private var terminationPending = false
+    private var editFailureSequence: UInt64 = 0
+    private var acknowledgedEditFailureSequence: UInt64 = 0
+    private var latestEditError: String?
     private var draggedNodeID: UUID?
+    let pendingEditorCommitCoordinator = M1PendingEditorCommitCoordinator()
     private let pasteboard: any M1PasteboardAccess
     private let audioLifecycleMonitor: (any M1AudioLifecycleMonitoring)?
 
@@ -369,8 +373,14 @@ final class M1AppModel: ObservableObject {
     }
 
     func requestTermination() async -> M1TerminationDecision {
+        pendingEditorCommitCoordinator.commitPendingEditor()
         terminationPending = true
         await drainCommands()
+        if editFailureSequence != acknowledgedEditFailureSequence {
+            acknowledgedEditFailureSequence = editFailureSequence
+            terminationPending = false
+            return .stayOpen(latestEditError ?? "An editor change could not be applied")
+        }
         let decision = await controller.requestTermination()
         snapshot = await controller.snapshot()
         if case .terminate = decision {
@@ -426,17 +436,24 @@ final class M1AppModel: ObservableObject {
         let predecessor = editTask
         commandSequence &+= 1
         editTask = Task {
-            await predecessor?.value
+            _ = await predecessor?.value
+            var currentError: String?
             do {
                 try await operation()
             } catch {
+                let message = String(describing: error)
+                currentError = message
                 if let onError {
                     onError(error)
                 } else {
-                    await controller.reportCommandError(String(describing: error))
+                    await controller.reportCommandError(message)
                 }
             }
             snapshot = await controller.snapshot()
+            if let currentError {
+                editFailureSequence &+= 1
+                latestEditError = currentError
+            }
         }
     }
 
@@ -1232,6 +1249,7 @@ private struct M1EditorView: View {
         M1GraphicEQEditor(
             points: node.graphicEQPoints,
             sampleRate: model.snapshot.outputLayout?.sampleRate,
+            pendingCommitCoordinator: model.pendingEditorCommitCoordinator,
             onCommit: { model.setGraphicEQPoints($0, id: node.id) }
         )
     }
@@ -1543,6 +1561,7 @@ private enum M1GraphicEQFocusedField: Hashable {
 
 private struct M1GraphicEQEditor: View {
     let sampleRate: Double?
+    let pendingCommitCoordinator: M1PendingEditorCommitCoordinator
     let onCommit: ([M1GraphicEQPoint]) -> Void
 
     private let initialPoints: [M1GraphicEQPoint]
@@ -1551,15 +1570,17 @@ private struct M1GraphicEQEditor: View {
     @State private var validationMessage: String?
     @State private var preview: M1GraphicEQPreview?
     @State private var previewTask: Task<Void, Never>?
-    @State private var didCommit = false
+    @State private var commitRegistrationID: UUID?
     @FocusState private var focusedField: M1GraphicEQFocusedField?
 
     init(
         points: [M1GraphicEQPoint],
         sampleRate: Double?,
+        pendingCommitCoordinator: M1PendingEditorCommitCoordinator,
         onCommit: @escaping ([M1GraphicEQPoint]) -> Void
     ) {
         self.sampleRate = sampleRate
+        self.pendingCommitCoordinator = pendingCommitCoordinator
         self.onCommit = onCommit
         initialPoints = points
         _editablePoints = State(initialValue: points.map(M1EditableGraphicEQPoint.init))
@@ -1589,8 +1610,18 @@ private struct M1GraphicEQEditor: View {
             }
             statusMessage
         }
-        .onAppear(perform: schedulePreview)
+        .onAppear {
+            commitRegistrationID = pendingCommitCoordinator.register {
+                if let focusedField { commitField(focusedField) }
+                commitIfNeeded()
+            }
+            schedulePreview()
+        }
         .onDisappear {
+            if let commitRegistrationID {
+                pendingCommitCoordinator.unregister(commitRegistrationID)
+                self.commitRegistrationID = nil
+            }
             previewTask?.cancel()
             if let focusedField { commitField(focusedField) }
             commitIfNeeded()
@@ -2101,8 +2132,6 @@ private struct M1GraphicEQEditor: View {
     }
 
     private func commitIfNeeded() {
-        guard !didCommit else { return }
-        didCommit = true
         let points = modelPoints
         guard points != initialPoints else { return }
         onCommit(points)

@@ -150,6 +150,7 @@ actor M1AudioRouteResourceController {
     private let operations: any M1HALRouteOperations
     private var activeTapTokens: [UInt32: UUID] = [:]
     private var pendingTapTokens: [UInt32: PendingOwnership] = [:]
+    private var supersededTapTokens: Set<UUID> = []
     private var activeAggregateTokens: [UInt32: UUID] = [:]
     private var pendingAggregateTokens: [UInt32: PendingOwnership] = [:]
 
@@ -219,8 +220,16 @@ actor M1AudioRouteResourceController {
         )
         let objectID = try operations.createProcessTap(request)
         guard objectID != 0 else { throw M1AudioRouteError.invalidTap("HAL returned object 0") }
-        guard activeTapTokens[objectID] == nil else {
-            throw M1AudioRouteError.staleResource
+        var supersededToken: UUID?
+        if let existingToken = activeTapTokens[objectID] {
+            guard handoverGuard?.descriptor.objectID == objectID,
+                  handoverGuard?.descriptor.ownershipToken == existingToken
+            else {
+                throw M1AudioRouteError.staleResource
+            }
+            activeTapTokens.removeValue(forKey: objectID)
+            supersededTapTokens.insert(existingToken)
+            supersededToken = existingToken
         }
 
         let token = UUID()
@@ -388,9 +397,11 @@ actor M1AudioRouteResourceController {
     }
 
     func destroyTap(_ resource: M1ProcessTapResource) throws {
-        guard resource.descriptor.kind == .processTap,
-              activeTapTokens[resource.descriptor.objectID] == resource.descriptor.ownershipToken
-        else {
+        guard resource.descriptor.kind == .processTap else {
+            throw M1AudioRouteError.staleResource
+        }
+        if supersededTapTokens.remove(resource.descriptor.ownershipToken) != nil { return }
+        guard activeTapTokens[resource.descriptor.objectID] == resource.descriptor.ownershipToken else {
             throw M1AudioRouteError.staleResource
         }
         try destroyTap(
@@ -427,10 +438,14 @@ actor M1AudioRouteResourceController {
                     token: ownership.token,
                     persistentUID: persistentUID
                 )
-            } else {
                 pendingTapTokens.removeValue(forKey: objectID)
             }
         }
+    }
+
+    func ownsTap(_ resource: M1ProcessTapResource) -> Bool {
+        resource.descriptor.kind == .processTap
+            && activeTapTokens[resource.descriptor.objectID] == resource.descriptor.ownershipToken
     }
 
     func hasPendingResources() -> Bool {

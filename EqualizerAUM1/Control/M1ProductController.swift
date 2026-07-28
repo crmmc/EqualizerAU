@@ -245,6 +245,26 @@ enum M1TerminationAction: Sendable {
     case cancel
 }
 
+@MainActor
+final class M1PendingEditorCommitCoordinator {
+    private var registration: (id: UUID, commit: () -> Void)?
+
+    @discardableResult
+    func register(_ commit: @escaping () -> Void) -> UUID {
+        let id = UUID()
+        registration = (id, commit)
+        return id
+    }
+
+    func unregister(_ id: UUID) {
+        if registration?.id == id { registration = nil }
+    }
+
+    func commitPendingEditor() {
+        registration?.commit()
+    }
+}
+
 enum M1ProductControllerError: Error, Equatable, Sendable {
     case notBootstrapped
     case commandUnavailable
@@ -1262,6 +1282,17 @@ actor M1ProductController {
             try await publishIfRunning(application)
         }
         if case .uncertain = result { return }
+        if case .failed = result {
+            do {
+                try await persistPendingEffects()
+            } catch {
+                applyPersistenceResult(result)
+                throw error
+            }
+            if case .uncertain = persistence { return }
+            applyPersistenceResult(result)
+            return
+        }
         try await persistPendingEffects()
     }
 
@@ -1467,7 +1498,10 @@ actor M1ProductController {
         publicationTask = nil
         guard promoted, audioState == .running else {
             if audioState == .stopped || audioState == .stopping {
-                persistence = draft == saved ? .savedPendingStart : .modified
+                updatePersistenceAfterPendingApplication(
+                    generation: application.generation,
+                    stopped: true
+                )
             }
             return
         }
@@ -1476,7 +1510,24 @@ actor M1ProductController {
         activeConfigurationGeneration = application.generation
         expectedConfigurationGeneration = nil
         runtimeBaseline = application.snapshot
-        persistence = draft == saved ? .clean : .modified
+        updatePersistenceAfterPendingApplication(
+            generation: application.generation,
+            stopped: false
+        )
+    }
+
+    private func updatePersistenceAfterPendingApplication(generation: UInt64, stopped: Bool) {
+        let canUpdate: Bool
+        switch persistence {
+        case let .pendingApplication(currentGeneration):
+            canUpdate = currentGeneration == generation
+        case .clean, .modified, .savedPendingStart:
+            canUpdate = true
+        default:
+            canUpdate = false
+        }
+        guard canUpdate else { return }
+        persistence = stopped && draft == saved ? .savedPendingStart : (draft == saved ? .clean : .modified)
     }
 
     private func updateEditingSession(
@@ -1485,23 +1536,25 @@ actor M1ProductController {
         guard snapshot().canEdit else { throw M1ProductControllerError.commandUnavailable }
         acceptedOperations += 1
         defer { acceptedOperations -= 1 }
-        let capturedRevision = draftRevision
-        let current = editingSession
-        let effectsEnabled = draft.effectsEnabled
-        let updated = try await Task.detached {
-            var session = current
-            try mutation(&session, effectsEnabled)
-            return session
-        }.value
-        guard capturedRevision == draftRevision else {
-            throw M1ProductControllerError.commandUnavailable
+        while true {
+            try Task.checkCancellation()
+            let capturedRevision = draftRevision
+            let current = editingSession
+            let effectsEnabled = draft.effectsEnabled
+            let updated = try await Task.detached {
+                var session = current
+                try mutation(&session, effectsEnabled)
+                return session
+            }.value
+            if capturedRevision != draftRevision { continue }
+            let nodesChanged = updated.nodes != editingSession.nodes
+            editingSession = updated
+            guard nodesChanged else { return }
+            draft.nodes = updated.nodes
+            try advanceDraftRevision()
+            refreshDirtyState()
+            return
         }
-        let nodesChanged = updated.nodes != editingSession.nodes
-        editingSession = updated
-        guard nodesChanged else { return }
-        draft.nodes = updated.nodes
-        try advanceDraftRevision()
-        refreshDirtyState()
     }
 
     private func requireReadyForPersistence() throws {

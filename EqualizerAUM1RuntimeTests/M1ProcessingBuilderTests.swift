@@ -375,6 +375,25 @@ final class M1ProcessingBuilderTests: XCTestCase {
         XCTAssertEqual(result.linearGainsByChannel[1], 1)
         XCTAssertTrue(result.diagnostics.unresolvedChannels.isEmpty)
     }
+    func testSemanticAndNumericAliasesResolveEachPhysicalChannelOnce() throws {
+        let configuredNode = node(
+            gainDB: 6,
+            channels: .identifiers([identifier("L"), identifier("1")])
+        )
+
+        let result = try M1ProcessingBuilder.build(
+            nodes: [configuredNode],
+            layout: stereoLayout()
+        )
+
+        XCTAssertEqual(
+            result.linearGainsByChannel[0],
+            Float(pow(10, 6.0 / 20)),
+            accuracy: 1e-6
+        )
+        XCTAssertEqual(result.linearGainsByChannel[1], 1)
+        XCTAssertEqual(result.stagesByChannel[0].count, 1)
+    }
 
     func testChannelsNodesScopeFollowingEffectsAndAttachUnresolvedDiagnosticsToScope() throws {
         let leftScopeID = UUID()

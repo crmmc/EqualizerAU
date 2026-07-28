@@ -164,12 +164,15 @@ enum M1ProcessingBuilder {
                 selectedIndexes = Array(layout.channels.indices)
             case let .identifiers(values):
                 var resolvedIndexes: [Int] = []
+                var seenResolvedIndexes: Set<Int> = []
                 var unresolvedIdentifiers: [M1ChannelIdentifier] = []
                 resolvedIndexes.reserveCapacity(values.count)
                 unresolvedIdentifiers.reserveCapacity(values.count)
                 for identifier in values {
                     if let index = channelIndexes[identifier] {
-                        resolvedIndexes.append(index)
+                        if seenResolvedIndexes.insert(index).inserted {
+                            resolvedIndexes.append(index)
+                        }
                     } else {
                         unresolvedIdentifiers.append(identifier)
                     }

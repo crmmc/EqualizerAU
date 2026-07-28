@@ -89,6 +89,7 @@ actor M1NativeAudioRouteCoordinator {
         var diagnostics: M1ProcessingBuildDiagnostics?
         var runtimeLeaseInstalled = false
         var io: M1AudioIOResource?
+        var preservesTapAsFormatRecoveryGuard = false
         var phase: Phase = .starting
 
         init(generation: M1AudioRouteGeneration, bridgeGeneration: UInt64) {
@@ -187,7 +188,6 @@ actor M1NativeAudioRouteCoordinator {
             bridgeGeneration: nextBridgeGeneration
         )
         current = resources
-
         do {
             let discovery = try await discoverOutput(generation: resources.generation, mode: mode)
             let output = discovery.output
@@ -196,12 +196,24 @@ actor M1NativeAudioRouteCoordinator {
                 try await destroyFormatRecoveryGuard()
             }
             try checkStartCancellation()
-            let tap = try await routeResources.createTap(
-                generation: resources.generation,
-                output: output,
-                handoverGuard: discovery.usesFormatRecoveryRelease ? formatRecoveryGuard : nil
-            )
+            let handoverGuard = discovery.usesFormatRecoveryRelease ? formatRecoveryGuard : nil
+            let tap: M1ProcessTapResource
+            do {
+                tap = try await routeResources.createTap(
+                    generation: resources.generation,
+                    output: output,
+                    handoverGuard: handoverGuard
+                )
+            } catch {
+                if let handoverGuard, !(await routeResources.ownsTap(handoverGuard)) {
+                    try await destroyFormatRecoveryGuard()
+                }
+                throw error
+            }
             resources.tap = tap
+            resources.preservesTapAsFormatRecoveryGuard =
+                formatRecoveryGuard?.descriptor.objectID == tap.descriptor.objectID
+                && formatRecoveryGuard?.descriptor.ownershipToken != tap.descriptor.ownershipToken
             try checkStartCancellation()
             let aggregate = try await routeResources.createAggregate(
                 generation: resources.generation,
@@ -258,6 +270,7 @@ actor M1NativeAudioRouteCoordinator {
             try await audioIO.startOutput(io)
             try checkStartCancellation()
             try await destroyFormatRecoveryGuard()
+            resources.preservesTapAsFormatRecoveryGuard = false
             try checkStartCancellation()
             resources.phase = .running
         } catch {
@@ -632,7 +645,15 @@ actor M1NativeAudioRouteCoordinator {
             if let firstError { throw firstError }
             return
         }
+        let preserveTapAsFormatRecoveryGuard = preserveTapAsFormatRecoveryGuard
+            || resources.preservesTapAsFormatRecoveryGuard
         if preserveTapAsFormatRecoveryGuard, let tap = resources.tap {
+            if let previousGuard = formatRecoveryGuard,
+               previousGuard.descriptor.objectID == tap.descriptor.objectID,
+               previousGuard.descriptor.ownershipToken != tap.descriptor.ownershipToken
+            {
+                try await routeResources.destroyTap(previousGuard)
+            }
             formatRecoveryGuard = tap
             formatRecoveryGuardBridgeGeneration = resources.bridgeGeneration
             formatRecoveryGuardCleanupRequired = false
