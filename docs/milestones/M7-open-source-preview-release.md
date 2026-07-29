@@ -1,6 +1,6 @@
 # M7：开源技术预览发布
 
-> **当前状态**：许可证、来源审计和打包流程已完成；路径泄漏修复待提交，Release 性能重放与用户验收待完成
+> **当前状态**：许可证、来源审计、干净打包与 Release 性能重放完成；等待最终 ZIP 用户验收
 > **前置条件**：M6 已完成并关闭
 
 ## 1. 目标
@@ -82,16 +82,15 @@ GUI、权限和真实音频结论只采用用户实际操作后报告的结果�
 - 最新完整 `EqualizerAUM1RuntimeTests` 执行 321 项，其中 2 个性能夹具按设计跳过，其余零失败；
   5-target isolation、29-function realtime audit、project/Plist lint、两份 C++ 严格编译、全部 zsh
   syntax 和 `git diff --check` 通过；
-- 独占执行的 5 次 arm64 Release ABI v3 重放中，1/2/4/8 声道 stable_ratio 中位数分别为
-  `0.02283/0.04306/0.09122/0.17921`，各档 transition 最高分别为
-  `0.03148/0.09000/0.10040/0.20502`，与 M6 基线同量级；
+- 2026-07-29 首组 Release 性能重放受调度离散污染后作废；确认 Runtime、probe 和测量脚本自既有基线
+  后字节级未变，并在低负载下独占重跑 5 次。1/2/4/8 声道 stable_ratio 中位数分别为
+  `0.02101/0.04093/0.08122/0.17043`，各档 transition 最高分别为
+  `0.02237/0.04193/0.08722/0.22607`，与 M6/M7 基线同量级；
 - 2026-07-29 首次从干净 `54118b6` 重放成功，但字节级扫描发现 Release 可执行文件泄漏本机源码和
   DerivedData 绝对路径，因此该 ZIP 已废弃，未交付验收；
-- `scripts/package-adhoc-preview.zsh` 已在 ad-hoc 签名前增加 `strip -S`，并在签名、许可证和
-  `SOURCE_COMMIT.txt` 组装后扫描整个 payload 的本机源码路径。dirty 验证包路径命中为 0，大小
-  777868 bytes，SHA-256 为
-  `e7c7cd1d0cf75a18d23ff21b652aab8fed2a5d0466031d967da13c70ac29234f`，签名仍为
-  `Signature=adhoc`、`TeamIdentifier=not set` 和 `flags=adhoc,runtime`；
-- 当前脚本与本文有未提交改动，验证包 `SOURCE_COMMIT.txt` 正确标记 `54118b6-dirty`，不得发布或用于
-  Gatekeeper/TCC 验收。最终仍需提交修复、从新干净 commit 重放、在低负载环境重放 Release 性能，
-  再由用户完成 ZIP 安装、权限、GUI、真实音频和覆盖升级验收。
+- 路径泄漏修复已提交为 `9e362a4`。最终 clean ZIP 的 `SOURCE_COMMIT.txt` 精确记录
+  `9e362a4a7e617d10f427c2841d2cfaf85a516a4e`，payload 本机路径命中 0，大小 777864 bytes，SHA-256 为
+  `bb70491e34526e54f8f900875d47345b906235aee64df0ca631bd5def559d011`；签名显示
+  `Signature=adhoc`、`TeamIdentifier=not set` 和 `flags=adhoc,runtime`，ZIP 往返严格验签通过；
+- 自动化退出条件已满足；剩余工作仅为用户从最终 ZIP 完成安装、逐应用 Gatekeeper、权限、GUI、
+  真实音频和覆盖升级验收。公开上传、tag 或 push 仍需另行明确授权。
