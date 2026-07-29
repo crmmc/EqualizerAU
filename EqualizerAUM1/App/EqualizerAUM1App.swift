@@ -1,6 +1,81 @@
 import AppKit
+import Combine
 import SwiftUI
 import UniformTypeIdentifiers
+
+private extension M1PresentationMessage {
+    var localizedKey: LocalizedStringKey {
+        switch self {
+        case .audioCapturePermissionRequired:
+            "System audio capture permission is required."
+        case let .audioStoppedAfterRetirementMaintenance(reason):
+            "Audio stopped after retirement maintenance: \(reason)"
+        case .audioDeviceMonitoringUnavailable:
+            "Audio device monitoring is unavailable; waiting for a system device event."
+        case let .capturePermissionVerificationFailed(reason):
+            "Audio stopped because capture permission verification failed: \(reason)"
+        case let .capturePermissionCleanupFailed(reason):
+            "Audio cleanup after capture permission verification failed: \(reason)"
+        case let .automaticAudioRecoveryPaused(reason):
+            "Automatic audio recovery paused: \(reason)"
+        case .configurationDurabilityUncertain:
+            "Configuration durability is uncertain"
+        case .editorChangeCouldNotApply:
+            "An editor change could not be applied"
+        case .configurationRepairFailed:
+            "Configuration repair failed"
+        case .terminationCancelled:
+            "Termination cancelled"
+        case let .technical(reason):
+            "Operation failed: \(reason)"
+        }
+    }
+
+    func localizedString(locale: Locale) -> String {
+        switch self {
+        case .audioCapturePermissionRequired:
+            String(localized: "System audio capture permission is required.", locale: locale)
+        case let .audioStoppedAfterRetirementMaintenance(reason):
+            String(localized: "Audio stopped after retirement maintenance: \(reason)", locale: locale)
+        case .audioDeviceMonitoringUnavailable:
+            String(
+                localized: "Audio device monitoring is unavailable; waiting for a system device event.",
+                locale: locale
+            )
+        case let .capturePermissionVerificationFailed(reason):
+            String(localized: "Audio stopped because capture permission verification failed: \(reason)", locale: locale)
+        case let .capturePermissionCleanupFailed(reason):
+            String(localized: "Audio cleanup after capture permission verification failed: \(reason)", locale: locale)
+        case let .automaticAudioRecoveryPaused(reason):
+            String(localized: "Automatic audio recovery paused: \(reason)", locale: locale)
+        case .configurationDurabilityUncertain:
+            String(localized: "Configuration durability is uncertain", locale: locale)
+        case .editorChangeCouldNotApply:
+            String(localized: "An editor change could not be applied", locale: locale)
+        case .configurationRepairFailed:
+            String(localized: "Configuration repair failed", locale: locale)
+        case .terminationCancelled:
+            String(localized: "Termination cancelled", locale: locale)
+        case let .technical(reason):
+            String(localized: "Operation failed: \(reason)", locale: locale)
+        }
+    }
+}
+
+private extension M1ApplicationLanguage {
+    var titleKey: LocalizedStringKey {
+        switch self {
+        case .system: "Follow System"
+        case .english: "English"
+        case .simplifiedChinese: "简体中文"
+        }
+    }
+}
+
+private var m1ApplicationLocale: Locale {
+    let rawValue = UserDefaults.standard.string(forKey: M1ApplicationLanguage.defaultsKey)
+    return (M1ApplicationLanguage(rawValue: rawValue ?? "") ?? .system).locale
+}
 
 private let m1NodeDragType = UTType(exportedAs: "com.ruimingchen.equalizerau.preamp-node-drag")
 
@@ -47,7 +122,7 @@ final class M1AppModel: ObservableObject {
     private var terminationPending = false
     private var editFailureSequence: UInt64 = 0
     private var acknowledgedEditFailureSequence: UInt64 = 0
-    private var latestEditError: String?
+    private var latestEditError: M1PresentationMessage?
     private var draggedNodeID: UUID?
     let pendingEditorCommitCoordinator = M1PendingEditorCommitCoordinator()
     private let pasteboard: any M1PasteboardAccess
@@ -294,9 +369,9 @@ final class M1AppModel: ObservableObject {
                 try await controller.refreshDiagnostics()
                 snapshot = await controller.snapshot()
                 let alert = NSAlert()
-                alert.messageText = "Realtime Diagnostics"
+                alert.messageText = String(localized: "Realtime Diagnostics", locale: m1ApplicationLocale)
                 alert.informativeText = diagnosticsText(snapshot.realtimeDiagnostics)
-                alert.addButton(withTitle: "OK")
+                alert.addButton(withTitle: String(localized: "OK", locale: m1ApplicationLocale))
                 alert.runModal()
             } catch {
                 await controller.reportCommandError(String(describing: error))
@@ -306,18 +381,26 @@ final class M1AppModel: ObservableObject {
     }
 
     private func diagnosticsText(_ diagnostics: M1RealtimeDiagnostics?) -> String {
-        guard let diagnostics else { return "No running audio route is available." }
-        return """
-        Captured frames: \(diagnostics.io.capturedFrames)
-        Rendered frames: \(diagnostics.io.renderedFrames)
-        Overflow blocks: \(diagnostics.io.overflowedBlocks)
-        Underrun blocks: \(diagnostics.io.underrunBlocks)
-        Dropped backlog frames: \(diagnostics.io.droppedBacklogFrames)
-        Invalid callbacks/process calls: \(diagnostics.io.invalidCallbacks + diagnostics.runtime.invalidProcessCalls)
-        Overlapping callbacks: \(diagnostics.io.overlappingRenderCallbacks + diagnostics.runtime.overlappingCallbacks)
-        Non-finite input samples: \(diagnostics.runtime.nonFiniteInputSamples)
-        Saturated output samples: \(diagnostics.runtime.saturatedOutputSamples)
-        """
+        guard let diagnostics else {
+            return String(localized: "No running audio route is available.", locale: m1ApplicationLocale)
+        }
+        return [
+            String(localized: "Captured frames: \(diagnostics.io.capturedFrames)", locale: m1ApplicationLocale),
+            String(localized: "Rendered frames: \(diagnostics.io.renderedFrames)", locale: m1ApplicationLocale),
+            String(localized: "Overflow blocks: \(diagnostics.io.overflowedBlocks)", locale: m1ApplicationLocale),
+            String(localized: "Underrun blocks: \(diagnostics.io.underrunBlocks)", locale: m1ApplicationLocale),
+            String(localized: "Dropped backlog frames: \(diagnostics.io.droppedBacklogFrames)", locale: m1ApplicationLocale),
+            String(
+                localized: "Invalid callbacks/process calls: \(diagnostics.io.invalidCallbacks + diagnostics.runtime.invalidProcessCalls)",
+                locale: m1ApplicationLocale
+            ),
+            String(
+                localized: "Overlapping callbacks: \(diagnostics.io.overlappingRenderCallbacks + diagnostics.runtime.overlappingCallbacks)",
+                locale: m1ApplicationLocale
+            ),
+            String(localized: "Non-finite input samples: \(diagnostics.runtime.nonFiniteInputSamples)", locale: m1ApplicationLocale),
+            String(localized: "Saturated output samples: \(diagnostics.runtime.saturatedOutputSamples)", locale: m1ApplicationLocale),
+        ].joined(separator: "\n")
     }
 
     func shutdown() async throws {
@@ -332,7 +415,7 @@ final class M1AppModel: ObservableObject {
         if editFailureSequence != acknowledgedEditFailureSequence {
             acknowledgedEditFailureSequence = editFailureSequence
             terminationPending = false
-            return .stayOpen(latestEditError ?? "An editor change could not be applied")
+            return .stayOpen(latestEditError ?? .editorChangeCouldNotApply)
         }
         let decision = await controller.requestTermination()
         snapshot = await controller.snapshot()
@@ -390,12 +473,12 @@ final class M1AppModel: ObservableObject {
         commandSequence &+= 1
         editTask = Task {
             _ = await predecessor?.value
-            var currentError: String?
+            var currentError: M1PresentationMessage?
             do {
                 try await operation()
             } catch {
                 let message = String(describing: error)
-                currentError = message
+                currentError = .technical(message)
                 if let onError {
                     onError(error)
                 } else {
@@ -457,10 +540,308 @@ private final class M1SystemPasteboard: M1PasteboardAccess, @unchecked Sendable 
 }
 
 @MainActor
+private final class M1ApplicationBridge {
+    static let shared = M1ApplicationBridge()
+    weak var model: M1AppModel?
+
+    private init() {}
+}
+
+private struct M1EditorWindowReader: NSViewRepresentable {
+    let onResolve: @MainActor (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            if let window = view.window { onResolve(window) }
+        }
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        DispatchQueue.main.async {
+            if let window = view.window { onResolve(window) }
+        }
+    }
+}
+
+private enum M1StatusIndicatorState {
+    case active
+    case inactive
+    case error
+}
+
+private final class M1StatusIndicatorView: NSView {
+    var state = M1StatusIndicatorState.inactive {
+        didSet { needsDisplay = true }
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let rect = bounds.insetBy(dx: 0.75, dy: 0.75)
+        let color: NSColor = switch state {
+        case .active: NSColor.systemGreen
+        case .inactive: NSColor.systemBlue
+        case .error: NSColor.systemRed
+        }
+        color.setFill()
+        NSBezierPath(ovalIn: rect).fill()
+    }
+}
+
+@MainActor
 private final class M1TerminationDelegate: NSObject, NSApplicationDelegate {
     weak var model: M1AppModel?
     var restoreEditorWindow: (() -> Void)?
+    private weak var editorWindow: NSWindow?
+    private var statusItem: NSStatusItem?
+    private var statusIndicator: M1StatusIndicatorView?
+    private lazy var statusIcon = makeStatusIcon()
+    private var snapshotCancellable: AnyCancellable?
     private var terminationPending = false
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+        guard let model = M1ApplicationBridge.shared.model else { return }
+        connect(model: model)
+        installStatusItemIfNeeded()
+        updateStatusItem(for: model.snapshot)
+    }
+
+    func configure(model: M1AppModel, restoreEditorWindow: @escaping () -> Void) {
+        connect(model: model)
+        self.restoreEditorWindow = restoreEditorWindow
+        installStatusItemIfNeeded()
+        statusItem?.button?.isEnabled = true
+        updateStatusItem(for: model.snapshot)
+    }
+
+    private func connect(model: M1AppModel) {
+        self.model = model
+        guard snapshotCancellable == nil else { return }
+        snapshotCancellable = model.$snapshot.sink { [weak self] snapshot in
+            Task { @MainActor in self?.updateStatusItem(for: snapshot) }
+        }
+    }
+
+    func applicationLanguageDidChange() {
+        if let model { updateStatusItem(for: model.snapshot) }
+    }
+
+    func registerEditorWindow(_ window: NSWindow) {
+        editorWindow = window
+    }
+
+    func showEditor() {
+        NSApp.setActivationPolicy(.regular)
+        if let editorWindow, editorWindow.isVisible {
+            if editorWindow.isMiniaturized { editorWindow.deminiaturize(nil) }
+            editorWindow.makeKeyAndOrderFront(nil)
+        } else {
+            restoreEditorWindow?()
+        }
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+
+    private func installStatusItemIfNeeded() {
+        guard statusItem == nil else { return }
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        item.button?.target = self
+        item.button?.action = #selector(handleStatusItemClick(_:))
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        item.button?.isEnabled = restoreEditorWindow != nil
+        if let button = item.button {
+            let indicator = M1StatusIndicatorView()
+            indicator.translatesAutoresizingMaskIntoConstraints = false
+            indicator.setAccessibilityElement(false)
+            button.addSubview(indicator)
+            NSLayoutConstraint.activate([
+                indicator.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -0.5),
+                indicator.bottomAnchor.constraint(equalTo: button.bottomAnchor, constant: 0.5),
+                indicator.widthAnchor.constraint(equalToConstant: 8),
+                indicator.heightAnchor.constraint(equalToConstant: 8),
+            ])
+            statusIndicator = indicator
+        }
+        statusItem = item
+    }
+
+    @objc private func handleStatusItemClick(_ sender: Any?) {
+        if NSApp.currentEvent?.type == .rightMouseUp {
+            presentStatusMenu()
+        } else {
+            showEditor()
+        }
+    }
+
+    private func presentStatusMenu() {
+        guard let statusItem else { return }
+        statusItem.menu = makeStatusMenu()
+        statusItem.button?.performClick(nil)
+        statusItem.menu = nil
+    }
+
+    private func makeStatusMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let locale = m1ApplicationLocale
+        let snapshot = model?.snapshot
+        let status = NSMenuItem(
+            title: snapshot.map { statusText(for: $0, locale: locale) } ?? "EqualizerAU",
+            action: nil,
+            keyEquivalent: ""
+        )
+        status.isEnabled = false
+        menu.addItem(status)
+        let open = NSMenuItem(
+            title: String(localized: "Open EqualizerAU", locale: locale),
+            action: #selector(openFromStatusItem(_:)),
+            keyEquivalent: ""
+        )
+        open.target = self
+        menu.addItem(open)
+        let processing = NSMenuItem(
+            title: String(localized: "Processing", locale: locale),
+            action: #selector(toggleProcessingFromStatusItem(_:)),
+            keyEquivalent: ""
+        )
+        processing.target = self
+        processing.state = snapshot?.processingEnabled == true ? .on : .off
+        processing.isEnabled = snapshot?.canSetProcessing == true
+        menu.addItem(processing)
+        menu.addItem(.separator())
+        let language = NSMenuItem(title: String(localized: "Language", locale: locale), action: nil, keyEquivalent: "")
+        let languageMenu = NSMenu()
+        let selectedLanguage = M1ApplicationLanguage(
+            rawValue: UserDefaults.standard.string(forKey: M1ApplicationLanguage.defaultsKey) ?? ""
+        ) ?? .system
+        for option in M1ApplicationLanguage.allCases {
+            let item = NSMenuItem(
+                title: languageTitle(option, locale: locale),
+                action: #selector(selectLanguageFromStatusItem(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = option.rawValue
+            item.state = option == selectedLanguage ? .on : .off
+            languageMenu.addItem(item)
+        }
+        language.submenu = languageMenu
+        menu.addItem(language)
+        let quit = NSMenuItem(
+            title: String(localized: "Quit EqualizerAU", locale: locale),
+            action: #selector(quitFromStatusItem(_:)),
+            keyEquivalent: "q"
+        )
+        quit.target = self
+        menu.addItem(quit)
+        return menu
+    }
+
+    private func languageTitle(_ language: M1ApplicationLanguage, locale: Locale) -> String {
+        switch language {
+        case .system: String(localized: "Follow System", locale: locale)
+        case .english: String(localized: "English", locale: locale)
+        case .simplifiedChinese: String(localized: "简体中文", locale: locale)
+        }
+    }
+
+    @objc private func openFromStatusItem(_ sender: Any?) { showEditor() }
+
+    @objc private func toggleProcessingFromStatusItem(_ sender: Any?) {
+        guard let model else { return }
+        model.setProcessing(!model.snapshot.processingEnabled)
+    }
+
+    @objc private func selectLanguageFromStatusItem(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String,
+              M1ApplicationLanguage(rawValue: rawValue) != nil else { return }
+        UserDefaults.standard.set(rawValue, forKey: M1ApplicationLanguage.defaultsKey)
+        applicationLanguageDidChange()
+    }
+
+    @objc private func quitFromStatusItem(_ sender: Any?) {
+        NSApp.terminate(nil)
+    }
+
+    private func updateStatusItem(for snapshot: M1ProductSnapshot) {
+        let hasError = snapshot.visibleError != nil || snapshot.audio == .cleanupRequired
+            || snapshot.audioRecovery == .permissionRequired
+        statusItem?.button?.image = statusIcon
+        statusIndicator?.state = hasError ? .error : snapshot.processingEnabled ? .active : .inactive
+        statusItem?.button?.toolTip = statusText(for: snapshot, locale: m1ApplicationLocale)
+    }
+
+    private func makeStatusIcon() -> NSImage {
+        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
+            NSColor.black.setStroke()
+            NSColor.black.setFill()
+            for (x, handleY) in zip([3.5, 8.5, 13.5], [11.5, 6.0, 9.0]) {
+                let track = NSBezierPath()
+                track.move(to: NSPoint(x: x, y: 2))
+                track.line(to: NSPoint(x: x, y: 16))
+                track.lineWidth = 1.3
+                track.lineCapStyle = .round
+                track.stroke()
+                NSBezierPath(
+                    roundedRect: NSRect(x: x - 2, y: handleY - 1.4, width: 4, height: 2.8),
+                    xRadius: 1.1,
+                    yRadius: 1.1
+                ).fill()
+            }
+            return true
+        }
+        image.isTemplate = true
+        image.accessibilityDescription = "EqualizerAU"
+        return image
+    }
+
+    private func statusText(for snapshot: M1ProductSnapshot, locale: Locale) -> String {
+        if let error = snapshot.visibleError { return error.localizedString(locale: locale) }
+        switch snapshot.audioRecovery {
+        case .inactive:
+            break
+        case .suspendedForSleep:
+            return String(localized: "Audio suspended while the Mac sleeps", locale: locale)
+        case let .recovering(_, attempt, maximumAttempts):
+            return String(
+                localized: "Recovering audio route (\(attempt)/\(maximumAttempts))…",
+                locale: locale
+            )
+        case .waitingForRetry:
+            return String(localized: "Automatic recovery paused; start Processing to retry", locale: locale)
+        case .permissionRequired:
+            return String(localized: "System audio capture permission is required", locale: locale)
+        }
+        switch snapshot.persistence {
+        case .clean:
+            if snapshot.audio == .running {
+                let key: String.LocalizationValue = snapshot.appliedEffectsEnabled == true
+                    ? "Processing active"
+                    : "Processing bypassed"
+                return String(localized: key, locale: locale)
+            }
+            return String(localized: "Ready", locale: locale)
+        case .modified:
+            return String(localized: "Unsaved changes", locale: locale)
+        case let .saving(generation):
+            return String(localized: "Saving generation \(generation)…", locale: locale)
+        case let .uncertain(generation):
+            return String(localized: "Generation \(generation) durability is uncertain", locale: locale)
+        case .recovery:
+            return String(localized: "Configuration repair required", locale: locale)
+        case .waitingForOutput:
+            return String(localized: "Saved; waiting for an output device", locale: locale)
+        case .savedPendingStart:
+            return String(localized: "Saved; applies on next engine start", locale: locale)
+        case let .pendingApplication(generation):
+            return String(localized: "Applying generation \(generation)…", locale: locale)
+        case let .failed(reason):
+            return String(localized: "Operation failed: \(reason)", locale: locale)
+        }
+    }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
@@ -468,16 +849,16 @@ private final class M1TerminationDelegate: NSObject, NSApplicationDelegate {
         _ sender: NSApplication,
         hasVisibleWindows flag: Bool
     ) -> Bool {
-        restoreEditorWindow?()
+        showEditor()
         return true
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
-        model?.applicationDidBecomeActive()
+        (model ?? M1ApplicationBridge.shared.model)?.applicationDidBecomeActive()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let model else { return .terminateNow }
+        guard let model = model ?? M1ApplicationBridge.shared.model else { return .terminateNow }
         guard !terminationPending else { return .terminateLater }
         terminationPending = true
         Task {
@@ -486,7 +867,7 @@ private final class M1TerminationDelegate: NSObject, NSApplicationDelegate {
                 guard let action = self.present(prompt) else {
                     _ = await model.resolveTermination(.cancel)
                     self.terminationPending = false
-                    self.restoreEditorWindow?()
+                    self.showEditor()
                     sender.reply(toApplicationShouldTerminate: false)
                     return
                 }
@@ -497,7 +878,7 @@ private final class M1TerminationDelegate: NSObject, NSApplicationDelegate {
                 sender.reply(toApplicationShouldTerminate: true)
             case .stayOpen, .prompt:
                 self.terminationPending = false
-                self.restoreEditorWindow?()
+                self.showEditor()
                 sender.reply(toApplicationShouldTerminate: false)
             }
         }
@@ -507,34 +888,44 @@ private final class M1TerminationDelegate: NSObject, NSApplicationDelegate {
     private func present(_ prompt: M1TerminationPrompt) -> M1TerminationAction? {
         let alert = NSAlert()
         alert.alertStyle = .warning
+        let locale = m1ApplicationLocale
         switch prompt {
         case .unsavedNodes:
-            alert.messageText = "Save changes before quitting?"
-            alert.informativeText = "Your Preamp edits have not been saved."
-            alert.addButton(withTitle: "Save and Exit")
-            alert.addButton(withTitle: "Discard")
-            alert.addButton(withTitle: "Cancel")
+            alert.messageText = String(localized: "Save changes before quitting?", locale: locale)
+            alert.informativeText = String(localized: "Your Preamp edits have not been saved.", locale: locale)
+            alert.addButton(withTitle: String(localized: "Save and Exit", locale: locale))
+            alert.addButton(withTitle: String(localized: "Discard", locale: locale))
+            alert.addButton(withTitle: String(localized: "Cancel", locale: locale))
             return action(for: alert.runModal(), primary: .saveAndExit, secondary: .discardAndExit)
         case .unsavedEffects:
-            alert.messageText = "Effects state is not saved"
-            alert.informativeText = "Retry saving, or exit and restore the on-disk state next time."
-            alert.addButton(withTitle: "Retry")
-            alert.addButton(withTitle: "Exit")
-            alert.addButton(withTitle: "Cancel")
+            alert.messageText = String(localized: "Effects state is not saved", locale: locale)
+            alert.informativeText = String(
+                localized: "Retry saving, or exit and restore the on-disk state next time.",
+                locale: locale
+            )
+            alert.addButton(withTitle: String(localized: "Retry", locale: locale))
+            alert.addButton(withTitle: String(localized: "Exit", locale: locale))
+            alert.addButton(withTitle: String(localized: "Cancel", locale: locale))
             return action(for: alert.runModal(), primary: .retry, secondary: .exit)
         case .unsavedNodesAndEffects:
-            alert.messageText = "Save all changes before quitting?"
-            alert.informativeText = "Preamp edits and the Effects state have not been saved."
-            alert.addButton(withTitle: "Save and Exit")
-            alert.addButton(withTitle: "Discard and Exit")
-            alert.addButton(withTitle: "Cancel")
+            alert.messageText = String(localized: "Save all changes before quitting?", locale: locale)
+            alert.informativeText = String(
+                localized: "Preamp edits and the Effects state have not been saved.",
+                locale: locale
+            )
+            alert.addButton(withTitle: String(localized: "Save and Exit", locale: locale))
+            alert.addButton(withTitle: String(localized: "Discard and Exit", locale: locale))
+            alert.addButton(withTitle: String(localized: "Cancel", locale: locale))
             return action(for: alert.runModal(), primary: .saveAndExit, secondary: .discardAndExit)
         case let .uncertainPersistence(generation):
-            alert.messageText = "Configuration durability is uncertain"
-            alert.informativeText = "Retry the final sync for generation \(generation), or exit without claiming which complete file is on disk."
-            alert.addButton(withTitle: "Retry")
-            alert.addButton(withTitle: "Exit")
-            alert.addButton(withTitle: "Cancel")
+            alert.messageText = String(localized: "Configuration durability is uncertain", locale: locale)
+            alert.informativeText = String(
+                localized: "Retry the final sync for generation \(generation), or exit without claiming which complete file is on disk.",
+                locale: locale
+            )
+            alert.addButton(withTitle: String(localized: "Retry", locale: locale))
+            alert.addButton(withTitle: String(localized: "Exit", locale: locale))
+            alert.addButton(withTitle: String(localized: "Cancel", locale: locale))
             return action(for: alert.runModal(), primary: .retry, secondary: .exit)
         }
     }
@@ -566,12 +957,49 @@ private extension FocusedValues {
     }
 }
 
+private struct M1ApplicationMenuPruningCommands: Commands {
+    var body: some Commands {
+        CommandGroup(replacing: .appInfo) {
+            Button("About EqualizerAU") { NSApp.orderFrontStandardAboutPanel(nil) }
+        }
+        CommandGroup(replacing: .appSettings) {}
+        CommandGroup(replacing: .systemServices) {}
+        CommandGroup(replacing: .appVisibility) {
+            Button("Hide EqualizerAU") { NSApp.hide(nil) }
+                .keyboardShortcut("h")
+            Button("Hide Others") { NSApp.hideOtherApplications(nil) }
+                .keyboardShortcut("h", modifiers: [.command, .option])
+            Button("Show All") { NSApp.unhideAllApplications(nil) }
+        }
+        CommandGroup(replacing: .appTermination) {
+            Button("Quit EqualizerAU") { NSApp.terminate(nil) }
+                .keyboardShortcut("q")
+        }
+    }
+}
+
+private struct M1WindowMenuPruningCommands: Commands {
+    var body: some Commands {
+        CommandGroup(replacing: .windowSize) {
+            Button("Minimize") { NSApp.keyWindow?.miniaturize(nil) }
+                .keyboardShortcut("m")
+            Button("Zoom") { NSApp.keyWindow?.performZoom(nil) }
+        }
+    }
+}
+
 @main
 struct EqualizerAUM1App: App {
     @NSApplicationDelegateAdaptor(M1TerminationDelegate.self) private var appDelegate
     @Environment(\.openWindow) private var openWindow
     @StateObject private var model: M1AppModel
+    @AppStorage(M1ApplicationLanguage.defaultsKey) private var applicationLanguageRawValue =
+        M1ApplicationLanguage.system.rawValue
     @FocusedValue(\.m1GraphicEQSelectAllAction) private var graphicEQSelectAllAction
+
+    private var applicationLanguage: M1ApplicationLanguage {
+        M1ApplicationLanguage(rawValue: applicationLanguageRawValue) ?? .system
+    }
 
     init() {
         let holder = M1RouteHolder()
@@ -607,93 +1035,114 @@ struct EqualizerAUM1App: App {
             audio: route
         )
         holder.controller = controller
-        _model = StateObject(wrappedValue: M1AppModel(
+        let appModel = M1AppModel(
             controller: controller,
             audioLifecycleMonitor: M1SystemAudioLifecycleMonitor()
-        ))
+        )
+        _model = StateObject(wrappedValue: appModel)
+        M1ApplicationBridge.shared.model = appModel
+        appModel.bootstrap()
+    }
+
+    private func canPerformTextAction(_ action: Selector) -> Bool? {
+        guard let textView = NSApp.keyWindow?.firstResponder as? NSTextView else { return nil }
+        let item = NSMenuItem()
+        item.action = action
+        return textView.validateUserInterfaceItem(item)
+    }
+
+    private func canPerformTextUndo(isRedo: Bool) -> Bool? {
+        guard let undoManager = (NSApp.keyWindow?.firstResponder as? NSTextView)?.undoManager else {
+            return nil
+        }
+        return isRedo ? undoManager.canRedo : undoManager.canUndo
     }
 
     private func performTextAction(_ action: Selector) -> Bool {
         guard let textView = NSApp.keyWindow?.firstResponder as? NSTextView else {
             return false
         }
-        return textView.tryToPerform(action, with: nil)
+        _ = textView.tryToPerform(action, with: nil)
+        return true
     }
 
     private func performTextUndo(isRedo: Bool) -> Bool {
-        guard let textView = NSApp.keyWindow?.firstResponder as? NSTextView,
-              let undoManager = textView.undoManager else {
+        guard let undoManager = (NSApp.keyWindow?.firstResponder as? NSTextView)?.undoManager else {
             return false
         }
         if isRedo {
-            guard undoManager.canRedo else { return false }
-            undoManager.redo()
-        } else {
-            guard undoManager.canUndo else { return false }
+            if undoManager.canRedo { undoManager.redo() }
+        } else if undoManager.canUndo {
             undoManager.undo()
         }
         return true
     }
 
     var body: some Scene {
+        let _ = appDelegate.configure(model: model) { openWindow(id: "editor") }
         Window("EqualizerAU", id: "editor") {
             M1EditorView(model: model)
-                .onAppear {
-                    appDelegate.model = model
-                    appDelegate.restoreEditorWindow = {
-                        if let window = NSApp.windows.first(where: { $0.isVisible && $0.canBecomeKey }) {
-                            window.makeKeyAndOrderFront(nil)
-                        } else {
-                            openWindow(id: "editor")
-                        }
-                        NSApp.activate(ignoringOtherApps: true)
-                    }
-                    model.bootstrap()
+                .background {
+                    M1EditorWindowReader { appDelegate.registerEditorWindow($0) }
                 }
         }
         .windowResizability(.contentMinSize)
         .defaultSize(width: 760, height: 520)
+        .environment(\.locale, applicationLanguage.locale)
+        .commandsRemoved()
         .commands {
             CommandGroup(replacing: .saveItem) {
                 Button("Save") { model.save() }
                     .keyboardShortcut("s")
                     .disabled(!model.snapshot.canSave)
+                Button("Close Window") { NSApp.keyWindow?.performClose(nil) }
+                    .keyboardShortcut("w")
             }
+            M1ApplicationMenuPruningCommands()
+            M1WindowMenuPruningCommands()
             CommandGroup(replacing: .undoRedo) {
                 Button("Undo") {
                     if !performTextUndo(isRedo: false) { model.undo() }
                 }
                     .keyboardShortcut("z")
-                    .disabled(!model.snapshot.canEdit)
+                    .disabled(!(canPerformTextUndo(isRedo: false) ?? model.snapshot.canEdit))
                 Button("Redo") {
                     if !performTextUndo(isRedo: true) { model.redo() }
                 }
                     .keyboardShortcut("z", modifiers: [.command, .shift])
-                    .disabled(!model.snapshot.canEdit)
+                    .disabled(!(canPerformTextUndo(isRedo: true) ?? model.snapshot.canEdit))
             }
             CommandGroup(replacing: .pasteboard) {
                 Button("Cut") {
                     if !performTextAction(#selector(NSText.cut(_:))) { model.cut() }
                 }
                     .keyboardShortcut("x")
-                    .disabled(!model.snapshot.canEdit)
+                    .disabled(
+                        !(canPerformTextAction(#selector(NSText.cut(_:))) ?? model.snapshot.canEdit)
+                    )
                 Button("Copy") {
                     if !performTextAction(#selector(NSText.copy(_:))) { model.copy() }
                 }
                     .keyboardShortcut("c")
-                    .disabled(!model.snapshot.canEdit)
+                    .disabled(
+                        !(canPerformTextAction(#selector(NSText.copy(_:))) ?? model.snapshot.canEdit)
+                    )
                 Button("Paste") {
                     if !performTextAction(#selector(NSText.paste(_:))) { model.paste() }
                 }
                     .keyboardShortcut("v")
-                    .disabled(!model.snapshot.canEdit)
+                    .disabled(
+                        !(canPerformTextAction(#selector(NSText.paste(_:))) ?? model.snapshot.canEdit)
+                    )
                 Button("Select All") {
                     if performTextAction(#selector(NSText.selectAll(_:))) { return }
                     if let graphicEQSelectAllAction { graphicEQSelectAllAction() }
                     else { model.selectAll() }
                 }
                     .keyboardShortcut("a")
-                    .disabled(!model.snapshot.canEdit)
+                    .disabled(
+                        !(canPerformTextAction(#selector(NSText.selectAll(_:))) ?? model.snapshot.canEdit)
+                    )
             }
             CommandGroup(after: .pasteboard) {
                 Button("Delete") {
@@ -702,38 +1151,42 @@ struct EqualizerAUM1App: App {
                     }
                 }
                     .keyboardShortcut(.delete, modifiers: [])
-                    .disabled(!model.snapshot.canEdit)
-            }
-            CommandGroup(after: .textEditing) {
-                Button("Move Focus Up") { model.moveFocus(by: -1, extending: false) }
-                    .keyboardShortcut(.upArrow, modifiers: [])
-                    .disabled(!model.snapshot.canEdit)
-                Button("Move Focus Down") { model.moveFocus(by: 1, extending: false) }
-                    .keyboardShortcut(.downArrow, modifiers: [])
-                    .disabled(!model.snapshot.canEdit)
-                Button("Extend Selection Up") { model.moveFocus(by: -1, extending: true) }
-                    .keyboardShortcut(.upArrow, modifiers: [.shift])
-                    .disabled(!model.snapshot.canEdit)
-                Button("Extend Selection Down") { model.moveFocus(by: 1, extending: true) }
-                    .keyboardShortcut(.downArrow, modifiers: [.shift])
-                    .disabled(!model.snapshot.canEdit)
-                Button("Add Focused Processor to Selection") {
-                    model.selectFocused(toggling: false)
-                }
-                .keyboardShortcut(.space, modifiers: [])
-                .disabled(!model.snapshot.canEdit)
-                Button("Toggle Focused Processor Selection") {
-                    model.selectFocused(toggling: true)
-                }
-                .keyboardShortcut(.space, modifiers: [.command])
-                .disabled(!model.snapshot.canEdit)
+                    .disabled(
+                        !(canPerformTextAction(#selector(NSText.deleteBackward(_:)))
+                            ?? model.snapshot.canEdit)
+                    )
                 Divider()
-                Button("Move Selection Up") { model.moveSelection(by: -1) }
-                    .keyboardShortcut(.upArrow, modifiers: [.command, .control])
-                    .disabled(!model.snapshot.canUseSelection)
-                Button("Move Selection Down") { model.moveSelection(by: 1) }
-                    .keyboardShortcut(.downArrow, modifiers: [.command, .control])
-                    .disabled(!model.snapshot.canUseSelection)
+                Menu("Processor Selection") {
+                    Button("Move Focus Up") { model.moveFocus(by: -1, extending: false) }
+                        .keyboardShortcut(.upArrow, modifiers: [])
+                        .disabled(!model.snapshot.canEdit)
+                    Button("Move Focus Down") { model.moveFocus(by: 1, extending: false) }
+                        .keyboardShortcut(.downArrow, modifiers: [])
+                        .disabled(!model.snapshot.canEdit)
+                    Button("Extend Selection Up") { model.moveFocus(by: -1, extending: true) }
+                        .keyboardShortcut(.upArrow, modifiers: [.shift])
+                        .disabled(!model.snapshot.canEdit)
+                    Button("Extend Selection Down") { model.moveFocus(by: 1, extending: true) }
+                        .keyboardShortcut(.downArrow, modifiers: [.shift])
+                        .disabled(!model.snapshot.canEdit)
+                    Button("Add Focused Processor to Selection") {
+                        model.selectFocused(toggling: false)
+                    }
+                    .keyboardShortcut(.space, modifiers: [])
+                    .disabled(!model.snapshot.canEdit)
+                    Button("Toggle Focused Processor Selection") {
+                        model.selectFocused(toggling: true)
+                    }
+                    .keyboardShortcut(.space, modifiers: [.command])
+                    .disabled(!model.snapshot.canEdit)
+                    Divider()
+                    Button("Move Selection Up") { model.moveSelection(by: -1) }
+                        .keyboardShortcut(.upArrow, modifiers: [.command, .control])
+                        .disabled(!model.snapshot.canUseSelection)
+                    Button("Move Selection Down") { model.moveSelection(by: 1) }
+                        .keyboardShortcut(.downArrow, modifiers: [.command, .control])
+                        .disabled(!model.snapshot.canUseSelection)
+                }
             }
             CommandMenu("Audio") {
                 Button("Start Engine") { model.start() }
@@ -744,11 +1197,27 @@ struct EqualizerAUM1App: App {
                 Button("Diagnostics Snapshot…") { model.presentDiagnostics() }
                     .disabled(model.snapshot.audio != .running)
             }
+            CommandGroup(after: .appInfo) {
+                Menu("Language") {
+                    ForEach(M1ApplicationLanguage.allCases, id: \.self) { language in
+                        Button {
+                            applicationLanguageRawValue = language.rawValue
+                            appDelegate.applicationLanguageDidChange()
+                        } label: {
+                            HStack {
+                                Text(language.titleKey)
+                                if language == applicationLanguage { Image(systemName: "checkmark") }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
 
 private struct M1EditorView: View {
+    @Environment(\.locale) private var locale
     @ObservedObject var model: M1AppModel
     @State private var dropDestination: Int?
     @State private var editingGraphicEQNodeID: UUID?
@@ -901,11 +1370,17 @@ private struct M1EditorView: View {
             }
             if let diagnostics = model.snapshot.activeDiagnostics,
                let generation = model.snapshot.activeConfigurationGeneration {
-                diagnosticLine(label: "Active G\(generation)", diagnostics: diagnostics)
+                diagnosticLine(
+                    label: String(localized: "Active G\(generation)", locale: locale),
+                    diagnostics: diagnostics
+                )
             }
             if let diagnostics = model.snapshot.expectedDiagnostics,
                let generation = model.snapshot.expectedConfigurationGeneration {
-                diagnosticLine(label: "Expected G\(generation)", diagnostics: diagnostics)
+                diagnosticLine(
+                    label: String(localized: "Expected G\(generation)", locale: locale),
+                    diagnostics: diagnostics
+                )
             }
         }
         .font(.caption)
@@ -916,8 +1391,8 @@ private struct M1EditorView: View {
         model.snapshot.visibleError == nil ? "checkmark.circle" : "exclamationmark.triangle"
     }
 
-    private var statusText: String {
-        if let error = model.snapshot.visibleError { return error }
+    private var statusText: LocalizedStringKey {
+        if let error = model.snapshot.visibleError { return error.localizedKey }
         switch model.snapshot.audioRecovery {
         case .inactive:
             break
@@ -945,7 +1420,7 @@ private struct M1EditorView: View {
         case .waitingForOutput: return "Saved; waiting for an output device"
         case .savedPendingStart: return "Saved; applies on next engine start"
         case let .pendingApplication(generation): return "Applying generation \(generation)…"
-        case let .failed(reason): return reason
+        case let .failed(reason): return "Operation failed: \(reason)"
         }
     }
 
@@ -978,25 +1453,41 @@ private struct M1EditorView: View {
         var details: [String] = []
         let unresolved = diagnostics.unresolvedChannels.flatMap(\.identifiers).map(\.rawValue)
         if !unresolved.isEmpty {
-            details.append("Unresolved: \(unresolved.joined(separator: ", "))")
+            details.append(String(
+                localized: "Unresolved: \(unresolved.joined(separator: ", "))",
+                locale: locale
+            ))
         }
         if !diagnostics.clippingRiskChannels.isEmpty {
-            details.append(
-                "Clipping risk: \(diagnostics.clippingRiskChannels.map(\.rawValue).joined(separator: ", "))"
-            )
+            details.append(String(
+                localized: "Clipping risk: \(diagnostics.clippingRiskChannels.map(\.rawValue).joined(separator: ", "))",
+                locale: locale
+            ))
         }
         if !diagnostics.gainBoundaries.isEmpty {
             let channels = diagnostics.gainBoundaries.map { $0.channel.rawValue }
-            details.append("Gain boundary: \(channels.joined(separator: ", "))")
+            details.append(String(
+                localized: "Gain boundary: \(channels.joined(separator: ", "))",
+                locale: locale
+            ))
         }
         if !diagnostics.graphicEQResolution.isEmpty {
             let errors = diagnostics.graphicEQResolution.map {
-                "\(formatError($0.maximumErrorDB)) max / \(formatError($0.percentile99ErrorDB)) p99"
+                String(
+                    localized: "\(formatError($0.maximumErrorDB)) max / \(formatError($0.percentile99ErrorDB)) p99",
+                    locale: locale
+                )
             }
-            details.append("Graphic EQ FIR resolution: \(errors.joined(separator: ", "))")
+            details.append(String(
+                localized: "Graphic EQ FIR resolution: \(errors.joined(separator: ", "))",
+                locale: locale
+            ))
         }
         if !diagnostics.convolutionBypasses.isEmpty {
-            details.append("Convolution bypassed: \(diagnostics.convolutionBypasses.count)")
+            details.append(String(
+                localized: "Convolution bypassed: \(diagnostics.convolutionBypasses.count)",
+                locale: locale
+            ))
         }
         return details
     }
@@ -1034,9 +1525,10 @@ private struct M1EditorView: View {
                 Text(nodeSubtitle(node))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
+                    .help(nodeSubtitle(node))
             }
-            .frame(width: 104, alignment: .leading)
+            .frame(minWidth: 104, idealWidth: 120, alignment: .leading)
             .allowsHitTesting(false)
 
             nodeControls(node)
@@ -1066,8 +1558,8 @@ private struct M1EditorView: View {
                 .frame(width: 26, height: 30)
         }
         .buttonStyle(.plain)
-        .help("\(node.isEnabled ? "Disable" : "Enable") \(nodeTitle(node.kind))")
-        .accessibilityLabel("\(node.isEnabled ? "Disable" : "Enable") \(nodeTitle(node.kind))")
+        .help(nodeToggleLabel(node))
+        .accessibilityLabel(nodeToggleLabel(node))
         .accessibilityValue(node.isEnabled ? "Enabled" : "Disabled")
     }
 
@@ -1085,12 +1577,22 @@ private struct M1EditorView: View {
         }
     }
 
+    private func nodeToggleLabel(_ node: M1ProcessingNode) -> String {
+        let title = nodeTitle(node.kind)
+        if node.isEnabled {
+            return String(localized: "Disable \(title)", locale: locale)
+        }
+        return String(localized: "Enable \(title)", locale: locale)
+    }
+
     private func nodeSubtitle(_ node: M1ProcessingNode) -> String {
         switch node.kind {
         case .channels:
-            return scopeDiagnosticSummary(node.id) ?? "Scope for following processors"
+            return scopeDiagnosticSummary(node.id)
+                ?? String(localized: "Scope for following processors", locale: locale)
         case .preamp, .graphicEQ, .convolution:
-            return channelSummary(effectiveSelections[node.id] ?? .all) + " channels"
+            let channels = channelSummary(effectiveSelections[node.id] ?? .all)
+            return String(localized: "\(channels) channels", locale: locale)
         }
     }
 
@@ -1101,10 +1603,16 @@ private struct M1EditorView: View {
             .first { $0.nodeID == nodeID }?.identifiers.map(\.rawValue)
         var parts: [String] = []
         if let active, !active.isEmpty {
-            parts.append("Active unresolved: \(active.joined(separator: ", "))")
+            parts.append(String(
+                localized: "Active unresolved: \(active.joined(separator: ", "))",
+                locale: locale
+            ))
         }
         if let expected, !expected.isEmpty {
-            parts.append("Expected unresolved: \(expected.joined(separator: ", "))")
+            parts.append(String(
+                localized: "Expected unresolved: \(expected.joined(separator: ", "))",
+                locale: locale
+            ))
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
@@ -1116,16 +1624,16 @@ private struct M1EditorView: View {
             .first { $0.nodeID == nodeID }
         var parts: [String] = []
         if let active {
-            parts.append(
-                "Active FIR error: \(formatError(active.maximumErrorDB)) max, "
-                    + "\(formatError(active.percentile99ErrorDB)) p99"
-            )
+            parts.append(String(
+                localized: "Active FIR error: \(formatError(active.maximumErrorDB)) max, \(formatError(active.percentile99ErrorDB)) p99",
+                locale: locale
+            ))
         }
         if let expected {
-            parts.append(
-                "Expected FIR error: \(formatError(expected.maximumErrorDB)) max, "
-                    + "\(formatError(expected.percentile99ErrorDB)) p99"
-            )
+            parts.append(String(
+                localized: "Expected FIR error: \(formatError(expected.maximumErrorDB)) max, \(formatError(expected.percentile99ErrorDB)) p99",
+                locale: locale
+            ))
         }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
@@ -1186,7 +1694,7 @@ private struct M1EditorView: View {
             .popover(isPresented: graphicEQEditorPresentation(for: node.id), arrowEdge: .bottom) {
                 graphicEQEditor(node)
                     .padding(12)
-                    .frame(width: 760, height: 520)
+                    .frame(minWidth: 760, minHeight: 520)
             }
         }
     }
@@ -1224,7 +1732,6 @@ private struct M1EditorView: View {
                     Text("Bypassed · \(convolutionBypassText(bypass.reason))")
                         .font(.caption)
                         .foregroundStyle(.orange)
-                        .lineLimit(1)
                 } else if let source {
                     let duration = Double(source.sourceFrameCount) / source.sourceSampleRate
                     Text("\(Int(source.sourceSampleRate)) Hz · \(source.sourceChannelCount) ch · \(duration.formatted(.number.precision(.fractionLength(3)))) s")
@@ -1235,7 +1742,6 @@ private struct M1EditorView: View {
                     Text("Not loaded · Save or Start to apply")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
@@ -1271,18 +1777,28 @@ private struct M1EditorView: View {
 
     private func convolutionBypassText(_ reason: M1ConvolutionBypassReason) -> String {
         switch reason {
-        case .resource(.missingResource): return "source unavailable"
-        case .resource(.resourceIO): return "source unreadable"
-        case .resource(.fileTooLarge): return "file exceeds 32 MiB"
-        case .resource(.invalidWAV): return "invalid WAV"
-        case .resource(.unsupportedEncoding): return "unsupported WAV encoding"
-        case .resource(.invalidMetadata): return "invalid WAV metadata"
-        case .resource(.emptyAudio): return "empty WAV"
-        case .resource(.durationExceeded): return "IR exceeds 2 seconds"
-        case .resource(.invalidSample): return "invalid audio sample"
-        case .resource: return "source invalid"
+        case .resource(.missingResource):
+            return String(localized: "source unavailable", locale: locale)
+        case .resource(.resourceIO):
+            return String(localized: "source unreadable", locale: locale)
+        case .resource(.fileTooLarge):
+            return String(localized: "file exceeds 32 MiB", locale: locale)
+        case .resource(.invalidWAV):
+            return String(localized: "invalid WAV", locale: locale)
+        case .resource(.unsupportedEncoding):
+            return String(localized: "unsupported WAV encoding", locale: locale)
+        case .resource(.invalidMetadata):
+            return String(localized: "invalid WAV metadata", locale: locale)
+        case .resource(.emptyAudio):
+            return String(localized: "empty WAV", locale: locale)
+        case .resource(.durationExceeded):
+            return String(localized: "IR exceeds 2 seconds", locale: locale)
+        case .resource(.invalidSample):
+            return String(localized: "invalid audio sample", locale: locale)
+        case .resource:
+            return String(localized: "source invalid", locale: locale)
         case let .channelCountMismatch(expected, actual):
-            return "expected \(expected) ch, found \(actual)"
+            return String(localized: "expected \(expected) ch, found \(actual)", locale: locale)
         }
     }
 
@@ -1369,14 +1885,14 @@ private struct M1EditorView: View {
 
     private func channelSummary(_ selection: M1ChannelSelection) -> String {
         switch selection {
-        case .all: return "All"
+        case .all: return String(localized: "All", locale: locale)
         case let .identifiers(values): return values.map(channelDisplayName).joined(separator: ", ")
         }
     }
 
     private func channelDisplayName(_ identifier: M1ChannelIdentifier) -> String {
         guard let channel = Int(identifier.rawValue), channel > 0 else { return identifier.rawValue }
-        return "Channel \(channel)"
+        return String(localized: "Channel \(channel)", locale: locale)
     }
 
     private func nodeIcon(_ kind: M1ProcessingNodeKind) -> String {
@@ -1390,10 +1906,10 @@ private struct M1EditorView: View {
 
     private func nodeTitle(_ kind: M1ProcessingNodeKind) -> String {
         switch kind {
-        case .channels: return "Channels"
-        case .preamp: return "Preamp"
-        case .graphicEQ: return "Graphic EQ"
-        case .convolution: return "Convolution"
+        case .channels: return String(localized: "Channels", locale: locale)
+        case .preamp: return String(localized: "Preamp", locale: locale)
+        case .graphicEQ: return String(localized: "Graphic EQ", locale: locale)
+        case .convolution: return String(localized: "Convolution", locale: locale)
         }
     }
 
@@ -1574,7 +2090,7 @@ private struct M1GraphicEQEditor: View {
     private let initialPoints: [M1GraphicEQPoint]
     @State private var editablePoints: [M1EditableGraphicEQPoint]
     @State private var selectedPointIDs: Set<UUID> = []
-    @State private var validationMessage: String?
+    @State private var validationMessage: LocalizedStringKey?
     @State private var preview: M1GraphicEQPreview?
     @State private var previewTask: Task<Void, Never>?
     @State private var commitRegistrationID: UUID?
@@ -1613,7 +2129,7 @@ private struct M1GraphicEQEditor: View {
                     frequencyLabels
                 }
                 pointTable
-                    .frame(width: 340)
+                    .frame(minWidth: 340, idealWidth: 380, maxWidth: 440)
             }
             statusMessage
         }
@@ -1679,8 +2195,9 @@ private struct M1GraphicEQEditor: View {
         } else if let preview, preview.maximumErrorDB > M1ProcessingBuilder.graphicEQMaximumResponseErrorDB
                     || preview.percentile99ErrorDB
                         > M1ProcessingBuilder.graphicEQPercentile99ResponseErrorDB {
-            Text("FIR resolution: \(formatError(preview.maximumErrorDB)) max, "
-                + "\(formatError(preview.percentile99ErrorDB)) p99")
+            Text(
+                "FIR resolution: \(formatError(preview.maximumErrorDB)) max, \(formatError(preview.percentile99ErrorDB)) p99"
+            )
                 .foregroundStyle(.orange)
         } else if sampleRate == nil {
             Text("Target response only")
@@ -1796,7 +2313,7 @@ private struct M1GraphicEQEditor: View {
 
     private func toolButton(
         _ systemName: String,
-        _ help: String,
+        _ help: LocalizedStringKey,
         _ action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
@@ -1809,8 +2326,8 @@ private struct M1GraphicEQEditor: View {
 
     private func labeledActionButton(
         _ systemName: String,
-        _ title: String,
-        _ help: String,
+        _ title: LocalizedStringKey,
+        _ help: LocalizedStringKey,
         _ action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {

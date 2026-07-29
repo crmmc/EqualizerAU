@@ -352,12 +352,14 @@ MVP 完成需满足：
 | M6 任意频率 Graphic EQ | 用户可编辑任意频率控制点，可见曲线、保存配置和实际频响遵循同一契约 |
 | M7 开源技术预览发布 | GPL 来源完整、源码与 arm64 ad-hoc Release ZIP 可验证重放，用户可按逐应用 Gatekeeper 流程安装 |
 | M8 Convolution 外部源路径 | schema v8 不复制 WAV，每次生效重新加载，资源局部故障可见旁路并自动恢复 |
+| M9 菜单栏与中英 i18n | 关闭窗口后 Dock 与菜单栏均驻留并恢复同一主窗口；精简菜单并支持中英切换 |
 
-M0 已完成，详见 [`milestones/M0-native-route.md`](./milestones/M0-native-route.md)。M8 已完成并关闭，
-验收证据见 [`milestones/M8-convolution-source-path.md`](./milestones/M8-convolution-source-path.md)。
+M0 已完成，详见 [`milestones/M0-native-route.md`](./milestones/M0-native-route.md)。M8、M9 已完成并关闭，
+验收证据分别见 [`milestones/M8-convolution-source-path.md`](./milestones/M8-convolution-source-path.md) 和
+[`milestones/M9-menu-bar-i18n.md`](./milestones/M9-menu-bar-i18n.md)。
 
 ## 12. 待确认产品事项
 
 - MVP 是否允许选择非默认输出设备；
 - EqualizerAPO 配置导入范围；
-- 是否需要菜单栏入口和登录启动。
+- 是否需要登录启动。

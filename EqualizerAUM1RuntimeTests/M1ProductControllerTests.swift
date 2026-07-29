@@ -16,6 +16,19 @@ final class M1ProductControllerTests: XCTestCase {
         XCTAssertEqual(commitCount, 1)
     }
 
+    func testApplicationLanguageRawValuesRemainStable() {
+        XCTAssertEqual(
+            M1ApplicationLanguage.allCases.map(\.rawValue),
+            ["system", "english", "simplifiedChinese"]
+        )
+        XCTAssertEqual(M1ApplicationLanguage.defaultsKey, "applicationLanguage")
+    }
+
+    func testApplicationLanguageUsesExplicitSupportedLocales() {
+        XCTAssertEqual(M1ApplicationLanguage.english.locale.identifier, "en")
+        XCTAssertEqual(M1ApplicationLanguage.simplifiedChinese.locale.identifier, "zh-Hans")
+    }
+
     func testBootstrapDiscoversAvailableOutputWithoutStartingAudio() async {
         let fixture = makeFixture()
 
@@ -885,7 +898,7 @@ final class M1ProductControllerTests: XCTestCase {
         XCTAssertFalse(commits[1].snapshot.effectsEnabled)
         let snapshot = await fixture.controller.snapshot()
         XCTAssertEqual(snapshot.persistence, .failed("replaceMain"))
-        XCTAssertEqual(snapshot.visibleError, "replaceMain")
+        XCTAssertEqual(snapshot.visibleError, .technical("replaceMain"))
         XCTAssertEqual(snapshot.draft.nodes.first?.gainDB, 8)
         XCTAssertEqual(snapshot.draft.effectsEnabled, false)
     }
@@ -915,7 +928,7 @@ final class M1ProductControllerTests: XCTestCase {
 
         let snapshot = await fixture.controller.snapshot()
         XCTAssertEqual(snapshot.persistence, .uncertain(generation: 2))
-        XCTAssertEqual(snapshot.visibleError, "Configuration durability is uncertain")
+        XCTAssertEqual(snapshot.visibleError, .configurationDurabilityUncertain)
         XCTAssertFalse(snapshot.canEdit)
     }
     func testOlderPendingPublicationDoesNotMaskUncertainEffectsContinuation() async throws {
@@ -1377,7 +1390,10 @@ final class M1ProductControllerTests: XCTestCase {
             snapshot.audioRecovery,
             .waitingForRetry(reason: .systemAudioServicesChanged)
         )
-        XCTAssertTrue(snapshot.visibleError?.contains("permission verification failed") == true)
+        guard case let .capturePermissionVerificationFailed(reason)? = snapshot.visibleError else {
+            return XCTFail("Expected capture permission verification failure")
+        }
+        XCTAssertTrue(reason.contains("permissionProbeFailed"))
         XCTAssertTrue(snapshot.canStart)
     }
 

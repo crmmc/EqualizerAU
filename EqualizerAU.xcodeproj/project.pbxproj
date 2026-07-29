@@ -102,6 +102,8 @@
 		D10000000000000000000036 /* M1ConvolutionIR.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002A /* M1ConvolutionIR.swift */; };
 		D10000000000000000000037 /* M1ConvolutionIRTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002B /* M1ConvolutionIRTests.swift */; };
 		D10000000000000000000038 /* M1SystemAudioLifecycleMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002C /* M1SystemAudioLifecycleMonitor.swift */; };
+		F10000000000000000000001 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000001 /* Localizable.xcstrings */; };
+		F10000000000000000000002 /* InfoPlist.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000002 /* InfoPlist.xcstrings */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -238,6 +240,8 @@
 		D2000000000000000000002A /* M1ConvolutionIR.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1ConvolutionIR.swift; sourceTree = "<group>"; };
 		D2000000000000000000002C /* M1SystemAudioLifecycleMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1SystemAudioLifecycleMonitor.swift; sourceTree = "<group>"; };
 		D2000000000000000000002B /* M1ConvolutionIRTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1ConvolutionIRTests.swift; sourceTree = "<group>"; };
+		F20000000000000000000001 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
+		F20000000000000000000002 /* InfoPlist.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = InfoPlist.xcstrings; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -461,6 +465,8 @@
 			isa = PBXGroup;
 			children = (
 				D20000000000000000000004 /* Info.plist */,
+				F20000000000000000000001 /* Localizable.xcstrings */,
+				F20000000000000000000002 /* InfoPlist.xcstrings */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -755,6 +761,7 @@
 			hasScannedForEncodings = 0;
 			knownRegions = (
 				en,
+				"zh-Hans",
 				Base,
 			);
 			mainGroup = 700000000000000000000001;
@@ -800,6 +807,8 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F10000000000000000000001 /* Localizable.xcstrings in Resources */,
+				F10000000000000000000002 /* InfoPlist.xcstrings in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

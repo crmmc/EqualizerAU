@@ -199,8 +199,13 @@ contracts.each do |target_name, contract|
   end
 
   resource_index = phase_types.index("PBXResourcesBuildPhase")
-  if resource_index && !objects.fetch(target.fetch("buildPhases").fetch(resource_index)).fetch("files", []).empty?
-    abort("unexpected copied resources for #{target_name}")
+  resources = resource_index ? build_file_paths.call(phases.fetch(resource_index)).sort : []
+  expected_resources = target_name == "EqualizerAUM1" ? [
+    "EqualizerAUM1/Resources/InfoPlist.xcstrings",
+    "EqualizerAUM1/Resources/Localizable.xcstrings",
+  ] : []
+  unless resources == expected_resources
+    abort("unexpected copied resources for #{target_name}: #{resources.inspect}")
   end
 
   dependencies = target.fetch("dependencies", []).map do |dependency_id|

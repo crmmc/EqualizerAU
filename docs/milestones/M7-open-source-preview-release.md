@@ -15,14 +15,16 @@ Apple Developer Program，不使用 Developer ID，不提交 notarization，也�
 - 应用只使用免费的 ad-hoc 签名满足 Apple Silicon 代码完整性要求，不声明开发者身份；
 - 用户按 Apple 官方逐应用流程在“隐私与安全性”中选择“仍要打开”；
 - 不要求用户全局关闭 Gatekeeper，不推荐 `spctl --master-disable`；
-- 原生 schema v7 配置仍是唯一运行与持久化事实来源；
+- 原生 schema v8 配置仍是唯一运行与持久化事实来源；
 - 首版版本为 `0.1.0 (1)`，最低系统为 macOS 14.2，bundle identifier 保持
   `com.ruimingchen.EqualizerAU`。
 
 ## 3. 明确非目标
 
 - Developer ID Application、Apple notarization、Mac App Store 和付费 Apple Developer Program；
-- DMG/PKG、自动更新、菜单栏入口、登录启动和非默认输出设备选择；
+- DMG/PKG、自动更新、登录启动和非默认输出设备选择；
+- 菜单栏入口不纳入 M7 的实现范围，由后续 [`M9`](./M9-menu-bar-i18n.md) 独立实现和验收；
+- 若 M9 在 M7 最终 ZIP 前完成，M7 必须从包含已验收 M9 的最新干净 commit 重新打包，不得发布旧候选或回退 M9；
 - x86_64/Universal 构建及 Intel Mac 兼容承诺；
 - 在本阶段加入新的 DSP、编辑器或系统音频生命周期能力；
 - 创建 tag、推送仓库、上传二进制或公开发布页面。
@@ -54,7 +56,7 @@ Apple Developer Program，不使用 Developer ID，不提交 notarization，也�
 1. 首次阻止后可通过“系统设置 → 隐私与安全性 → 仍要打开”逐应用授权；
 2. 系统音频捕获权限可申请，Start/Stop 和退出后原声恢复正常；
 3. Preamp、Graphic EQ、Convolution、Save 和重启恢复正常；
-4. 覆盖安装同版本候选后配置与 IR sidecar 保留，必要的系统权限行为有真实记录；
+4. 覆盖安装同版本候选后 schema v8 配置与外部 Convolution 源路径保留，必要的系统权限行为有真实记录；
 5. 用户知晓该产物未经 Apple 识别开发者签名或恶意软件公证。
 
 GUI、权限和真实音频结论只采用用户实际操作后报告的结果。

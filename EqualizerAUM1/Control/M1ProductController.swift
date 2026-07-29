@@ -1,5 +1,21 @@
 import Foundation
 
+enum M1ApplicationLanguage: String, CaseIterable, Sendable {
+    case system
+    case english
+    case simplifiedChinese
+
+    static let defaultsKey = "applicationLanguage"
+
+    var locale: Locale {
+        switch self {
+        case .system: .autoupdatingCurrent
+        case .english: Locale(identifier: "en")
+        case .simplifiedChinese: Locale(identifier: "zh-Hans")
+        }
+    }
+}
+
 protocol M1ConfigurationStoring: Sendable {
     func bootstrap(initialNodeID: UUID) async -> M1ConfigurationBootstrapResult
     func commit(
@@ -167,6 +183,20 @@ struct M1AudioRecoveryTiming: Sendable {
     )
 }
 
+enum M1PresentationMessage: Equatable, Sendable {
+    case audioCapturePermissionRequired
+    case audioStoppedAfterRetirementMaintenance(String)
+    case audioDeviceMonitoringUnavailable
+    case capturePermissionVerificationFailed(String)
+    case capturePermissionCleanupFailed(String)
+    case automaticAudioRecoveryPaused(String)
+    case configurationDurabilityUncertain
+    case editorChangeCouldNotApply
+    case configurationRepairFailed
+    case terminationCancelled
+    case technical(String)
+}
+
 enum M1ProductPersistenceState: Equatable, Sendable {
     case clean
     case modified
@@ -212,7 +242,7 @@ struct M1ProductSnapshot: Equatable, Sendable {
     let canUseSelection: Bool
     let hasUnsavedNodes: Bool
     let hasUnsavedEffects: Bool
-    let visibleError: String?
+    let visibleError: M1PresentationMessage?
 
     var processingEnabled: Bool {
         audio == .running && appliedEffectsEnabled == true
@@ -234,7 +264,7 @@ enum M1TerminationPrompt: Equatable, Sendable {
 enum M1TerminationDecision: Equatable, Sendable {
     case terminate
     case prompt(M1TerminationPrompt)
-    case stayOpen(String)
+    case stayOpen(M1PresentationMessage)
 }
 
 enum M1TerminationAction: Sendable {
@@ -297,7 +327,7 @@ actor M1ProductController {
     private var expectedConfigurationGeneration: UInt64?
     private var realtimeDiagnostics: M1RealtimeDiagnostics?
     private var appliedEffectsEnabled: Bool?
-    private var visibleError: String?
+    private var visibleError: M1PresentationMessage?
     private var commitGeneration: UInt64 = 0
     private var draftRevision: UInt64 = 0
     private var bootstrapped = false
@@ -353,7 +383,7 @@ actor M1ProductController {
             runtimeBaseline = runtime
             persistence = .recovery
             requiresRepair = true
-            visibleError = String(describing: reason)
+            visibleError = .technical(String(describing: reason))
         case let .uncertain(generation, snapshot, _):
             draft = snapshot
             saved = snapshot
@@ -622,7 +652,7 @@ actor M1ProductController {
     }
 
     func reportCommandError(_ message: String) {
-        visibleError = message
+        visibleError = .technical(message)
     }
 
     func save() async throws {
@@ -735,9 +765,9 @@ actor M1ProductController {
                 visibleError = nil
             } else if error as? M1AudioRouteError == .audioCapturePermissionDenied {
                 audioRecovery = .permissionRequired
-                visibleError = "System audio capture permission is required."
+                visibleError = .audioCapturePermissionRequired
             } else {
-                visibleError = String(describing: error)
+                visibleError = .technical(String(describing: error))
             }
             throw error
         }
@@ -761,7 +791,7 @@ actor M1ProductController {
             }
         } catch {
             audioState = .cleanupRequired
-            visibleError = String(describing: error)
+            visibleError = .technical(String(describing: error))
             throw error
         }
     }
@@ -774,7 +804,7 @@ actor M1ProductController {
         do {
             stopAccepted = try await audio.stop(bridgeGeneration: bridgeGeneration)
         } catch {
-            visibleError = String(describing: error)
+            visibleError = .technical(String(describing: error))
         }
         guard stopAccepted else { return }
         let currentState = Self.productAudioState(await audio.state())
@@ -795,7 +825,7 @@ actor M1ProductController {
         }
         automaticRecoveryDesired = false
         audioRecovery = .waitingForRetry(reason: .systemAudioServicesChanged)
-        visibleError = "Audio stopped after retirement maintenance: \(reason)"
+        visibleError = .audioStoppedAfterRetirementMaintenance(String(describing: reason))
     }
 
     func handleAudioLifecycleEvent(_ event: M1AudioLifecycleEvent) async {
@@ -842,7 +872,7 @@ actor M1ProductController {
             await recoverAudio(reason: .systemAudioServicesChanged)
         case .monitoringFailed:
             audioRecovery = .waitingForRetry(reason: .systemAudioServicesChanged)
-            visibleError = "Audio device monitoring is unavailable; waiting for a system device event."
+            visibleError = .audioDeviceMonitoringUnavailable
         }
     }
 
@@ -889,10 +919,10 @@ actor M1ProductController {
             if draft == saved { persistence = .savedPendingStart }
             if verificationError as? M1AudioRouteError == .audioCapturePermissionDenied {
                 audioRecovery = .permissionRequired
-                visibleError = "System audio capture permission is required."
+                visibleError = .audioCapturePermissionRequired
             } else {
                 audioRecovery = .waitingForRetry(reason: .systemAudioServicesChanged)
-                visibleError = "Audio stopped because capture permission verification failed: \(verificationError)"
+                visibleError = .capturePermissionVerificationFailed(String(describing: verificationError))
             }
         } catch {
             guard token == recoveryToken else { return }
@@ -900,7 +930,7 @@ actor M1ProductController {
             guard token == recoveryToken else { return }
             audioState = currentState
             audioRecovery = .waitingForRetry(reason: .systemAudioServicesChanged)
-            visibleError = "Audio cleanup after capture permission verification failed: \(error)"
+            visibleError = .capturePermissionCleanupFailed(String(describing: error))
         }
     }
 
@@ -923,7 +953,7 @@ actor M1ProductController {
         } catch {
             guard token == recoveryToken else { return }
             audioState = Self.productAudioState(await audio.state())
-            visibleError = String(describing: error)
+            visibleError = .technical(String(describing: error))
         }
     }
 
@@ -964,7 +994,7 @@ actor M1ProductController {
                 audioState = Self.productAudioState(await audio.state())
                 automaticRecoveryDesired = false
                 audioRecovery = .waitingForRetry(reason: reason)
-                visibleError = String(describing: error)
+                visibleError = .technical(String(describing: error))
                 return
             }
         }
@@ -1011,25 +1041,25 @@ actor M1ProductController {
                     pendingRecoveryReason = nil
                     let cleanupError = await stopAfterTerminalRecoveryFailure()
                     audioRecovery = .waitingForRetry(reason: reason)
-                    visibleError = String(describing: cleanupError ?? error)
+                    visibleError = .technical(String(describing: cleanupError ?? error))
                     return
                 }
                 if error as? M1AudioRouteError == .audioCapturePermissionDenied {
                     automaticRecoveryDesired = false
                     if let cleanupError = await stopAfterTerminalRecoveryFailure() {
                         audioRecovery = .waitingForRetry(reason: reason)
-                        visibleError = String(describing: cleanupError)
+                        visibleError = .technical(String(describing: cleanupError))
                         return
                     }
                     audioRecovery = .permissionRequired
-                    visibleError = "System audio capture permission is required."
+                    visibleError = .audioCapturePermissionRequired
                     return
                 }
                 if audioState == .cleanupRequired {
                     automaticRecoveryDesired = false
                     let cleanupError = await stopAfterTerminalRecoveryFailure()
                     audioRecovery = .waitingForRetry(reason: reason)
-                    visibleError = String(describing: cleanupError ?? error)
+                    visibleError = .technical(String(describing: cleanupError ?? error))
                     return
                 }
                 audioState = .stopped
@@ -1041,7 +1071,7 @@ actor M1ProductController {
                         pendingRecoveryReason = nil
                         let cleanupError = await stopAfterTerminalRecoveryFailure()
                         audioRecovery = .waitingForRetry(reason: reason)
-                        visibleError = String(describing: cleanupError ?? error)
+                        visibleError = .technical(String(describing: cleanupError ?? error))
                         return
                     }
                 }
@@ -1053,7 +1083,7 @@ actor M1ProductController {
         audioRecovery = .waitingForRetry(reason: reason)
         let cleanupError = await stopAfterTerminalRecoveryFailure()
         let failure = (cleanupError ?? lastError).map { String(describing: $0) } ?? "unknown failure"
-        visibleError = "Automatic audio recovery paused: \(failure)"
+        visibleError = .automaticAudioRecoveryPaused(failure)
     }
 
     private func stopAfterTerminalRecoveryFailure() async -> (any Error)? {
@@ -1146,7 +1176,7 @@ actor M1ProductController {
                 persistence = .savedPendingStart
                 expectedDiagnostics = nil
                 expectedConfigurationGeneration = nil
-                visibleError = String(describing: error)
+                visibleError = .technical(String(describing: error))
                 throw error
             }
             let refreshedApplication = PendingApplication(
@@ -1205,7 +1235,7 @@ actor M1ProductController {
             try? await Task.sleep(for: .milliseconds(1))
         }
         if waitedForAcceptedWork, case let .failed(reason) = persistence {
-            return .stayOpen(reason)
+            return .stayOpen(.technical(reason))
         }
         return await currentTerminationDecision()
     }
@@ -1213,7 +1243,7 @@ actor M1ProductController {
     func resolveTermination(_ action: M1TerminationAction) async -> M1TerminationDecision {
         switch action {
         case .cancel:
-            return .stayOpen("Termination cancelled")
+            return .stayOpen(.terminationCancelled)
         case .discardAndExit, .exit:
             pendingEffectsIntent = nil
             pendingEffectsEnabled = nil
@@ -1221,15 +1251,15 @@ actor M1ProductController {
                 try await shutdown()
                 return .terminate
             } catch {
-                visibleError = String(describing: error)
-                return .stayOpen(String(describing: error))
+                visibleError = .technical(String(describing: error))
+                return .stayOpen(.technical(String(describing: error)))
             }
         case .saveAndExit:
             do {
                 try await save()
             } catch {
-                visibleError = String(describing: error)
-                return .stayOpen(String(describing: error))
+                visibleError = .technical(String(describing: error))
+                return .stayOpen(.technical(String(describing: error)))
             }
         case .retry:
             do {
@@ -1239,14 +1269,14 @@ actor M1ProductController {
                     try await retryEffectsPersistence()
                 }
             } catch {
-                visibleError = String(describing: error)
-                return .stayOpen(String(describing: error))
+                visibleError = .technical(String(describing: error))
+                return .stayOpen(.technical(String(describing: error)))
             }
         }
 
-        if case let .failed(reason) = persistence { return .stayOpen(reason) }
+        if case let .failed(reason) = persistence { return .stayOpen(.technical(reason)) }
         if case .recovery = persistence {
-            return .stayOpen(visibleError ?? "Configuration repair failed")
+            return .stayOpen(visibleError ?? .configurationRepairFailed)
         }
         let decision = await currentTerminationDecision()
         guard decision == .terminate else { return decision }
@@ -1254,8 +1284,8 @@ actor M1ProductController {
             try await shutdown()
             return .terminate
         } catch {
-            visibleError = String(describing: error)
-            return .stayOpen(String(describing: error))
+            visibleError = .technical(String(describing: error))
+            return .stayOpen(.technical(String(describing: error)))
         }
     }
 
@@ -1325,10 +1355,10 @@ actor M1ProductController {
             if audioState == .stopped { runtimeBaseline = snapshot }
         case let .failed(_, reason):
             persistence = requiresRepair ? .recovery : .failed(String(describing: reason))
-            visibleError = String(describing: reason)
+            visibleError = .technical(String(describing: reason))
         case let .uncertain(generation, _, _):
             persistence = .uncertain(generation: generation)
-            visibleError = "Configuration durability is uncertain"
+            visibleError = .configurationDurabilityUncertain
         }
     }
 
@@ -1363,8 +1393,8 @@ actor M1ProductController {
             try await shutdown()
             return .terminate
         } catch {
-            visibleError = String(describing: error)
-            return .stayOpen(String(describing: error))
+            visibleError = .technical(String(describing: error))
+            return .stayOpen(.technical(String(describing: error)))
         }
     }
 
@@ -1421,7 +1451,7 @@ actor M1ProductController {
                     lastError = nil
                 }
             } catch {
-                visibleError = String(describing: error)
+                visibleError = .technical(String(describing: error))
                 lastError = error
             }
         }
@@ -1506,7 +1536,7 @@ actor M1ProductController {
             persistence = draft == saved ? .savedPendingStart : .modified
             expectedDiagnostics = application.preparation.compiled?.diagnostics
             expectedConfigurationGeneration = application.generation
-            visibleError = String(describing: error)
+            visibleError = .technical(String(describing: error))
             throw error
         }
     }

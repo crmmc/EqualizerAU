@@ -1,0 +1,22 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "NSAudioCaptureUsageDescription" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "EqualizerAU captures system audio so it can process and play it through the selected output device."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "EqualizerAU 需要捕获系统音频，以便处理后通过所选输出设备播放。"
+          }
+        }
+      }
+    }
+  },
+  "version" : "1.0"
+}
