@@ -48,6 +48,8 @@ xcodebuild \
 
 [[ -x "$binary" ]] || fail "Release executable not found"
 
+strip -S "$binary"
+
 codesign \
   --force \
   --sign - \
@@ -91,6 +93,10 @@ mkdir -p "$payload"
 ditto "$app" "$payload/EqualizerAU.app"
 cp "$root/LICENSE" "$root/THIRD_PARTY_NOTICES.md" "$payload/"
 print -r -- "EqualizerAU source revision: $source_revision" > "$payload/SOURCE_COMMIT.txt"
+
+while IFS= read -r -d '' file; do
+  LC_ALL=C grep -aFq "$root" "$file" && fail "local source path leaked into payload: $file"
+done < <(find "$payload" -type f -print0)
 
 ditto -c -k --sequesterRsrc --keepParent "$payload" "$zip_path"
 (

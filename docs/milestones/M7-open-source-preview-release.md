@@ -1,6 +1,6 @@
 # M7：开源技术预览发布
 
-> **当前状态**：许可证、来源审计、打包和自动化已完成；干净 commit 重放与用户验收待完成
+> **当前状态**：许可证、来源审计和打包流程已完成；路径泄漏修复待提交，Release 性能重放与用户验收待完成
 > **前置条件**：M6 已完成并关闭
 
 ## 1. 目标
@@ -79,15 +79,19 @@ GUI、权限和真实音频结论只采用用户实际操作后报告的结果�
 - `scripts/package-adhoc-preview.zsh` 从独立 DerivedData 构建 arm64 Release，显式禁用 Xcode 签名，
   再应用 ad-hoc Hardened Runtime 签名；版本、bundle identifier、最低系统、架构、动态依赖、测试
   bundle 泄漏、ZIP 往返签名和 SHA-256 检查均通过；
-- 完整 `EqualizerAUM1RuntimeTests` 执行 304 项，其中 2 个性能夹具按设计跳过，其余零失败；
+- 最新完整 `EqualizerAUM1RuntimeTests` 执行 321 项，其中 2 个性能夹具按设计跳过，其余零失败；
   5-target isolation、29-function realtime audit、project/Plist lint、两份 C++ 严格编译、全部 zsh
   syntax 和 `git diff --check` 通过；
 - 独占执行的 5 次 arm64 Release ABI v3 重放中，1/2/4/8 声道 stable_ratio 中位数分别为
   `0.02283/0.04306/0.09122/0.17921`，各档 transition 最高分别为
   `0.03148/0.09000/0.10040/0.20502`，与 M6 基线同量级；
-- 当前本地 ZIP 为 764 KiB，SHA-256 为
-  `629f584b6b89b38d5519db1bd0d5fdacc3cd221065dfdbe41f0ea6d0ae83e632`，签名显示
+- 2026-07-29 首次从干净 `54118b6` 重放成功，但字节级扫描发现 Release 可执行文件泄漏本机源码和
+  DerivedData 绝对路径，因此该 ZIP 已废弃，未交付验收；
+- `scripts/package-adhoc-preview.zsh` 已在 ad-hoc 签名前增加 `strip -S`，并在签名、许可证和
+  `SOURCE_COMMIT.txt` 组装后扫描整个 payload 的本机源码路径。dirty 验证包路径命中为 0，大小
+  777868 bytes，SHA-256 为
+  `e7c7cd1d0cf75a18d23ff21b652aab8fed2a5d0466031d967da13c70ac29234f`，签名仍为
   `Signature=adhoc`、`TeamIdentifier=not set` 和 `flags=adhoc,runtime`；
-- 当前源码仍有未提交改动，因此包内 `SOURCE_COMMIT.txt` 正确标记
-  `37caa3dba22e0e2cd86b2e6e18a6eab1abedd7dd-dirty`。该包只作本地自动化候选，不得发布，也不
-  用于最终 Gatekeeper/TCC 验收；必须在用户明确授权提交后从干净源码 commit 重新打包。
+- 当前脚本与本文有未提交改动，验证包 `SOURCE_COMMIT.txt` 正确标记 `54118b6-dirty`，不得发布或用于
+  Gatekeeper/TCC 验收。最终仍需提交修复、从新干净 commit 重放、在低负载环境重放 Release 性能，
+  再由用户完成 ZIP 安装、权限、GUI、真实音频和覆盖升级验收。
