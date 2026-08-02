@@ -1,6 +1,9 @@
 # M8：Convolution 外部源路径生命周期
 
 > **当前状态**：已完成并关闭
+>
+> M10/ADR-0017 已取代本文的 IR SRC、32 MiB/2 秒、tap 总量和 duration bypass 语义；本文的
+> schema v8 sourcePath、每次生效重读、节点级资源旁路和 Prepared 持有契约继续有效。
 
 ## 1. 目标
 

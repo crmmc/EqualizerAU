@@ -1,6 +1,10 @@
 # M6：任意频率 Graphic EQ
 
 > **当前状态**：已完成并关闭；schema v7、minimum-phase FIR、任意点编辑器、自动化、性能、签名、原生 GUI 与真实音频验收全部通过
+>
+> M10/ADR-0017 已取代本文与 WAV Convolution 共享 131,072 taps 和单 kernel 384,000 taps 的
+> 容量语义；Graphic EQ 的 512 控制点和固定 16,384-tap FIR 合同不变。
+>
 > **前置条件**：M5 通用处理器容器与交互契约已完成
 
 ## 1. 目标

@@ -50,6 +50,10 @@ M8 已将 Convolution 升级为 schema v8 外部源路径：不复制 WAV，每�
 故障只旁路所属节点并保留用户启用意图；自动化、原生 GUI 与真实音频验收均已通过，M8 已完成并关闭。
 M9 已完成菜单栏驻留、Dock 常驻与单窗口恢复、主菜单精简和中英 i18n；ADR-0015/0016 为
 Accepted，完整自动化、用户原生 GUI 与真实音频验收均已通过，M9 已完成并关闭。
+M10 已按 ADR-0017 移除 Convolution 的文件时长/taps 配额与 IR SRC，按 ADR-0018 实现真正
+computational bypass，并由用户确认 dense overload 时可恢复稳定 dry。formal-r4 六方案实验选出的
+ADR-0019 Accelerate Float64 deadline-distributed 多级卷积也已完成产品集成、完整自动化、Release
+性能、签名候选和用户原生 GUI/真实音频验收；M10 已完成并关闭。
 M0 的源码、测试和构建产物只作参考，不被 M1 复用。BlackHole 只作为未启用的后备路线，
 不是当前依赖，也无需安装。
 
@@ -156,6 +160,7 @@ flowchart TD
 | [`docs/milestones/M7-open-source-preview-release.md`](docs/milestones/M7-open-source-preview-release.md) | M7 无 Developer ID 的 arm64 开源技术预览发布契约与验收门禁 |
 | [`docs/milestones/M8-convolution-source-path.md`](docs/milestones/M8-convolution-source-path.md) | M8 Convolution 外部源路径、schema v8、生效时加载和有效旁路契约 |
 | [`docs/milestones/M9-menu-bar-i18n.md`](docs/milestones/M9-menu-bar-i18n.md) | M9 菜单栏、Dock 常驻与单窗口恢复、主菜单精简和中英 i18n 范围与验收 |
+| [`docs/milestones/M10-convolution-ir-length.md`](docs/milestones/M10-convolution-ir-length.md) | M10 IR 长度自由、computational bypass、long-IR 多级卷积与验收证据 |
 | [`docs/future-equalizerapo-import.md`](docs/future-equalizerapo-import.md) | 未排期的 EqualizerAPO 导入与多文件 Include 未来需求池，可按需求卡选择范围 |
 | [`CONTEXT.md`](CONTEXT.md) | 产品与处理链的规范领域词汇 |
 | [`AGENTS.md`](AGENTS.md) | 编码 Agent 的仓库工作规范 |

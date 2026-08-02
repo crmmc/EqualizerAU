@@ -86,21 +86,19 @@ Undo/Redo 继续受既有 `4 MiB`、`4 MiB` 和 `30 records / 64 MiB` 预算约�
 空点、没有域内点、主动目标全部为 `0 dB` 或停用节点不生成 stage，继续保证逐位透明。FIR 生成、FFT setup、
 taps 验证和 Prepared 创建不得进入实时回调。
 
-### 5. Runtime ABI 与容量
+### 5. Runtime ABI 与实例容量
 
 不新增 ABI v4。每个 Graphic EQ FIR 降低为现有 ABI v3 convolution descriptor，并按当前
 Channels 作用域为每个实际声道追加一个有序 convolution stage。Graphic EQ 与 WAV Convolution
-共享同一实时预算：
+共享最多 8 个 convolution 声道实例；ADR-0017 已删除单 kernel 和所有实例总 taps 配额，但不改变
+Graphic EQ 固定 16,384 taps 的算法合同。前 256 taps 使用 direct FIR，tail 使用 256-frame
+partition / 512-point FFT，算法延迟为 0 frames；运行中替换继续使用完整新 Prepared、10 ms 双槽
+crossfade、latest-pending 合并和退休维护。
 
-- 最多 8 个 convolution 声道实例；
-- 所有实例 taps 合计最多 131,072；
-- 单 kernel 继续受 384,000 taps 上限约束；
-- 前 256 taps direct FIR，tail 使用 256-frame partition / 512-point FFT；算法延迟为 0 frames；
-- 运行中替换继续使用完整新 Prepared、10 ms 双槽 crossfade、latest-pending 合并和退休维护。
-
-超限在 Save 的 prepare 阶段拒绝整个候选，旧 saved configuration 与 active chain 不变；不删除
-部分 EQ、不缩短 FIR，也不把 FIR 回退为 biquad。无活动输出时可保存结构合法配置；之后在真实
-布局上 prepare 仍须通过同一容量检查才能应用。
+实例超限、tap 无法由 ABI 表示或 Prepared 动态分配失败时，在 Save 的 prepare 阶段拒绝整个候选，
+旧 saved configuration 与 active chain 不变；不删除部分 EQ、不缩短 FIR，也不把 FIR 回退为
+biquad。无活动输出时可保存结构合法配置；之后在真实布局上 prepare 仍须通过相同实例和机器资源
+检查才能应用。
 
 ### 6. 编辑器范围
 

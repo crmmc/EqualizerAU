@@ -28,6 +28,30 @@ protocol M1ConfigurationStoring: Sendable {
 
 extension M1ConfigurationStore: M1ConfigurationStoring {}
 
+final class M1EffectsActivationToken: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current = true
+
+    var isCurrent: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return current
+    }
+
+    func invalidate() {
+        lock.lock()
+        current = false
+        lock.unlock()
+    }
+
+    func performIfCurrent<Result>(_ operation: () throws -> Result) rethrows -> Result? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard current else { return nil }
+        return try operation()
+    }
+}
+
 protocol M1ProductAudioControlling: Sendable {
     func state() async -> M1NativeAudioRouteState
     func start(configuration: M1ConfigurationSnapshot) async throws
@@ -46,6 +70,10 @@ protocol M1ProductAudioControlling: Sendable {
     func waitForPublication(configurationGeneration: UInt64) async -> Bool
     func discardPendingPublication() async
     func setEffectsEnabled(_ enabled: Bool) async throws
+    func activateEffects(
+        preparation: M1AudioConfigurationPreparation,
+        activationToken: M1EffectsActivationToken
+    ) async throws -> M1ProcessingBuildDiagnostics?
     func diagnostics() async throws -> M1RealtimeDiagnostics?
     func processingDiagnostics() async -> M1ProcessingBuildDiagnostics?
 }
@@ -217,6 +245,13 @@ enum M1ProductAudioState: Equatable, Sendable {
     case cleanupRequired
 }
 
+enum M1ProcessingTransition: Equatable, Sendable {
+    case idle
+    case fadingOut
+    case preparing
+    case fadingIn
+}
+
 struct M1ProductSnapshot: Equatable, Sendable {
     let draft: M1ConfigurationSnapshot
     let selectedNodeIDs: Set<UUID>
@@ -231,7 +266,9 @@ struct M1ProductSnapshot: Equatable, Sendable {
     let activeConfigurationGeneration: UInt64?
     let expectedConfigurationGeneration: UInt64?
     let realtimeDiagnostics: M1RealtimeDiagnostics?
+    let requestedEffectsEnabled: Bool
     let appliedEffectsEnabled: Bool?
+    let processingTransition: M1ProcessingTransition
     let canEdit: Bool
     let canSetEffects: Bool
     let canSave: Bool
@@ -245,7 +282,23 @@ struct M1ProductSnapshot: Equatable, Sendable {
     let visibleError: M1PresentationMessage?
 
     var processingEnabled: Bool {
-        audio == .running && appliedEffectsEnabled == true
+        audio == .running
+            && appliedEffectsEnabled == true
+            && processingTransition == .idle
+    }
+
+    var processingRequested: Bool {
+        switch audio {
+        case .running, .starting, .stopping:
+            return requestedEffectsEnabled
+        case .stopped, .cleanupRequired:
+            switch audioRecovery {
+            case .suspendedForSleep, .recovering:
+                return requestedEffectsEnabled
+            case .inactive, .waitingForRetry, .permissionRequired:
+                return false
+            }
+        }
     }
 
     var canSetProcessing: Bool {
@@ -303,6 +356,11 @@ enum M1ProductControllerError: Error, Equatable, Sendable {
 }
 
 actor M1ProductController {
+    private struct EffectsIntent: Sendable {
+        let id: UInt64
+        let enabled: Bool
+    }
+
     private struct PendingApplication: Sendable {
         let generation: UInt64
         let snapshot: M1ConfigurationSnapshot
@@ -326,8 +384,11 @@ actor M1ProductController {
     private var activeConfigurationGeneration: UInt64?
     private var expectedConfigurationGeneration: UInt64?
     private var realtimeDiagnostics: M1RealtimeDiagnostics?
+    private var requestedEffectsEnabled = M1ConfigurationSnapshot.transparentRecovery.effectsEnabled
     private var appliedEffectsEnabled: Bool?
+    private var processingTransition: M1ProcessingTransition = .idle
     private var visibleError: M1PresentationMessage?
+    private var effectsOperationError: M1PresentationMessage?
     private var commitGeneration: UInt64 = 0
     private var draftRevision: UInt64 = 0
     private var bootstrapped = false
@@ -335,8 +396,12 @@ actor M1ProductController {
     private var persistenceInFlight = false
     private var acceptedOperations = 0
     private var effectsUpdateInFlight = false
-    private var pendingEffectsIntent: Bool?
+    private var nextEffectsOperationID: UInt64 = 0
+    private var activeEffectsOperationID: UInt64?
+    private var activeEffectsActivationToken: M1EffectsActivationToken?
+    private var pendingEffectsIntent: EffectsIntent?
     private var pendingEffectsEnabled: Bool?
+    private var persistingEffectsEnabled: Bool?
     private var uncertainApplication: PendingApplication?
     private var pendingApplication: PendingApplication?
     private var publicationTask: Task<Void, Never>?
@@ -392,6 +457,7 @@ actor M1ProductController {
             persistence = .uncertain(generation: generation)
         }
         editingSession = M1EditingSession(nodes: draft.nodes)
+        requestedEffectsEnabled = draft.effectsEnabled
         availableLayout = await audio.discoverOutputLayout()
         bootstrapped = true
     }
@@ -417,7 +483,9 @@ actor M1ProductController {
             activeConfigurationGeneration: activeConfigurationGeneration,
             expectedConfigurationGeneration: expectedConfigurationGeneration,
             realtimeDiagnostics: realtimeDiagnostics,
+            requestedEffectsEnabled: requestedEffectsEnabled,
             appliedEffectsEnabled: appliedEffectsEnabled,
+            processingTransition: processingTransition,
             canEdit: bootstrapped && !uncertain && !terminating,
             canSetEffects: bootstrapped && !uncertain && !recovery && !terminating
                 && (audioState == .stopped || audioState == .running),
@@ -688,7 +756,7 @@ actor M1ProductController {
            draft.effectsEnabled == enabled, alreadyApplied {
             return
         }
-        pendingEffectsIntent = enabled
+        try enqueueEffectsIntent(enabled)
         guard !effectsUpdateInFlight else { return }
         acceptedOperations += 1
         defer { acceptedOperations -= 1 }
@@ -703,7 +771,7 @@ actor M1ProductController {
     func setProcessingEnabled(_ enabled: Bool) async throws {
         if enabled {
             if audioState == .running {
-                if appliedEffectsEnabled != true { try await setEffectsEnabled(true) }
+                try await setEffectsEnabled(true)
                 return
             }
             guard audioState == .stopped else {
@@ -717,7 +785,7 @@ actor M1ProductController {
             try await finishStart(configuration: configuration)
         } else {
             guard audioState == .running else { return }
-            if appliedEffectsEnabled == true { try await setEffectsEnabled(false) }
+            try await setEffectsEnabled(false)
         }
     }
 
@@ -966,6 +1034,13 @@ actor M1ProductController {
         recoveryInProgress = true
         recoveryToken &+= 1
         let token = recoveryToken
+        let recoveryNodes = requiresRepair || processingTransition != .idle
+            ? runtimeBaseline.nodes
+            : saved.nodes
+        let configuration = M1ConfigurationSnapshot(
+            effectsEnabled: runtimeBaseline.effectsEnabled,
+            nodes: recoveryNodes
+        )
         defer {
             if token == recoveryToken {
                 recoveryInProgress = false
@@ -1003,7 +1078,6 @@ actor M1ProductController {
         clearAudioProjection()
         if draft == saved { persistence = .savedPendingStart }
 
-        let configuration = requiresRepair ? runtimeBaseline : saved
         var lastError: (any Error)?
         for attempt in 1...max(1, recoveryTiming.maximumAttempts) {
             guard token == recoveryToken, automaticRecoveryDesired, !terminating else { return }
@@ -1031,6 +1105,7 @@ actor M1ProductController {
                     requiresRecoveryIntent: true
                 )
                 audioRecovery = .inactive
+                await resumeRequestedEffectsAfterRecoveryIfNeeded()
                 return
             } catch {
                 guard token == recoveryToken else { return }
@@ -1122,7 +1197,11 @@ actor M1ProductController {
         let diagnostics = await audio.processingDiagnostics()
         audioState = .running
         runtimeBaseline = configuration
+        if !requiresRecoveryIntent {
+            requestedEffectsEnabled = configuration.effectsEnabled
+        }
         appliedEffectsEnabled = configuration.effectsEnabled
+        processingTransition = .idle
         layout = startedLayout
         availableLayout = startedLayout
         activeDiagnostics = diagnostics
@@ -1140,6 +1219,7 @@ actor M1ProductController {
         expectedConfigurationGeneration = nil
         realtimeDiagnostics = nil
         appliedEffectsEnabled = nil
+        processingTransition = .idle
         pendingApplication = nil
         publicationTask?.cancel()
         publicationTask = nil
@@ -1401,7 +1481,15 @@ actor M1ProductController {
     private func persistPendingEffects() async throws {
         if case .uncertain = persistence { return }
         guard let enabled = pendingEffectsEnabled else { return }
+        if !requiresRepair, saved.effectsEnabled == enabled {
+            pendingEffectsEnabled = nil
+            return
+        }
         pendingEffectsEnabled = nil
+        persistingEffectsEnabled = enabled
+        defer {
+            if persistingEffectsEnabled == enabled { persistingEffectsEnabled = nil }
+        }
         let candidate = M1ConfigurationSnapshot(effectsEnabled: enabled, nodes: saved.nodes)
         do {
             try await persist(
@@ -1415,13 +1503,52 @@ actor M1ProductController {
         }
     }
 
+    private func enqueueEffectsIntent(_ enabled: Bool) throws {
+        guard nextEffectsOperationID < UInt64.max else {
+            throw M1ProductControllerError.generationExhausted
+        }
+        activeEffectsActivationToken?.invalidate()
+        nextEffectsOperationID += 1
+        requestedEffectsEnabled = enabled
+        pendingEffectsIntent = EffectsIntent(id: nextEffectsOperationID, enabled: enabled)
+    }
+
+    private func resumeRequestedEffectsAfterRecoveryIfNeeded() async {
+        guard audioState == .running,
+              appliedEffectsEnabled != requestedEffectsEnabled else {
+            return
+        }
+        do {
+            try enqueueEffectsIntent(requestedEffectsEnabled)
+            guard !effectsUpdateInFlight else { return }
+            acceptedOperations += 1
+            defer { acceptedOperations -= 1 }
+            try await drainEffectsUpdates()
+            if !persistenceInFlight, pendingEffectsEnabled != nil {
+                persistenceInFlight = true
+                defer { persistenceInFlight = false }
+                try await persistPendingEffects()
+            }
+        } catch {
+            visibleError = .technical(String(describing: error))
+        }
+    }
+
     private func drainEffectsUpdates() async throws {
         guard !effectsUpdateInFlight else { return }
         effectsUpdateInFlight = true
-        defer { effectsUpdateInFlight = false }
+        defer {
+            activeEffectsActivationToken?.invalidate()
+            activeEffectsActivationToken = nil
+            activeEffectsOperationID = nil
+            processingTransition = .idle
+            effectsUpdateInFlight = false
+        }
         var lastError: (any Error)?
-        while let enabled = pendingEffectsIntent {
+        while let intent = pendingEffectsIntent {
             pendingEffectsIntent = nil
+            activeEffectsOperationID = intent.id
+            let enabled = intent.enabled
             while true {
                 let capturedRevision = draftRevision
                 let candidate = M1ConfigurationSnapshot(
@@ -1442,20 +1569,86 @@ actor M1ProductController {
             }
             if pendingEffectsIntent != nil { continue }
             do {
-                if audioState == .running {
-                    try await audio.setEffectsEnabled(enabled)
+                if audioState == .running, appliedEffectsEnabled != enabled {
+                    if enabled {
+                        processingTransition = .preparing
+                        guard await waitForEarlierRuntimeApplication() else { continue }
+                        let preparation = try await audio.prepare(configuration: runtimeBaseline)
+                        if pendingEffectsIntent != nil {
+                            expectedDiagnostics = nil
+                            processingTransition = .idle
+                            continue
+                        }
+                        guard preparation.layout != nil, preparation.compiled != nil else {
+                            throw M1ProductControllerError.commandUnavailable
+                        }
+                        expectedDiagnostics = preparation.compiled?.diagnostics
+                        expectedConfigurationGeneration = nil
+                        let activationToken = M1EffectsActivationToken()
+                        activeEffectsActivationToken = activationToken
+                        processingTransition = .fadingIn
+                        let diagnostics = try await audio.activateEffects(
+                            preparation: preparation,
+                            activationToken: activationToken
+                        )
+                        guard audioState == .running else {
+                            throw M1ProductControllerError.commandUnavailable
+                        }
+                        activationToken.invalidate()
+                        if activeEffectsActivationToken === activationToken {
+                            activeEffectsActivationToken = nil
+                        }
+                        activeDiagnostics = diagnostics
+                        expectedDiagnostics = nil
+                    } else {
+                        processingTransition = .fadingOut
+                        try await audio.setEffectsEnabled(false)
+                    }
                     appliedEffectsEnabled = enabled
+                    runtimeBaseline.effectsEnabled = enabled
                 }
+                processingTransition = .idle
+                activeEffectsOperationID = nil
                 if pendingEffectsIntent == nil {
-                    pendingEffectsEnabled = enabled
+                    if persistingEffectsEnabled != enabled {
+                        pendingEffectsEnabled = enabled
+                    }
                     lastError = nil
+                    if visibleError == effectsOperationError { visibleError = nil }
+                    effectsOperationError = nil
                 }
+            } catch is CancellationError where pendingEffectsIntent != nil {
+                activeEffectsActivationToken = nil
+                processingTransition = .idle
+                activeEffectsOperationID = nil
+                expectedDiagnostics = nil
+                lastError = nil
             } catch {
-                visibleError = .technical(String(describing: error))
+                activeEffectsActivationToken?.invalidate()
+                activeEffectsActivationToken = nil
+                processingTransition = .idle
+                activeEffectsOperationID = nil
+                expectedDiagnostics = nil
+                let message = M1PresentationMessage.technical(String(describing: error))
+                effectsOperationError = message
+                visibleError = message
                 lastError = error
             }
         }
         if let lastError { throw lastError }
+    }
+
+    private func waitForEarlierRuntimeApplication() async -> Bool {
+        while persistenceInFlight {
+            if pendingEffectsIntent != nil || audioState != .running { return false }
+            do {
+                try await Task.sleep(for: .milliseconds(1))
+            } catch {
+                return false
+            }
+        }
+        await publicationTask?.value
+        return pendingEffectsIntent == nil && audioState == .running
     }
 
     private func invalidatePendingApplication() async {
@@ -1509,7 +1702,7 @@ actor M1ProductController {
                 expectedDiagnostics = nil
                 activeConfigurationGeneration = application.generation
                 expectedConfigurationGeneration = nil
-                runtimeBaseline = application.snapshot
+                adoptRuntimeNodes(from: application.snapshot)
                 persistence = draft == saved ? .clean : .modified
                 return
             }
@@ -1558,10 +1751,17 @@ actor M1ProductController {
         expectedDiagnostics = nil
         activeConfigurationGeneration = application.generation
         expectedConfigurationGeneration = nil
-        runtimeBaseline = application.snapshot
+        adoptRuntimeNodes(from: application.snapshot)
         updatePersistenceAfterPendingApplication(
             generation: application.generation,
             stopped: false
+        )
+    }
+
+    private func adoptRuntimeNodes(from snapshot: M1ConfigurationSnapshot) {
+        runtimeBaseline = M1ConfigurationSnapshot(
+            effectsEnabled: appliedEffectsEnabled ?? runtimeBaseline.effectsEnabled,
+            nodes: snapshot.nodes
         )
     }
 

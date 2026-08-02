@@ -109,6 +109,28 @@ final class M1RetirementMaintenanceCoordinatorTests: XCTestCase {
         XCTAssertTrue(discards.isEmpty)
     }
 
+    func testSameTicketMaintenanceRequiredHonorsExactDeadline() async {
+        let clock = TestMonotonicClock()
+        let access = TestMaintenanceAccess(steps: [
+            .maintenanceRequired(ticket: 11),
+            .maintenanceRequired(ticket: 11),
+            .maintenanceRequired(ticket: 11),
+        ])
+        let coordinator = M1RetirementMaintenanceCoordinator(
+            access: access,
+            timing: clock.timing(pollInterval: 1, ticketDeadline: 3)
+        )
+
+        let started = await coordinator.start(ticket: 11, bridgeGeneration: 5)
+        XCTAssertTrue(started)
+        await coordinator.waitUntilIdle()
+
+        let stopRequests = await access.stopRequests()
+        XCTAssertEqual(stopRequests, [
+            .init(reason: .ticketTimedOut(ticket: 11), generation: 5),
+        ])
+    }
+
     func testGenerationChangeStopsBeforeAnotherRuntimeAccess() async {
         let clock = TestMonotonicClock()
         let access = TestMaintenanceAccess(steps: [.bridgeGenerationChanged])

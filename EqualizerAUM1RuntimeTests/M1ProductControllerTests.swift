@@ -288,6 +288,165 @@ final class M1ProductControllerTests: XCTestCase {
         XCTAssertTrue(calls.contains("effects:true"))
     }
 
+    func testProcessingTransitionSeparatesRequestedAndAppliedState() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        let disableGate = ProductTestGate()
+        await fixture.audio.setEffectsGate(disableGate)
+
+        let disableTask = Task { try await fixture.controller.setProcessingEnabled(false) }
+        await waitUntil { await fixture.audio.calls.contains("effects:false") }
+        var snapshot = await fixture.controller.snapshot()
+        XCTAssertFalse(snapshot.processingRequested)
+        XCTAssertFalse(snapshot.processingEnabled)
+        XCTAssertEqual(snapshot.processingTransition, .fadingOut)
+        await disableGate.open()
+        try await disableTask.value
+
+        let prepareGate = ProductTestGate()
+        let enableGate = ProductTestGate()
+        await fixture.audio.setPreparationGate(prepareGate)
+        await fixture.audio.setEffectsGate(enableGate)
+        let enableTask = Task { try await fixture.controller.setProcessingEnabled(true) }
+        await waitUntil { await fixture.audio.calls.filter { $0 == "prepare" }.count == 1 }
+        snapshot = await fixture.controller.snapshot()
+        XCTAssertTrue(snapshot.processingRequested)
+        XCTAssertFalse(snapshot.processingEnabled)
+        XCTAssertEqual(snapshot.processingTransition, .preparing)
+        await prepareGate.open()
+        await waitUntil { await fixture.audio.calls.contains("effects:true") }
+        snapshot = await fixture.controller.snapshot()
+        XCTAssertFalse(snapshot.processingEnabled)
+        XCTAssertEqual(snapshot.processingTransition, .fadingIn)
+        await enableGate.open()
+        try await enableTask.value
+
+        snapshot = await fixture.controller.snapshot()
+        XCTAssertTrue(snapshot.processingEnabled)
+        XCTAssertEqual(snapshot.processingTransition, .idle)
+    }
+
+    func testProcessingEnableSupersededBeforeDesiredWriteStaysBypassed() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        try await fixture.controller.setProcessingEnabled(false)
+        let prepareGate = ProductTestGate()
+        await fixture.audio.setPreparationGate(prepareGate)
+
+        let enableTask = Task { try await fixture.controller.setProcessingEnabled(true) }
+        await waitUntil { await fixture.audio.calls.filter { $0 == "prepare" }.count == 1 }
+        try await fixture.controller.setProcessingEnabled(false)
+        await prepareGate.open()
+        try await enableTask.value
+
+        let snapshot = await fixture.controller.snapshot()
+        let calls = await fixture.audio.calls
+        XCTAssertFalse(snapshot.processingRequested)
+        XCTAssertFalse(snapshot.processingEnabled)
+        XCTAssertEqual(snapshot.processingTransition, .idle)
+        XCTAssertNil(snapshot.visibleError)
+        XCTAssertEqual(calls.filter { $0 == "effects:true" }.count, 0)
+    }
+
+    func testProcessingEnableSupersededWhileActivationWaitsNeverWritesTrue() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        try await fixture.controller.setProcessingEnabled(false)
+        let activationGate = ProductTestGate()
+        await fixture.audio.setActivationGate(activationGate)
+
+        let enable = Task { try await fixture.controller.setProcessingEnabled(true) }
+        await waitUntil { await fixture.audio.calls.contains("activate") }
+        try await fixture.controller.setProcessingEnabled(false)
+        await activationGate.open()
+        try await enable.value
+
+        let snapshot = await fixture.controller.snapshot()
+        let calls = await fixture.audio.calls
+        XCTAssertFalse(snapshot.processingRequested)
+        XCTAssertFalse(snapshot.processingEnabled)
+        XCTAssertEqual(snapshot.processingTransition, .idle)
+        XCTAssertNil(snapshot.visibleError)
+        XCTAssertEqual(calls.filter { $0 == "effects:true" }.count, 0)
+    }
+
+    func testSuccessfulEffectsSupersessionPreservesUnrelatedVisibleError() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        try await fixture.controller.setProcessingEnabled(false)
+        await fixture.controller.reportCommandError("unrelated")
+        let activationGate = ProductTestGate()
+        await fixture.audio.setActivationGate(activationGate)
+
+        let enable = Task { try await fixture.controller.setProcessingEnabled(true) }
+        await waitUntil { await fixture.audio.calls.contains("activate") }
+        try await fixture.controller.setProcessingEnabled(false)
+        await activationGate.open()
+        try await enable.value
+
+        let snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(snapshot.visibleError, .technical("unrelated"))
+        XCTAssertFalse(snapshot.processingEnabled)
+    }
+
+    func testProcessingEnableWaitsForEarlierSaveApplication() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        try await fixture.controller.setProcessingEnabled(false)
+        try await fixture.controller.setGainDB(id: fixture.nodeID, gainDB: 3)
+        let gate = ProductTestGate()
+        await fixture.store.setCommitGate(gate)
+
+        let save = Task { try await fixture.controller.save() }
+        await waitUntil { await fixture.store.commits.count == 2 }
+        let enable = Task { try await fixture.controller.setProcessingEnabled(true) }
+        await waitUntil {
+            await fixture.controller.snapshot().processingTransition == .preparing
+        }
+        var calls = await fixture.audio.calls
+        XCTAssertFalse(calls.contains("effects:true"))
+
+        await gate.open()
+        try await save.value
+        try await enable.value
+        calls = await fixture.audio.calls
+        let publishIndex = try XCTUnwrap(calls.lastIndex(of: "publish"))
+        let enableIndex = try XCTUnwrap(calls.lastIndex(of: "effects:true"))
+        XCTAssertLessThan(publishIndex, enableIndex)
+    }
+
+    func testRecoveryRequeuesEnableInterruptedDuringPreparation() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        try await fixture.controller.setProcessingEnabled(false)
+        let prepareGate = ProductTestGate()
+        await fixture.audio.setPreparationGate(prepareGate)
+
+        let enable = Task { try await fixture.controller.setProcessingEnabled(true) }
+        await waitUntil { await fixture.audio.calls.filter { $0 == "prepare" }.count == 1 }
+        await fixture.controller.handleAudioLifecycleEvent(.routeChanged)
+        let recovered = await fixture.controller.snapshot()
+        let recoveryStarts = await fixture.audio.startedConfigurations
+        XCTAssertTrue(recovered.processingRequested)
+        XCTAssertFalse(recovered.processingEnabled)
+        XCTAssertEqual(recoveryStarts.last?.effectsEnabled, false)
+
+        await prepareGate.open()
+        try await enable.value
+        let completed = await fixture.controller.snapshot()
+        let calls = await fixture.audio.calls
+        XCTAssertTrue(completed.processingRequested)
+        XCTAssertTrue(completed.processingEnabled)
+        XCTAssertEqual(completed.processingTransition, .idle)
+        XCTAssertEqual(calls.filter { $0 == "effects:true" }.count, 1)
+    }
+
     func testProcessingSwitchStartsStoppedEngineAndChannelsEditIsDraftOnly() async throws {
         let fixture = makeFixture()
         await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
@@ -408,9 +567,14 @@ final class M1ProductControllerTests: XCTestCase {
         let saveTask = Task { try await fixture.controller.save() }
         await waitUntil { await fixture.store.commits.count == 1 }
         try await fixture.controller.setEffectsEnabled(false)
-        try await fixture.controller.setEffectsEnabled(true)
+        let enableTask = Task { try await fixture.controller.setEffectsEnabled(true) }
+        await waitUntil {
+            let snapshot = await fixture.controller.snapshot()
+            return snapshot.processingRequested && snapshot.processingTransition == .preparing
+        }
         try await fixture.controller.setEffectsEnabled(false)
         await gate.open()
+        try await enableTask.value
         try await saveTask.value
 
         let commits = await fixture.store.commits
@@ -735,7 +899,8 @@ final class M1ProductControllerTests: XCTestCase {
         XCTAssertTrue(snapshot.draft.effectsEnabled)
         XCTAssertEqual(calls.filter { $0.hasPrefix("effects:") }, ["effects:false", "effects:true"])
         let commits = await fixture.store.commits
-        XCTAssertEqual(commits.last?.snapshot.effectsEnabled, true)
+        XCTAssertTrue(commits.isEmpty)
+        XCTAssertEqual(snapshot.persistence, .clean)
     }
     func testNodeEditRemainsValidWhileEffectsRuntimeUpdateIsBlocked() async throws {
         let fixture = makeFixture()
@@ -1835,6 +2000,7 @@ private actor ProductAudioFake: M1ProductAudioControlling {
     private var publicationGate: ProductTestGate?
     private var publishGate: ProductTestGate?
     private var effectsGate: ProductTestGate?
+    private var activationGate: ProductTestGate?
     private var effectsFailure = false
     private var outputAvailable = true
     private var preparationFails = false
@@ -1958,6 +2124,17 @@ private actor ProductAudioFake: M1ProductAudioControlling {
         if effectsFailure { throw ProductAudioFakeError.effectsFailed }
     }
 
+    func activateEffects(
+        preparation: M1AudioConfigurationPreparation,
+        activationToken: M1EffectsActivationToken
+    ) async throws -> M1ProcessingBuildDiagnostics? {
+        calls.append("activate")
+        await activationGate?.wait()
+        guard activationToken.isCurrent else { throw CancellationError() }
+        try await setEffectsEnabled(true)
+        return preparation.compiled?.diagnostics
+    }
+
     func diagnostics() -> M1RealtimeDiagnostics? {
         guard running else { return nil }
         return M1RealtimeDiagnostics(
@@ -2004,6 +2181,7 @@ private actor ProductAudioFake: M1ProductAudioControlling {
     }
     func setPublishGate(_ gate: ProductTestGate?) { publishGate = gate }
     func setEffectsGate(_ gate: ProductTestGate?) { effectsGate = gate }
+    func setActivationGate(_ gate: ProductTestGate?) { activationGate = gate }
     func setEffectsFailure(_ fails: Bool) { effectsFailure = fails }
     func setStartFailuresRemaining(_ count: Int) { startFailuresRemaining = count }
     func setPermissionFailure(_ fails: Bool) { permissionFailure = fails }

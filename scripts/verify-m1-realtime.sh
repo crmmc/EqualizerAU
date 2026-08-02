@@ -33,15 +33,29 @@ audits = {
     "float sanitizeInput(",
     "double boundedDSPValue(",
     "float normalizedFloatSample(",
-    "double normalizedDSPState(",
-    "void fftTransform(",
     "float processConvolutionSample(",
     "float processChainSample(",
     "float mixSamples(",
     "void completeChainTransitionFrame(",
+    "void completeEffectsStateAtBlockBoundary(",
     "EAUM1Status validateProcessCall(",
     "void silenceOutputBlock(",
     "EAUM1Status EAUM1RuntimeProcess(",
+  ],
+  "EqualizerAUM1Runtime/src/EAUM1Convolution.hpp" => [
+    "double RuntimeConvolution::process(",
+    "void RuntimeConvolution::startProduct(",
+    "void RuntimeConvolution::addProduct(",
+    "void RuntimeConvolution::prepareJob(",
+    "void RuntimeConvolution::runMacUntil(",
+    "void RuntimeConvolution::runMacGroup(",
+    "void RuntimeConvolution::retireInput(",
+    "void RuntimeConvolution::publishJob(",
+    "void RuntimeConvolution::executeImmediate(",
+    "void RuntimeConvolution::beginDistributed(",
+    "void RuntimeConvolution::advanceDistributed(",
+    "void RuntimeConvolution::addToTimeline(",
+    "double RuntimeConvolution::takeTimeline(",
   ],
 }
 
@@ -52,6 +66,7 @@ forbidden = {
   "file or network I/O" => /\b(?:open|close|read|write|pread|pwrite|fopen|fclose|fread|fwrite|socket|connect|accept|send|recv)\s*\(/,
   "dispatch or Objective-C messaging" => /\b(?:dispatch_async|dispatch_sync|dispatch_after|objc_msgSend)\b|^\s*\[[A-Za-z_]\w*\s+[A-Za-z_]\w*(?::[^\]\n]*)?\]\s*;?\s*$/,
   "exceptions" => /\b(?:throw|catch)\b/,
+  "FFT setup lifecycle" => /\bvDSP_(?:create|destroy)_fftsetupD?\s*\(/,
 }
 
 def function_body(source, marker)
@@ -83,7 +98,7 @@ sources = audits.keys.to_h do |relative_path|
   [relative_path, File.read(File.join(repo_root, relative_path))]
 end
 local_names = sources.values.flat_map do |source|
-  source.scan(/^\s*(?:[A-Za-z_]\w*(?:::\w+)*(?:\s*[<>&*]\s*|\s+))+([A-Za-z_]\w*)\s*\([^;{}]*\)\s*(?:const\s*)?\{/m).flatten
+  source.scan(/^\s*(?:inline\s+)?(?:[A-Za-z_]\w*(?:::\w+)*(?:\s*[<>&*]\s*|\s+))+([A-Za-z_]\w*)\s*\([^;{}]*\)\s*(?:const\s*)?(?:noexcept\s*)?\{/m).flatten
 end.to_set
 
 audits.each do |relative_path, markers|

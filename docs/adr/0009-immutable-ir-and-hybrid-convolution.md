@@ -2,7 +2,7 @@
 
 | 属性 | 内容 |
 |---|---|
-| 状态 | 部分被 ADR-0014 取代；DSP/ABI 决策仍有效 |
+| 状态 | 部分被 ADR-0014、ADR-0017 与 ADR-0019 取代；零延迟 direct head、ABI v3 与 Prepared 所有权仍有效 |
 | 日期 | 2026-07-21 |
 | 范围 | WAV IR、配置引用、SRC、Runtime ABI 与实时卷积 |
 | 产品需求 | [`prd.md`](../prd.md) |
@@ -11,9 +11,12 @@
 ## 后续修订
 
 2026-07-28，ADR-0014 取代本文关于 immutable sidecar、storage ID、导入时复制、hash/metadata
-预检和资源失败整批拒绝的决策。当前 schema v8 保存外部绝对源路径，在每次真正生效时读取；
-资源局部失败只旁路所属节点。本文的 WAV 格式边界、SRC、声道映射、ABI v3 hybrid kernel、
-容量、Prepared 所有权和实时线程约束继续有效。
+预检和资源失败整批拒绝的决策。2026-07-30，ADR-0017 进一步取代 WAV 字节/时长、IR SRC、
+单 kernel/总 taps 容量和对应失败语义。当前 schema v8 保存外部绝对源路径，每次生效重读且不
+重采样；采样率不匹配只旁路所属节点，超过 8 秒只警告。2026-08-01，ADR-0019 取代本文
+关于 256-frame scalar full-complex uniform tail 的实现，改为 256-tap direct head 加 Accelerate
+Float64 deadline-distributed multistage NUP。本文的声道映射、ABI v3、零延迟 direct head、
+Prepared ownership 和 realtime callback 无 IO/分配约束继续有效。
 
 ## 背景
 

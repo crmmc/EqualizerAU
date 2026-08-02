@@ -409,6 +409,337 @@ final class M1AudioRouteResourceControllerTests: XCTestCase {
         XCTAssertTrue(retainedExistingRuntime === existingRuntime)
     }
 
+    func testComputationalBypassDisablesAndFreshlyActivatesWithoutRouteRebuild() async throws {
+        let hal = TestHALRouteOperations()
+        let audioIO = TestAudioIOOperations()
+        let runtimeAccess = M1RuntimeLeaseAccess(stopHandler: { _, _ in })
+        let maintenance = M1RetirementMaintenanceCoordinator(
+            access: runtimeAccess,
+            timing: M1RetirementMaintenanceTiming(
+                nowNanoseconds: { DispatchTime.now().uptimeNanoseconds },
+                sleep: { try await Task.sleep(nanoseconds: $0) }
+            )
+        )
+        let coordinator = M1NativeAudioRouteCoordinator(
+            routeResources: M1AudioRouteResourceController(operations: hal),
+            audioIO: M1AudioIOController(
+                operations: audioIO,
+                timing: M1AudioIOControlTiming(nowNanoseconds: { 0 }, sleep: { _ in })
+            ),
+            runtimeFactory: RealTestRuntimeFactory(),
+            runtimeAccess: runtimeAccess,
+            retirementMaintenance: maintenance
+        )
+        let original = M1ConfigurationSnapshot(
+            effectsEnabled: true,
+            nodes: [M1ProcessingNode(id: UUID(), isEnabled: true, gainDB: 6, channels: .all)]
+        )
+        try await coordinator.start(configuration: original)
+        let runtime = try XCTUnwrap(audioIO.runtime)
+        let routeCounts = (hal.tapRequests.count, hal.aggregateRequests.count)
+
+        let disable = Task { try await coordinator.setEffectsEnabled(false) }
+        for _ in 0..<100 {
+            XCTAssertEqual(Int(processRuntime(runtime.pointer)), EAUM1StatusOK)
+            if try await runtimeAccess.effectsState(
+                bridgeGeneration: runtime.bridgeGeneration
+            ) == .bypassed { break }
+            try await Task.sleep(nanoseconds: 100_000)
+        }
+        try await disable.value
+        let bypassed = try await runtimeAccess.effectsState(
+            bridgeGeneration: runtime.bridgeGeneration
+        )
+        XCTAssertEqual(bypassed, .bypassed)
+
+        let replacement = M1ConfigurationSnapshot(
+            effectsEnabled: true,
+            nodes: [M1ProcessingNode(id: UUID(), isEnabled: true, gainDB: -6, channels: .all)]
+        )
+        let preparation = try await coordinator.prepare(configuration: replacement)
+        let activate = Task {
+            try await coordinator.activateEffects(
+                preparation: preparation,
+                activationToken: M1EffectsActivationToken()
+            )
+        }
+        for _ in 0..<100 {
+            XCTAssertEqual(Int(processRuntime(runtime.pointer)), EAUM1StatusOK)
+            if try await runtimeAccess.effectsState(
+                bridgeGeneration: runtime.bridgeGeneration
+            ) == .active { break }
+            try await Task.sleep(nanoseconds: 100_000)
+        }
+        _ = try await activate.value
+        let active = try await runtimeAccess.effectsState(
+            bridgeGeneration: runtime.bridgeGeneration
+        )
+        XCTAssertEqual(active, .active)
+        XCTAssertEqual(hal.tapRequests.count, routeCounts.0)
+        XCTAssertEqual(hal.aggregateRequests.count, routeCounts.1)
+        XCTAssertTrue(hal.destroyOrder.isEmpty)
+        try await coordinator.stop()
+    }
+
+    func testCancelledActivationCompensatesBackToBypassed() async throws {
+        let hal = TestHALRouteOperations()
+        let audioIO = TestAudioIOOperations()
+        let runtimeAccess = M1RuntimeLeaseAccess(stopHandler: { _, _ in })
+        let coordinator = M1NativeAudioRouteCoordinator(
+            routeResources: M1AudioRouteResourceController(operations: hal),
+            audioIO: M1AudioIOController(
+                operations: audioIO,
+                timing: M1AudioIOControlTiming(nowNanoseconds: { 0 }, sleep: { _ in })
+            ),
+            runtimeFactory: RealTestRuntimeFactory(),
+            runtimeAccess: runtimeAccess,
+            retirementMaintenance: M1RetirementMaintenanceCoordinator(
+                access: runtimeAccess,
+                timing: M1RetirementMaintenanceTiming(
+                    nowNanoseconds: { DispatchTime.now().uptimeNanoseconds },
+                    sleep: { try await Task.sleep(nanoseconds: $0) }
+                )
+            )
+        )
+        let bypassed = M1ConfigurationSnapshot(
+            effectsEnabled: false,
+            nodes: [M1ProcessingNode(id: UUID(), isEnabled: true, gainDB: 6, channels: .all)]
+        )
+        try await coordinator.start(configuration: bypassed)
+        let runtime = try XCTUnwrap(audioIO.runtime)
+        let preparation = try await coordinator.prepare(configuration: M1ConfigurationSnapshot(
+            effectsEnabled: true,
+            nodes: [M1ProcessingNode(id: UUID(), isEnabled: true, gainDB: -6, channels: .all)]
+        ))
+        let activation = Task {
+            try await coordinator.activateEffects(
+                preparation: preparation,
+                activationToken: M1EffectsActivationToken()
+            )
+        }
+
+        for _ in 0..<100 {
+            XCTAssertEqual(Int(processRuntime(runtime.pointer)), EAUM1StatusOK)
+            if try await runtimeAccess.effectsState(
+                bridgeGeneration: runtime.bridgeGeneration
+            ) == .fadingIn { break }
+            try await Task.sleep(nanoseconds: 100_000)
+        }
+        activation.cancel()
+        for _ in 0..<100 {
+            XCTAssertEqual(Int(processRuntime(runtime.pointer)), EAUM1StatusOK)
+            if try await runtimeAccess.effectsState(
+                bridgeGeneration: runtime.bridgeGeneration
+            ) == .bypassed { break }
+            try await Task.sleep(nanoseconds: 100_000)
+        }
+        do {
+            _ = try await activation.value
+            XCTFail("cancelled activation must not report success")
+        } catch is CancellationError {}
+        let state = try await runtimeAccess.effectsState(
+            bridgeGeneration: runtime.bridgeGeneration
+        )
+        XCTAssertEqual(state, .bypassed)
+        try await coordinator.stop()
+    }
+
+    func testActivationInvalidatedAtDesiredWriteBoundaryStaysBypassed() async throws {
+        let hal = TestHALRouteOperations()
+        let audioIO = TestAudioIOOperations()
+        let token = M1EffectsActivationToken()
+        let clock = InvalidatingEffectsClock(token: token, invalidationCall: 3)
+        let runtimeAccess = M1RuntimeLeaseAccess(stopHandler: { _, _ in })
+        let coordinator = M1NativeAudioRouteCoordinator(
+            routeResources: M1AudioRouteResourceController(operations: hal),
+            audioIO: M1AudioIOController(
+                operations: audioIO,
+                timing: M1AudioIOControlTiming(nowNanoseconds: { 0 }, sleep: { _ in })
+            ),
+            runtimeFactory: RealTestRuntimeFactory(),
+            runtimeAccess: runtimeAccess,
+            retirementMaintenance: M1RetirementMaintenanceCoordinator(
+                access: runtimeAccess,
+                timing: M1RetirementMaintenanceTiming(nowNanoseconds: { 0 }, sleep: { _ in })
+            ),
+            effectsTransitionTiming: M1EffectsTransitionTiming(
+                pollInterval: 1,
+                deadline: 3,
+                nowNanoseconds: { await clock.now() },
+                sleep: { _ in }
+            )
+        )
+        try await coordinator.start(configuration: M1ConfigurationSnapshot(
+            effectsEnabled: false,
+            nodes: []
+        ))
+        let preparation = try await coordinator.prepare(configuration: .transparentRecovery)
+
+        do {
+            _ = try await coordinator.activateEffects(
+                preparation: preparation,
+                activationToken: token
+            )
+            XCTFail("invalidated activation must not write desired=true")
+        } catch is CancellationError {}
+        let runtime = try XCTUnwrap(audioIO.runtime)
+        let state = try await runtimeAccess.effectsState(
+            bridgeGeneration: runtime.bridgeGeneration
+        )
+        XCTAssertEqual(state, .bypassed)
+        try await coordinator.stop()
+    }
+
+    func testColdReplaceThatReturnsAfterDeadlineDoesNotEnableEffects() async throws {
+        let hal = TestHALRouteOperations()
+        let audioIO = TestAudioIOOperations()
+        let clock = SequencedEffectsClock(values: [0, 3])
+        let runtimeAccess = M1RuntimeLeaseAccess(stopHandler: { _, _ in })
+        let coordinator = M1NativeAudioRouteCoordinator(
+            routeResources: M1AudioRouteResourceController(operations: hal),
+            audioIO: M1AudioIOController(
+                operations: audioIO,
+                timing: M1AudioIOControlTiming(nowNanoseconds: { 0 }, sleep: { _ in })
+            ),
+            runtimeFactory: RealTestRuntimeFactory(),
+            runtimeAccess: runtimeAccess,
+            retirementMaintenance: M1RetirementMaintenanceCoordinator(
+                access: runtimeAccess,
+                timing: M1RetirementMaintenanceTiming(
+                    nowNanoseconds: { 0 },
+                    sleep: { _ in }
+                )
+            ),
+            effectsTransitionTiming: M1EffectsTransitionTiming(
+                pollInterval: 1,
+                deadline: 3,
+                nowNanoseconds: { await clock.now() },
+                sleep: { _ in }
+            )
+        )
+        try await coordinator.start(configuration: M1ConfigurationSnapshot(
+            effectsEnabled: false,
+            nodes: []
+        ))
+        let preparation = try await coordinator.prepare(configuration: .transparentRecovery)
+
+        do {
+            _ = try await coordinator.activateEffects(
+                preparation: preparation,
+                activationToken: M1EffectsActivationToken()
+            )
+            XCTFail("expired cold replacement must not enable effects")
+        } catch let error as M1AudioIOError {
+            XCTAssertEqual(error, .invalidState("bypassed replacement timed out"))
+        }
+        let runtime = try XCTUnwrap(audioIO.runtime)
+        let state = try await runtimeAccess.effectsState(
+            bridgeGeneration: runtime.bridgeGeneration
+        )
+        XCTAssertEqual(state, .bypassed)
+        try await coordinator.stop()
+    }
+
+    func testActivationAckTimeoutCompensatesWithoutRecoverableStop() async throws {
+        let hal = TestHALRouteOperations()
+        let audioIO = TestAudioIOOperations()
+        let clock = EffectsTestClock()
+        let recorder = RetirementStopRecorder()
+        let runtimeAccess = M1RuntimeLeaseAccess { reason, generation in
+            await recorder.record(reason: reason, generation: generation)
+        }
+        let coordinator = M1NativeAudioRouteCoordinator(
+            routeResources: M1AudioRouteResourceController(operations: hal),
+            audioIO: M1AudioIOController(
+                operations: audioIO,
+                timing: M1AudioIOControlTiming(nowNanoseconds: { 0 }, sleep: { _ in })
+            ),
+            runtimeFactory: RealTestRuntimeFactory(),
+            runtimeAccess: runtimeAccess,
+            retirementMaintenance: M1RetirementMaintenanceCoordinator(
+                access: runtimeAccess,
+                timing: M1RetirementMaintenanceTiming(
+                    nowNanoseconds: { await clock.now() },
+                    sleep: { await clock.advance(by: $0) }
+                )
+            ),
+            effectsTransitionTiming: M1EffectsTransitionTiming(
+                pollInterval: 1,
+                deadline: 3,
+                nowNanoseconds: { await clock.now() },
+                sleep: { await clock.advance(by: $0) }
+            )
+        )
+        try await coordinator.start(configuration: M1ConfigurationSnapshot(
+            effectsEnabled: false,
+            nodes: []
+        ))
+        let preparation = try await coordinator.prepare(configuration: .transparentRecovery)
+
+        do {
+            _ = try await coordinator.activateEffects(
+                preparation: preparation,
+                activationToken: M1EffectsActivationToken()
+            )
+            XCTFail("missing fade-in acknowledgement must fail")
+        } catch let error as M1AudioIOError {
+            XCTAssertEqual(error, .invalidState("effects activation timed out"))
+        }
+        let runtime = try XCTUnwrap(audioIO.runtime)
+        let state = try await runtimeAccess.effectsState(
+            bridgeGeneration: runtime.bridgeGeneration
+        )
+        let stopEvents = await recorder.events()
+        XCTAssertEqual(state, .bypassed)
+        XCTAssertTrue(stopEvents.isEmpty)
+        try await coordinator.stop()
+    }
+
+    func testComputationalBypassTimeoutRequestsRecoverableStop() async throws {
+        let hal = TestHALRouteOperations()
+        let audioIO = TestAudioIOOperations()
+        let clock = EffectsTestClock()
+        let recorder = RetirementStopRecorder()
+        let runtimeAccess = M1RuntimeLeaseAccess { reason, generation in
+            await recorder.record(reason: reason, generation: generation)
+        }
+        let coordinator = M1NativeAudioRouteCoordinator(
+            routeResources: M1AudioRouteResourceController(operations: hal),
+            audioIO: M1AudioIOController(
+                operations: audioIO,
+                timing: M1AudioIOControlTiming(nowNanoseconds: { 0 }, sleep: { _ in })
+            ),
+            runtimeFactory: RealTestRuntimeFactory(),
+            runtimeAccess: runtimeAccess,
+            retirementMaintenance: M1RetirementMaintenanceCoordinator(
+                access: runtimeAccess,
+                timing: M1RetirementMaintenanceTiming(
+                    nowNanoseconds: { await clock.now() },
+                    sleep: { await clock.advance(by: $0) }
+                )
+            ),
+            effectsTransitionTiming: M1EffectsTransitionTiming(
+                pollInterval: 1,
+                deadline: 3,
+                nowNanoseconds: { await clock.now() },
+                sleep: { await clock.advance(by: $0) }
+            )
+        )
+        try await coordinator.start(configuration: .transparentRecovery)
+
+        do {
+            try await coordinator.setEffectsEnabled(false)
+            XCTFail("missing callback acknowledgement must time out")
+        } catch let error as M1AudioIOError {
+            XCTAssertEqual(error, .invalidState("effects bypass timed out"))
+        }
+        let events = await recorder.events()
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?.reason, .effectsBypassTimedOut)
+        XCTAssertEqual(events.first?.generation, audioIO.runtime?.bridgeGeneration)
+        try await coordinator.stop()
+    }
+
     func testPrepareBypassesMissingIRAfterOutputDiscovery() async throws {
         let hal = TestHALRouteOperations()
         let runtimeAccess = M1RuntimeLeaseAccess(stopHandler: { _, _ in })
@@ -1484,6 +1815,7 @@ private final class TestAudioIOOperations: M1AudioIOOperations, @unchecked Senda
         let maximumFrameCount: Int
     }
 
+    private(set) var runtime: M1RuntimeHandleLease?
     private var outputs: [UUID: OutputDescription] = [:]
     private var runningOutputs: Set<UUID> = []
     private let eventLog: RouteEventLog?
@@ -1501,7 +1833,8 @@ private final class TestAudioIOOperations: M1AudioIOOperations, @unchecked Senda
         configuration: M1AudioIOHostConfiguration,
         runtime: M1RuntimeHandleLease
     ) throws -> M1AudioIOHostHandle {
-        M1AudioIOHostHandle()
+        self.runtime = runtime
+        return M1AudioIOHostHandle()
     }
 
     func beginStopping(_ host: M1AudioIOHostHandle) {}
@@ -1605,6 +1938,68 @@ private actor RouteAsyncGate {
         for continuation in waiting {
             continuation.resume()
         }
+    }
+}
+
+private actor InvalidatingEffectsClock {
+    private let token: M1EffectsActivationToken
+    private let invalidationCall: Int
+    private var callCount = 0
+
+    init(token: M1EffectsActivationToken, invalidationCall: Int) {
+        self.token = token
+        self.invalidationCall = invalidationCall
+    }
+
+    func now() -> UInt64 {
+        callCount += 1
+        if callCount == invalidationCall { token.invalidate() }
+        return 0
+    }
+}
+
+private actor SequencedEffectsClock {
+    private var values: [UInt64]
+
+    init(values: [UInt64]) {
+        self.values = values
+    }
+
+    func now() -> UInt64 {
+        values.count > 1 ? values.removeFirst() : values[0]
+    }
+}
+
+private actor EffectsTestClock {
+    private var value: UInt64 = 0
+
+    func now() -> UInt64 { value }
+
+    func advance(by nanoseconds: UInt64) {
+        value &+= nanoseconds
+    }
+}
+
+private actor RetirementStopRecorder {
+    struct Event: Sendable {
+        let reason: M1RetirementStopReason
+        let generation: UInt64
+    }
+
+    private var recorded: [Event] = []
+
+    func record(reason: M1RetirementStopReason, generation: UInt64) {
+        recorded.append(Event(reason: reason, generation: generation))
+    }
+
+    func events() -> [Event] { recorded }
+}
+
+private func processRuntime(_ runtime: OpaquePointer) -> EAUM1Status {
+    var samples = [Float](repeating: 0.25, count: 512)
+    return samples.withUnsafeMutableBufferPointer { values in
+        var buffer = EAUM1AudioBuffer(samples: values.baseAddress, channelCount: 2)
+        return EAUM1RuntimeProcess(runtime, &buffer, 1, 256)
     }
 }
 

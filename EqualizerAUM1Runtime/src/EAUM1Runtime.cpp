@@ -1,4 +1,5 @@
 #include "EAUM1Runtime.h"
+#include "EAUM1Convolution.hpp"
 
 #include <algorithm>
 #include <array>
@@ -15,34 +16,8 @@ namespace {
 
 std::atomic<uint64_t> preparedLiveCount{0};
 
-constexpr uint32_t kPartitionSize = EAUM1_CONVOLUTION_PARTITION_SIZE;
-constexpr uint32_t kFFTSize = EAUM1_CONVOLUTION_FFT_SIZE;
-
-struct ComplexValue {
-    double real = 0.0;
-    double imaginary = 0.0;
-};
-
-struct PreparedConvolutionKernel {
-    uint32_t tapCount = 0;
-    std::vector<float> taps;
-    std::vector<ComplexValue> partitionSpectra;
-};
-
-struct RuntimeConvolution {
-    uint32_t tapCount = 0;
-    uint32_t headTapCount = 0;
-    uint32_t partitionCount = 0;
-    uint32_t inputPosition = 0;
-    uint32_t historyPosition = 0;
-    std::vector<float> taps;
-    std::vector<ComplexValue> partitionSpectra;
-    std::vector<ComplexValue> inputHistory;
-    std::array<double, kPartitionSize> directInput{};
-    std::array<double, kPartitionSize> tailInput{};
-    std::array<double, kPartitionSize> output{};
-    std::array<double, kPartitionSize> overlap{};
-};
+using PreparedConvolutionKernel = eaum1::PreparedConvolutionKernel;
+using RuntimeConvolution = eaum1::RuntimeConvolution;
 
 struct RuntimeStage {
     EAUM1PreparedStage definition{};
@@ -55,10 +30,6 @@ struct ExecutionSlot {
     std::vector<RuntimeStage> stages;
     std::vector<uint32_t> channelOffsets;
     std::vector<RuntimeConvolution> convolutions;
-    std::array<double, kFFTSize / 2> twiddleReal{};
-    std::array<double, kFFTSize / 2> twiddleImaginary{};
-    std::array<ComplexValue, kFFTSize> fftScratch{};
-    std::array<ComplexValue, kFFTSize> accumulationScratch{};
     uint32_t stageCount = 0;
 
     explicit ExecutionSlot(uint32_t channelCount)
@@ -73,13 +44,13 @@ struct EAUM1PreparedState {
     uint64_t publicationGeneration;
     std::vector<EAUM1PreparedStage> stages;
     std::vector<uint32_t> channelOffsets;
-    std::vector<PreparedConvolutionKernel> convolutions;
+    std::vector<std::shared_ptr<const PreparedConvolutionKernel>> convolutions;
 
     EAUM1PreparedState(
         uint32_t channels,
         std::vector<EAUM1PreparedStage> preparedStages,
         std::vector<uint32_t> offsets,
-        std::vector<PreparedConvolutionKernel> preparedConvolutions = {}
+        std::vector<std::shared_ptr<const PreparedConvolutionKernel>> preparedConvolutions = {}
     )
         : channelCount(channels),
           publicationGeneration(0),
@@ -104,7 +75,7 @@ struct EAUM1Runtime {
     std::atomic<uint64_t> requestedPublicationGeneration;
     std::atomic<uint64_t> completedPublicationGeneration;
     std::atomic<uint32_t> requestedSlotIndex;
-    uint64_t callbackPublicationGeneration;
+    std::atomic<uint64_t> callbackPublicationGeneration;
     double sampleRate;
     uint32_t maximumFrameCount;
     uint32_t rampFrameCount;
@@ -118,6 +89,8 @@ struct EAUM1Runtime {
     double currentEffectsMix;
     uint32_t effectsTransitionFrameIndex;
     std::atomic<bool> effectsEnabled;
+    std::atomic<EAUM1EffectsState> effectsState;
+    std::atomic<bool> bypassedPreparedIsFresh;
     std::atomic<uint64_t> nonFiniteInputSampleCount;
     std::atomic<uint64_t> saturatedOutputSampleCount;
     std::atomic<uint64_t> invalidProcessCallCount;
@@ -152,6 +125,12 @@ struct EAUM1Runtime {
           currentEffectsMix(description.effectsEnabled != 0 ? 1.0 : 0.0),
           effectsTransitionFrameIndex(computedRampFrameCount),
           effectsEnabled(description.effectsEnabled != 0),
+          effectsState(
+              description.effectsEnabled != 0
+                  ? EAUM1EffectsStateActive
+                  : EAUM1EffectsStateBypassed
+          ),
+          bypassedPreparedIsFresh(true),
           nonFiniteInputSampleCount(0),
           saturatedOutputSampleCount(0),
           invalidProcessCallCount(0),
@@ -183,73 +162,6 @@ bool isStableBiquad(const EAUM1PreparedStage &stage) {
         && std::abs(stage.a2) < 1.0
         && 1.0 + stage.a1 + stage.a2 > 0.0
         && 1.0 - stage.a1 + stage.a2 > 0.0;
-}
-
-void prepareTwiddles(
-    std::array<double, kFFTSize / 2> *real,
-    std::array<double, kFFTSize / 2> *imaginary
-) {
-    const double scale = -2.0 * std::acos(-1.0) / static_cast<double>(kFFTSize);
-    for (uint32_t index = 0; index < kFFTSize / 2; ++index) {
-        const double phase = scale * static_cast<double>(index);
-        (*real)[index] = std::cos(phase);
-        (*imaginary)[index] = std::sin(phase);
-    }
-}
-
-void fftTransform(
-    std::array<ComplexValue, kFFTSize> *values,
-    const std::array<double, kFFTSize / 2> &twiddleReal,
-    const std::array<double, kFFTSize / 2> &twiddleImaginary,
-    bool inverse
-) {
-    for (uint32_t index = 1, reversed = 0; index < kFFTSize; ++index) {
-        uint32_t bit = kFFTSize >> 1;
-        while ((reversed & bit) != 0) {
-            reversed ^= bit;
-            bit >>= 1;
-        }
-        reversed ^= bit;
-        if (index < reversed) {
-            const ComplexValue temporary = (*values)[index];
-            (*values)[index] = (*values)[reversed];
-            (*values)[reversed] = temporary;
-        }
-    }
-
-    for (uint32_t length = 2; length <= kFFTSize; length <<= 1) {
-        const uint32_t half = length >> 1;
-        const uint32_t twiddleStep = kFFTSize / length;
-        for (uint32_t start = 0; start < kFFTSize; start += length) {
-            for (uint32_t offset = 0; offset < half; ++offset) {
-                const uint32_t twiddleIndex = offset * twiddleStep;
-                const double wr = twiddleReal[twiddleIndex];
-                const double wi = inverse
-                    ? -twiddleImaginary[twiddleIndex]
-                    : twiddleImaginary[twiddleIndex];
-                const ComplexValue right = (*values)[start + offset + half];
-                const double productReal = right.real * wr - right.imaginary * wi;
-                const double productImaginary = right.real * wi + right.imaginary * wr;
-                const ComplexValue left = (*values)[start + offset];
-                (*values)[start + offset] = {
-                    left.real + productReal,
-                    left.imaginary + productImaginary,
-                };
-                (*values)[start + offset + half] = {
-                    left.real - productReal,
-                    left.imaginary - productImaginary,
-                };
-            }
-        }
-    }
-
-    if (inverse) {
-        const double scale = 1.0 / static_cast<double>(kFFTSize);
-        for (ComplexValue &value : *values) {
-            value.real *= scale;
-            value.imaginary *= scale;
-        }
-    }
 }
 
 bool convolutionDescriptorIndex(
@@ -305,11 +217,15 @@ bool allRequiredAtomicsAreLockFree() {
     std::atomic<EAUM1PreparedState *> preparedPointer;
     std::atomic<uint64_t> callbackState;
     std::atomic<bool> effectsEnabled;
+    std::atomic<EAUM1EffectsState> effectsState;
+    std::atomic<bool> bypassedPreparedIsFresh;
     std::atomic<uint64_t> diagnosticCounter;
     std::atomic<uint32_t> slotIndex;
     return preparedPointer.is_lock_free()
         && callbackState.is_lock_free()
         && effectsEnabled.is_lock_free()
+        && effectsState.is_lock_free()
+        && bypassedPreparedIsFresh.is_lock_free()
         && diagnosticCounter.is_lock_free()
         && slotIndex.is_lock_free();
 }
@@ -328,34 +244,19 @@ EAUM1Status copyPreparedToSlot(
     try {
         convolutions.reserve(convolutionStageCount);
         for (const EAUM1PreparedStage &stage : prepared->stages) {
-            if (stage.kind != EAUM1PreparedStageConvolution) {
-                continue;
+            if (stage.kind == EAUM1PreparedStageConvolution) {
+                const uint32_t descriptorIndex = static_cast<uint32_t>(stage.b0);
+                convolutions.emplace_back(prepared->convolutions[descriptorIndex]);
             }
-            const uint32_t descriptorIndex = static_cast<uint32_t>(stage.b0);
-            const PreparedConvolutionKernel &kernel = prepared->convolutions[descriptorIndex];
-            RuntimeConvolution convolution;
-            convolution.tapCount = kernel.tapCount;
-            convolution.headTapCount = std::min(kernel.tapCount, kPartitionSize);
-            const uint32_t tailTapCount = kernel.tapCount - convolution.headTapCount;
-            convolution.partitionCount = tailTapCount == 0
-                ? 0
-                : static_cast<uint32_t>(
-                    (static_cast<uint64_t>(tailTapCount) + kPartitionSize - 1) / kPartitionSize
-                );
-            convolution.taps = kernel.taps;
-            convolution.partitionSpectra = kernel.partitionSpectra;
-            convolution.inputHistory.resize(
-                static_cast<size_t>(convolution.partitionCount) * kFFTSize
-            );
-            convolutions.push_back(std::move(convolution));
         }
+    } catch (const std::length_error &) {
+        return EAUM1StatusCapacityExceeded;
     } catch (const std::bad_alloc &) {
         return EAUM1StatusOutOfMemory;
     } catch (...) {
-        return EAUM1StatusInvalidArgument;
+        return EAUM1StatusUnsupported;
     }
 
-    prepareTwiddles(&slot->twiddleReal, &slot->twiddleImaginary);
     slot->stageCount = static_cast<uint32_t>(prepared->stages.size());
     uint32_t convolutionIndex = 0;
     for (uint32_t index = 0; index < slot->stageCount; ++index) {
@@ -394,36 +295,58 @@ bool executionPlanMatches(
             return false;
         }
     }
+    std::array<bool, EAUM1_MAX_CONVOLUTION_STAGES> comparedDescriptors{};
     uint32_t convolutionIndex = 0;
     for (const EAUM1PreparedStage &stage : prepared->stages) {
         if (stage.kind != EAUM1PreparedStageConvolution) {
             continue;
         }
-        const PreparedConvolutionKernel &left = prepared->convolutions[
-            static_cast<uint32_t>(stage.b0)
-        ];
+        const uint32_t descriptorIndex = static_cast<uint32_t>(stage.b0);
         const RuntimeConvolution &right = slot.convolutions[convolutionIndex++];
-        if (left.tapCount != right.tapCount
-            || left.taps != right.taps
-            || left.partitionSpectra.size() != right.partitionSpectra.size()) {
-            return false;
+        if (comparedDescriptors[descriptorIndex]) {
+            continue;
         }
-        for (size_t index = 0; index < left.partitionSpectra.size(); ++index) {
-            if (left.partitionSpectra[index].real != right.partitionSpectra[index].real
-                || left.partitionSpectra[index].imaginary
-                    != right.partitionSpectra[index].imaginary) {
-                return false;
-            }
+        comparedDescriptors[descriptorIndex] = true;
+        if (prepared->convolutions[descriptorIndex]->taps
+            != right.kernelOwner()->taps) {
+            return false;
         }
     }
     return true;
+}
+
+void rebaseEquivalentKernels(
+    EAUM1PreparedState *prepared,
+    const ExecutionSlot &slot
+) {
+    std::array<bool, EAUM1_MAX_CONVOLUTION_STAGES> rebasedDescriptors{};
+    uint32_t convolutionIndex = 0;
+    for (const EAUM1PreparedStage &stage : prepared->stages) {
+        if (stage.kind != EAUM1PreparedStageConvolution) {
+            continue;
+        }
+        const uint32_t descriptorIndex = static_cast<uint32_t>(stage.b0);
+        const RuntimeConvolution &convolution = slot.convolutions[convolutionIndex++];
+        if (!rebasedDescriptors[descriptorIndex]) {
+            prepared->convolutions[descriptorIndex] = convolution.kernelOwner();
+            rebasedDescriptors[descriptorIndex] = true;
+        }
+    }
+}
+
+void clearExecutionSlot(ExecutionSlot *slot) {
+    slot->convolutions.clear();
+    slot->stageCount = 0;
 }
 
 void beginChainTransitionIfNeeded(EAUM1Runtime *runtime) {
     const uint64_t requested = runtime->requestedPublicationGeneration.load(
         std::memory_order_acquire
     );
-    if (requested == runtime->callbackPublicationGeneration) {
+    const uint64_t callbackGeneration = runtime->callbackPublicationGeneration.load(
+        std::memory_order_relaxed
+    );
+    if (requested == callbackGeneration) {
         return;
     }
 
@@ -431,7 +354,7 @@ void beginChainTransitionIfNeeded(EAUM1Runtime *runtime) {
         std::memory_order_relaxed
     );
     runtime->transitionFrameIndex = 0;
-    runtime->callbackPublicationGeneration = requested;
+    runtime->callbackPublicationGeneration.store(requested, std::memory_order_relaxed);
 }
 
 void beginEffectsTransitionIfNeeded(EAUM1Runtime *runtime, bool enabled) {
@@ -442,6 +365,10 @@ void beginEffectsTransitionIfNeeded(EAUM1Runtime *runtime, bool enabled) {
     runtime->effectsTransitionStart = runtime->currentEffectsMix;
     runtime->effectsTransitionTarget = target;
     runtime->effectsTransitionFrameIndex = 0;
+    runtime->effectsState.store(
+        enabled ? EAUM1EffectsStateFadingIn : EAUM1EffectsStateFadingOut,
+        std::memory_order_release
+    );
 }
 
 void advanceEffectsTransition(EAUM1Runtime *runtime) {
@@ -488,90 +415,15 @@ float normalizedFloatSample(double value) {
     return converted;
 }
 
-double normalizedDSPState(double value) {
-    return value != 0.0 && !std::isnormal(value) ? 0.0 : value;
-}
-
 float processConvolutionSample(
     EAUM1Runtime *runtime,
-    ExecutionSlot *slot,
     RuntimeConvolution *convolution,
     float input
 ) {
-    const uint32_t inputPosition = convolution->inputPosition;
-    convolution->directInput[inputPosition] = static_cast<double>(input);
-    double result = 0.0;
-    for (uint32_t tap = 0; tap < convolution->headTapCount; ++tap) {
-        const uint32_t inputIndex = (inputPosition + kPartitionSize - tap) % kPartitionSize;
-        result += static_cast<double>(convolution->taps[tap])
-            * convolution->directInput[inputIndex];
-    }
-    if (convolution->partitionCount != 0) {
-        result += convolution->output[inputPosition];
-        convolution->tailInput[inputPosition] = static_cast<double>(input);
-    }
-    convolution->inputPosition = inputPosition + 1;
-    if (convolution->inputPosition != kPartitionSize) {
-        return normalizedFloatSample(boundedDSPValue(runtime, result));
-    }
-    convolution->inputPosition = 0;
-    if (convolution->partitionCount == 0) {
-        return normalizedFloatSample(boundedDSPValue(runtime, result));
-    }
-
-    for (uint32_t index = 0; index < kFFTSize; ++index) {
-        slot->fftScratch[index] = {
-            index < kPartitionSize ? convolution->tailInput[index] : 0.0,
-            0.0,
-        };
-    }
-    fftTransform(
-        &slot->fftScratch,
-        slot->twiddleReal,
-        slot->twiddleImaginary,
-        false
-    );
-    const size_t historyOffset = static_cast<size_t>(convolution->historyPosition) * kFFTSize;
-    for (uint32_t index = 0; index < kFFTSize; ++index) {
-        convolution->inputHistory[historyOffset + index] = slot->fftScratch[index];
-        slot->accumulationScratch[index] = {};
-    }
-
-    for (uint32_t partition = 0; partition < convolution->partitionCount; ++partition) {
-        const uint32_t historyPartition = (
-            convolution->historyPosition + convolution->partitionCount - partition
-        ) % convolution->partitionCount;
-        const size_t inputOffset = static_cast<size_t>(historyPartition) * kFFTSize;
-        const size_t kernelOffset = static_cast<size_t>(partition) * kFFTSize;
-        for (uint32_t index = 0; index < kFFTSize; ++index) {
-            const ComplexValue &left = convolution->inputHistory[inputOffset + index];
-            const ComplexValue &right = convolution->partitionSpectra[kernelOffset + index];
-            slot->accumulationScratch[index].real +=
-                left.real * right.real - left.imaginary * right.imaginary;
-            slot->accumulationScratch[index].imaginary +=
-                left.real * right.imaginary + left.imaginary * right.real;
-        }
-    }
-    slot->fftScratch = slot->accumulationScratch;
-    fftTransform(
-        &slot->fftScratch,
-        slot->twiddleReal,
-        slot->twiddleImaginary,
-        true
-    );
-    for (uint32_t index = 0; index < kPartitionSize; ++index) {
-        convolution->output[index] = normalizedDSPState(boundedDSPValue(
-            runtime,
-            slot->fftScratch[index].real + convolution->overlap[index]
-        ));
-        convolution->overlap[index] = normalizedDSPState(boundedDSPValue(
-            runtime,
-            slot->fftScratch[index + kPartitionSize].real
-        ));
-    }
-    convolution->historyPosition =
-        (convolution->historyPosition + 1) % convolution->partitionCount;
-    return normalizedFloatSample(boundedDSPValue(runtime, result));
+    return normalizedFloatSample(boundedDSPValue(
+        runtime,
+        convolution->process(static_cast<double>(input))
+    ));
 }
 
 float processChainSample(
@@ -600,7 +452,6 @@ float processChainSample(
             processed = true;
             value = static_cast<double>(processConvolutionSample(
                 runtime,
-                slot,
                 &slot->convolutions[stage.convolutionIndex],
                 normalizedFloatSample(value)
             ));
@@ -649,9 +500,35 @@ void completeChainTransitionFrame(EAUM1Runtime *runtime) {
             std::memory_order_release
         );
         runtime->completedPublicationGeneration.store(
-            runtime->callbackPublicationGeneration,
+            runtime->callbackPublicationGeneration.load(std::memory_order_relaxed),
             std::memory_order_release
         );
+    }
+}
+
+void completeEffectsStateAtBlockBoundary(EAUM1Runtime *runtime) {
+    if (runtime->effectsTransitionFrameIndex < runtime->rampFrameCount) {
+        return;
+    }
+    if (runtime->effectsTransitionTarget != 0.0) {
+        runtime->effectsState.store(EAUM1EffectsStateActive, std::memory_order_release);
+        return;
+    }
+    if (runtime->transitionFrameIndex < runtime->rampFrameCount) {
+        runtime->activeSlotIndex.store(
+            runtime->transitionTargetSlotIndex,
+            std::memory_order_release
+        );
+        runtime->transitionFrameIndex = runtime->rampFrameCount;
+        runtime->completedPublicationGeneration.store(
+            runtime->callbackPublicationGeneration.load(std::memory_order_relaxed),
+            std::memory_order_release
+        );
+    }
+    if (runtime->effectsState.load(std::memory_order_relaxed)
+        != EAUM1EffectsStateBypassed) {
+        runtime->bypassedPreparedIsFresh.store(false, std::memory_order_relaxed);
+        runtime->effectsState.store(EAUM1EffectsStateBypassed, std::memory_order_release);
     }
 }
 
@@ -706,32 +583,46 @@ void clearPublicationOutcome(EAUM1PublicationOutcome *outcome) {
     outcome->reserved = 0;
 }
 
-EAUM1Status publishCandidate(
+EAUM1Status bypassedReplacementReadiness(const EAUM1Runtime *runtime) {
+    if (runtime->effectsEnabled.load(std::memory_order_acquire)
+        || runtime->effectsState.load(std::memory_order_acquire)
+            != EAUM1EffectsStateBypassed
+        || runtime->retiredPrepared != nullptr
+        || runtime->pendingPrepared != nullptr
+        || runtime->requestedPublicationGeneration.load(std::memory_order_acquire)
+            != runtime->completedPublicationGeneration.load(std::memory_order_acquire)) {
+        return EAUM1StatusNotReady;
+    }
+    return runtime->nextPublicationGeneration == std::numeric_limits<uint64_t>::max()
+        ? EAUM1StatusCapacityExceeded
+        : EAUM1StatusOK;
+}
+
+void commitEquivalentCandidate(
     EAUM1Runtime *runtime,
     EAUM1PreparedState *candidate,
+    uint32_t activeSlot,
     EAUM1PublicationOutcome *outcome
 ) {
-    if (runtime->nextPublicationGeneration == std::numeric_limits<uint64_t>::max()) {
-        return EAUM1StatusCapacityExceeded;
-    }
     const uint64_t generation = ++runtime->nextPublicationGeneration;
     candidate->publicationGeneration = generation;
-    const uint32_t activeSlot = runtime->activeSlotIndex.load(std::memory_order_acquire);
-    if (executionPlanMatches(candidate, runtime->slots[activeSlot])) {
-        EAUM1PreparedState *old = runtime->activePrepared.exchange(
-            candidate,
-            std::memory_order_release
-        );
-        delete old;
-        outcome->flags |= EAUM1PublicationCandidatePublished;
-        return EAUM1StatusOK;
-    }
+    rebaseEquivalentKernels(candidate, runtime->slots[activeSlot]);
+    EAUM1PreparedState *old = runtime->activePrepared.exchange(
+        candidate,
+        std::memory_order_release
+    );
+    delete old;
+    outcome->flags |= EAUM1PublicationCandidatePublished;
+}
 
-    const uint32_t targetSlot = 1u - activeSlot;
-    const EAUM1Status copyStatus = copyPreparedToSlot(candidate, &runtime->slots[targetSlot]);
-    if (copyStatus != EAUM1StatusOK) {
-        return copyStatus;
-    }
+void commitCrossfadeCandidate(
+    EAUM1Runtime *runtime,
+    EAUM1PreparedState *candidate,
+    uint32_t targetSlot,
+    EAUM1PublicationOutcome *outcome
+) {
+    const uint64_t generation = ++runtime->nextPublicationGeneration;
+    candidate->publicationGeneration = generation;
     EAUM1PreparedState *old = runtime->activePrepared.exchange(
         candidate,
         std::memory_order_release
@@ -743,6 +634,78 @@ EAUM1Status publishCandidate(
     outcome->retirementTicket = generation;
     outcome->flags |= EAUM1PublicationCandidatePublished
         | EAUM1PublicationMaintenanceRequired;
+}
+
+void commitBypassedCandidate(
+    EAUM1Runtime *runtime,
+    EAUM1PreparedState *candidate,
+    uint32_t activeSlot,
+    uint32_t targetSlot,
+    EAUM1PublicationOutcome *outcome
+) {
+    const uint64_t generation = ++runtime->nextPublicationGeneration;
+    candidate->publicationGeneration = generation;
+    EAUM1PreparedState *old = runtime->activePrepared.exchange(
+        candidate,
+        std::memory_order_release
+    );
+    runtime->requestedSlotIndex.store(targetSlot, std::memory_order_relaxed);
+    runtime->activeSlotIndex.store(targetSlot, std::memory_order_release);
+    runtime->callbackPublicationGeneration.store(generation, std::memory_order_release);
+    runtime->requestedPublicationGeneration.store(generation, std::memory_order_release);
+    runtime->completedPublicationGeneration.store(generation, std::memory_order_release);
+    runtime->bypassedPreparedIsFresh.store(true, std::memory_order_release);
+    clearExecutionSlot(&runtime->slots[activeSlot]);
+    delete old;
+    outcome->flags |= EAUM1PublicationCandidatePublished;
+}
+
+EAUM1Status replacePreparedWhileBypassed(
+    EAUM1Runtime *runtime,
+    EAUM1PreparedState *candidate,
+    EAUM1PublicationOutcome *outcome
+) {
+    const EAUM1Status readiness = bypassedReplacementReadiness(runtime);
+    if (readiness != EAUM1StatusOK) {
+        return readiness;
+    }
+
+    const uint32_t activeSlot = runtime->activeSlotIndex.load(std::memory_order_acquire);
+    const uint32_t targetSlot = 1u - activeSlot;
+    const EAUM1Status copyStatus = copyPreparedToSlot(candidate, &runtime->slots[targetSlot]);
+    if (copyStatus != EAUM1StatusOK) {
+        return copyStatus;
+    }
+
+    commitBypassedCandidate(runtime, candidate, activeSlot, targetSlot, outcome);
+    return EAUM1StatusOK;
+}
+
+EAUM1Status publishCandidate(
+    EAUM1Runtime *runtime,
+    EAUM1PreparedState *candidate,
+    EAUM1PublicationOutcome *outcome
+) {
+    if (!runtime->effectsEnabled.load(std::memory_order_acquire)
+        && runtime->effectsState.load(std::memory_order_acquire)
+            == EAUM1EffectsStateBypassed) {
+        return replacePreparedWhileBypassed(runtime, candidate, outcome);
+    }
+    if (runtime->nextPublicationGeneration == std::numeric_limits<uint64_t>::max()) {
+        return EAUM1StatusCapacityExceeded;
+    }
+    const uint32_t activeSlot = runtime->activeSlotIndex.load(std::memory_order_acquire);
+    if (executionPlanMatches(candidate, runtime->slots[activeSlot])) {
+        commitEquivalentCandidate(runtime, candidate, activeSlot, outcome);
+        return EAUM1StatusOK;
+    }
+
+    const uint32_t targetSlot = 1u - activeSlot;
+    const EAUM1Status copyStatus = copyPreparedToSlot(candidate, &runtime->slots[targetSlot]);
+    if (copyStatus != EAUM1StatusOK) {
+        return copyStatus;
+    }
+    commitCrossfadeCandidate(runtime, candidate, targetSlot, outcome);
     return EAUM1StatusOK;
 }
 
@@ -893,9 +856,6 @@ EAUM1Status EAUM1PreparedStateCreateV3(
         if (convolution.tapCount == 0 || convolution.taps == nullptr) {
             return EAUM1StatusInvalidArgument;
         }
-        if (convolution.tapCount > EAUM1_MAX_CONVOLUTION_TAPS) {
-            return EAUM1StatusCapacityExceeded;
-        }
         for (uint32_t tap = 0; tap < convolution.tapCount; ++tap) {
             const float value = convolution.taps[tap];
             if (value != 0.0f && (!std::isfinite(value) || !std::isnormal(value))) {
@@ -907,7 +867,6 @@ EAUM1Status EAUM1PreparedStateCreateV3(
     uint32_t previousChannel = 0;
     uint32_t stagesForChannel = 0;
     uint32_t convolutionStageCount = 0;
-    uint64_t totalConvolutionTaps = 0;
     std::array<bool, EAUM1_MAX_CONVOLUTION_STAGES> referencedConvolutions{};
     for (uint32_t index = 0; index < description->stageCount; ++index) {
         const EAUM1PreparedStage &stage = description->stages[index];
@@ -937,10 +896,6 @@ EAUM1Status EAUM1PreparedStateCreateV3(
             if (convolutionStageCount > EAUM1_MAX_CONVOLUTION_STAGES) {
                 return EAUM1StatusCapacityExceeded;
             }
-            totalConvolutionTaps += description->convolutions[descriptorIndex].tapCount;
-            if (totalConvolutionTaps > EAUM1_MAX_TOTAL_CONVOLUTION_TAPS) {
-                return EAUM1StatusCapacityExceeded;
-            }
             referencedConvolutions[descriptorIndex] = true;
         } else if (!validateStage(stage)) {
             return EAUM1StatusInvalidArgument;
@@ -954,43 +909,22 @@ EAUM1Status EAUM1PreparedStateCreateV3(
     }
 
     try {
-        std::array<double, kFFTSize / 2> twiddleReal{};
-        std::array<double, kFFTSize / 2> twiddleImaginary{};
-        std::array<ComplexValue, kFFTSize> scratch{};
-        prepareTwiddles(&twiddleReal, &twiddleImaginary);
-        std::vector<PreparedConvolutionKernel> convolutions;
+        std::vector<std::shared_ptr<const PreparedConvolutionKernel>> convolutions;
         convolutions.reserve(description->convolutionCount);
         for (uint32_t index = 0; index < description->convolutionCount; ++index) {
             const EAUM1PreparedConvolution &source = description->convolutions[index];
-            PreparedConvolutionKernel kernel;
-            kernel.tapCount = source.tapCount;
-            kernel.taps.assign(source.taps, source.taps + source.tapCount);
-            const uint32_t tailTapCount = source.tapCount > kPartitionSize
-                ? source.tapCount - kPartitionSize
-                : 0;
-            const uint32_t partitionCount = tailTapCount == 0
-                ? 0
-                : static_cast<uint32_t>(
-                    (static_cast<uint64_t>(tailTapCount) + kPartitionSize - 1) / kPartitionSize
+            std::shared_ptr<const PreparedConvolutionKernel> kernel;
+            for (const auto &existing : convolutions) {
+                if (eaum1::kernelTapsEqual(*existing, source.taps, source.tapCount)) {
+                    kernel = existing;
+                    break;
+                }
+            }
+            if (kernel == nullptr) {
+                kernel = std::make_shared<PreparedConvolutionKernel>(
+                    source.taps,
+                    source.tapCount
                 );
-            kernel.partitionSpectra.resize(static_cast<size_t>(partitionCount) * kFFTSize);
-            for (uint32_t partition = 0; partition < partitionCount; ++partition) {
-                const uint64_t tapStart = kPartitionSize
-                    + static_cast<uint64_t>(partition) * kPartitionSize;
-                for (uint32_t bin = 0; bin < kFFTSize; ++bin) {
-                    const uint64_t tapIndex = tapStart + bin;
-                    scratch[bin] = {
-                        bin < kPartitionSize && tapIndex < source.tapCount
-                            ? static_cast<double>(source.taps[tapIndex])
-                            : 0.0,
-                        0.0,
-                    };
-                }
-                fftTransform(&scratch, twiddleReal, twiddleImaginary, false);
-                const size_t spectrumOffset = static_cast<size_t>(partition) * kFFTSize;
-                for (uint32_t bin = 0; bin < kFFTSize; ++bin) {
-                    kernel.partitionSpectra[spectrumOffset + bin] = scratch[bin];
-                }
             }
             convolutions.push_back(std::move(kernel));
         }
@@ -1008,10 +942,12 @@ EAUM1Status EAUM1PreparedStateCreateV3(
         );
         *preparedOut = prepared;
         return EAUM1StatusOK;
+    } catch (const std::length_error &) {
+        return EAUM1StatusCapacityExceeded;
     } catch (const std::bad_alloc &) {
         return EAUM1StatusOutOfMemory;
     } catch (...) {
-        return EAUM1StatusInvalidArgument;
+        return EAUM1StatusUnsupported;
     }
 }
 
@@ -1109,6 +1045,10 @@ EAUM1Status EAUM1RuntimePublishPrepared(
     clearPublicationOutcome(outcomeOut);
     EAUM1PreparedState *candidate = *candidateInOut;
     if (runtime->retiredPrepared != nullptr) {
+        if (runtime->nextPublicationGeneration
+            == std::numeric_limits<uint64_t>::max()) {
+            return EAUM1StatusCapacityExceeded;
+        }
         delete runtime->pendingPrepared;
         runtime->pendingPrepared = candidate;
         *candidateInOut = nullptr;
@@ -1119,6 +1059,43 @@ EAUM1Status EAUM1RuntimePublishPrepared(
     }
 
     const EAUM1Status status = publishCandidate(runtime, candidate, outcomeOut);
+    if (status == EAUM1StatusOK) {
+        *candidateInOut = nullptr;
+    }
+    return status;
+}
+
+EAUM1Status EAUM1RuntimeCanReplacePreparedWhileBypassed(
+    const EAUM1Runtime *runtime
+) {
+    if (runtime == nullptr) {
+        return EAUM1StatusInvalidArgument;
+    }
+    return bypassedReplacementReadiness(runtime);
+}
+
+EAUM1Status EAUM1RuntimeReplacePreparedWhileBypassed(
+    EAUM1Runtime *runtime,
+    EAUM1PreparedState **candidateInOut,
+    EAUM1PublicationOutcome *outcomeOut
+) {
+    if (runtime == nullptr
+        || candidateInOut == nullptr
+        || *candidateInOut == nullptr
+        || outcomeOut == nullptr) {
+        return EAUM1StatusInvalidArgument;
+    }
+    if ((*candidateInOut)->channelCount
+        != runtime->activePrepared.load(std::memory_order_acquire)->channelCount) {
+        return EAUM1StatusTopologyMismatch;
+    }
+
+    clearPublicationOutcome(outcomeOut);
+    const EAUM1Status status = replacePreparedWhileBypassed(
+        runtime,
+        *candidateInOut,
+        outcomeOut
+    );
     if (status == EAUM1StatusOK) {
         *candidateInOut = nullptr;
     }
@@ -1148,19 +1125,59 @@ EAUM1Status EAUM1RuntimePerformMaintenance(
         return EAUM1StatusOK;
     }
 
+    EAUM1PreparedState *pending = runtime->pendingPrepared;
+    const uint32_t activeSlot = runtime->activeSlotIndex.load(std::memory_order_acquire);
+    const uint32_t targetSlot = 1u - activeSlot;
+    const bool fullyBypassed = !runtime->effectsEnabled.load(std::memory_order_acquire)
+        && runtime->effectsState.load(std::memory_order_acquire)
+            == EAUM1EffectsStateBypassed;
+    const bool equivalent = pending != nullptr
+        && !fullyBypassed
+        && executionPlanMatches(pending, runtime->slots[activeSlot]);
+
+    if (pending != nullptr) {
+        if (runtime->nextPublicationGeneration == std::numeric_limits<uint64_t>::max()) {
+            outcomeOut->retirementTicket = retirementTicket;
+            outcomeOut->flags = EAUM1PublicationMaintenanceRequired;
+            return EAUM1StatusCapacityExceeded;
+        }
+        if (!equivalent) {
+            const EAUM1Status copyStatus = copyPreparedToSlot(
+                pending,
+                &runtime->slots[targetSlot]
+            );
+            if (copyStatus != EAUM1StatusOK) {
+                outcomeOut->retirementTicket = retirementTicket;
+                outcomeOut->flags = EAUM1PublicationMaintenanceRequired;
+                return copyStatus;
+            }
+        }
+    }
+
     delete runtime->retiredPrepared;
     runtime->retiredPrepared = nullptr;
     runtime->retirementTicket = 0;
     outcomeOut->flags = EAUM1PublicationRetiredReclaimed;
 
-    if (runtime->pendingPrepared != nullptr) {
-        EAUM1PreparedState *pending = runtime->pendingPrepared;
-        runtime->pendingPrepared = nullptr;
-        const EAUM1Status status = publishCandidate(runtime, pending, outcomeOut);
-        if (status != EAUM1StatusOK) {
-            runtime->pendingPrepared = pending;
-            return status;
-        }
+    if (pending == nullptr) {
+        clearExecutionSlot(&runtime->slots[targetSlot]);
+        return EAUM1StatusOK;
+    }
+
+    runtime->pendingPrepared = nullptr;
+    if (fullyBypassed) {
+        commitBypassedCandidate(
+            runtime,
+            pending,
+            activeSlot,
+            targetSlot,
+            outcomeOut
+        );
+    } else if (equivalent) {
+        clearExecutionSlot(&runtime->slots[targetSlot]);
+        commitEquivalentCandidate(runtime, pending, activeSlot, outcomeOut);
+    } else {
+        commitCrossfadeCandidate(runtime, pending, targetSlot, outcomeOut);
     }
     return EAUM1StatusOK;
 }
@@ -1182,7 +1199,27 @@ EAUM1Status EAUM1RuntimeSetEffectsEnabled(EAUM1Runtime *runtime, uint8_t effects
     if (runtime == nullptr || effectsEnabled > 1) {
         return EAUM1StatusInvalidArgument;
     }
+    if (effectsEnabled != 0) {
+        const bool desired = runtime->effectsEnabled.load(std::memory_order_acquire);
+        const EAUM1EffectsState state = runtime->effectsState.load(std::memory_order_acquire);
+        if ((!desired && state != EAUM1EffectsStateBypassed)
+            || (state == EAUM1EffectsStateBypassed
+                && !runtime->bypassedPreparedIsFresh.load(std::memory_order_acquire))) {
+            return EAUM1StatusNotReady;
+        }
+    }
     runtime->effectsEnabled.store(effectsEnabled != 0, std::memory_order_release);
+    return EAUM1StatusOK;
+}
+
+EAUM1Status EAUM1RuntimeCopyEffectsState(
+    const EAUM1Runtime *runtime,
+    EAUM1EffectsState *stateOut
+) {
+    if (runtime == nullptr || stateOut == nullptr) {
+        return EAUM1StatusInvalidArgument;
+    }
+    *stateOut = runtime->effectsState.load(std::memory_order_acquire);
     return EAUM1StatusOK;
 }
 
@@ -1228,7 +1265,9 @@ EAUM1Status EAUM1RuntimeProcess(
 
     for (uint32_t frame = 0; frame < frameCount; ++frame) {
         advanceEffectsTransition(runtime);
-        const bool chainTransitionActive = runtime->transitionFrameIndex < runtime->rampFrameCount;
+        const bool wetRequired = runtime->currentEffectsMix > 0.0;
+        const bool chainTransitionActive = wetRequired
+            && runtime->transitionFrameIndex < runtime->rampFrameCount;
         const double chainMix = chainTransitionActive
             ? static_cast<double>(runtime->transitionFrameIndex + 1)
                 / static_cast<double>(runtime->rampFrameCount)
@@ -1239,9 +1278,17 @@ EAUM1Status EAUM1RuntimeProcess(
             for (uint32_t channel = 0; channel < buffer.channelCount; ++channel) {
                 const size_t sampleIndex = static_cast<size_t>(frame) * buffer.channelCount + channel;
                 const float dry = sanitizeInput(runtime, buffer.samples[sampleIndex]);
+                if (!wetRequired) {
+                    buffer.samples[sampleIndex] = dry;
+                    ++linearChannelIndex;
+                    continue;
+                }
+                const uint32_t activeSlot = runtime->activeSlotIndex.load(
+                    std::memory_order_relaxed
+                );
                 const float activeWet = processChainSample(
                     runtime,
-                    &runtime->slots[runtime->activeSlotIndex.load(std::memory_order_relaxed)],
+                    &runtime->slots[activeSlot],
                     linearChannelIndex,
                     dry
                 );
@@ -1268,6 +1315,7 @@ EAUM1Status EAUM1RuntimeProcess(
             completeChainTransitionFrame(runtime);
         }
     }
+    completeEffectsStateAtBlockBoundary(runtime);
     runtime->callbackState.fetch_add(1, std::memory_order_seq_cst);
     return EAUM1StatusOK;
 }
@@ -1342,6 +1390,23 @@ uint64_t storedRetirementTicket(const EAUM1Runtime *runtime) {
 
 uint64_t livePreparedCount() {
     return preparedLiveCount.load(std::memory_order_relaxed);
+}
+
+uintptr_t activePreparedConvolutionKernel(const EAUM1Runtime *runtime, uint32_t index) {
+    const EAUM1PreparedState *prepared = runtime->activePrepared.load(
+        std::memory_order_acquire
+    );
+    return index < prepared->convolutions.size()
+        ? reinterpret_cast<uintptr_t>(prepared->convolutions[index].get())
+        : 0;
+}
+
+uintptr_t activeSlotConvolutionKernel(const EAUM1Runtime *runtime, uint32_t index) {
+    const uint32_t activeSlot = runtime->activeSlotIndex.load(std::memory_order_acquire);
+    const auto &convolutions = runtime->slots[activeSlot].convolutions;
+    return index < convolutions.size()
+        ? reinterpret_cast<uintptr_t>(convolutions[index].kernelOwner().get())
+        : 0;
 }
 
 }  // namespace EAUM1TestHooks

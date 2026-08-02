@@ -15,7 +15,8 @@ M2 在已经关闭的 M1 原生路线、可靠持久化和安全发布基础上�
 - 系数按真实采样率在控制线程生成，高于 Nyquist 的频段保留配置并产生节点归属诊断；
 - flat Graphic EQ 不生成 stage，保证逐位透明；
 - ABI 固定每声道 512 stage、每 Prepared 4096 stage，运行中更新使用 10 ms 双槽 crossfade；
-- Processing 旁路继续推进 wet chain 状态，并独立执行 10 ms dry/wet 切换；
+- Processing 旁路继续推进 wet chain 状态，并独立执行 10 ms dry/wet 切换；该历史合同已被
+  2026-07-31 dense 长 IR 验收否决，替代候选见 [`ADR-0018`](../adr/0018-computational-processing-bypass.md)；
 - EqualizerAPO 的 16384-tap minimum-phase FIR 未直接移植，理由见
   [`ADR 0008`](../adr/0008-fixed-band-biquad-graphic-equalizer.md)。
 
@@ -34,7 +35,8 @@ M2 在已经关闭的 M1 原生路线、可靠持久化和安全发布基础上�
 
 - 五 target 无签名 `build-for-testing` 通过，证明 C ABI、Swift bridge、应用和测试 bundle 编译；
 - Runtime 定向 23 项通过，包括 ABI layout、稳定性/容量拒绝、跨 block/声道状态隔离、
-  1 kHz `+6 dB` impulse-response DFT `0.01 dB` 容差、10 ms chain/bypass 切换、热状态恢复、
+  1 kHz `+6 dB` impulse-response DFT `0.01 dB` 容差、10 ms chain/bypass 切换、当时采用但现已
+  被 Accepted ADR-0018 取代的热状态恢复、
   overlap、pending 合并、票据和 10000 次并发发布；
 - Builder/Swift bridge 定向 17 项通过，产品控制器定向 48 项通过；
 - `verify-m1-realtime.sh` 审计 26 个显式 Runtime/host callback helpers；

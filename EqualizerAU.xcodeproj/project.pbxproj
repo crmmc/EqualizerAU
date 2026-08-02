@@ -102,6 +102,8 @@
 		D10000000000000000000036 /* M1ConvolutionIR.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002A /* M1ConvolutionIR.swift */; };
 		D10000000000000000000037 /* M1ConvolutionIRTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002B /* M1ConvolutionIRTests.swift */; };
 		D10000000000000000000038 /* M1SystemAudioLifecycleMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002C /* M1SystemAudioLifecycleMonitor.swift */; };
+		D10000000000000000000039 /* Accelerate.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002D /* Accelerate.framework */; };
+		D1000000000000000000003A /* Accelerate.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002D /* Accelerate.framework */; };
 		F10000000000000000000001 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000001 /* Localizable.xcstrings */; };
 		F10000000000000000000002 /* InfoPlist.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000002 /* InfoPlist.xcstrings */; };
 /* End PBXBuildFile section */
@@ -239,6 +241,8 @@
 		E20000000000000000000001 /* M1EditingPerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1EditingPerformanceTests.swift; sourceTree = "<group>"; };
 		D2000000000000000000002A /* M1ConvolutionIR.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1ConvolutionIR.swift; sourceTree = "<group>"; };
 		D2000000000000000000002C /* M1SystemAudioLifecycleMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1SystemAudioLifecycleMonitor.swift; sourceTree = "<group>"; };
+		D2000000000000000000002D /* Accelerate.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Accelerate.framework; path = System/Library/Frameworks/Accelerate.framework; sourceTree = SDKROOT; };
+		D2000000000000000000002E /* EAUM1Convolution.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = EAUM1Convolution.hpp; sourceTree = "<group>"; };
 		D2000000000000000000002B /* M1ConvolutionIRTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1ConvolutionIRTests.swift; sourceTree = "<group>"; };
 		F20000000000000000000001 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		F20000000000000000000002 /* InfoPlist.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = InfoPlist.xcstrings; sourceTree = "<group>"; };
@@ -282,6 +286,7 @@
 				D10000000000000000000002 /* libEqualizerAUM1Runtime.a in Frameworks */,
 				D10000000000000000000020 /* CoreAudio.framework in Frameworks */,
 				D10000000000000000000021 /* AudioToolbox.framework in Frameworks */,
+				D10000000000000000000039 /* Accelerate.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -293,6 +298,7 @@
 				D10000000000000000000006 /* libEqualizerAUM1Runtime.a in Frameworks */,
 				D10000000000000000000022 /* CoreAudio.framework in Frameworks */,
 				D10000000000000000000023 /* AudioToolbox.framework in Frameworks */,
+				D1000000000000000000003A /* Accelerate.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -397,6 +403,7 @@
 				200000000000000000000008 /* XCTest.framework */,
 				D2000000000000000000001C /* CoreAudio.framework */,
 				D2000000000000000000001D /* AudioToolbox.framework */,
+				D2000000000000000000002D /* Accelerate.framework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -530,6 +537,7 @@
 			isa = PBXGroup;
 			children = (
 				D20000000000000000000002 /* EAUM1Runtime.cpp */,
+				D2000000000000000000002E /* EAUM1Convolution.hpp */,
 			);
 			path = src;
 			sourceTree = "<group>";

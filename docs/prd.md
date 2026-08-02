@@ -121,8 +121,10 @@ flowchart LR
 
 ### 7.1 系统音频处理
 
-- 主窗口提供一个 Processing 控件：首次开启时启动系统处理并应用已保存效果；运行中关闭时
-  立即旁路为透明输出但不销毁系统音频链路，再次开启恢复已保存效果；真正的引擎 Start/Stop
+- 主窗口提供一个 Processing 控件：首次开启时启动系统处理并应用已保存效果；运行中关闭时在
+  应用内部从 `采集 → Processor Chain → 输出` 切换为 `采集 → 输出`，10 ms 淡出后不得继续执行
+  wet DSP，但不得销毁 Tap、Aggregate、Audio Unit 或系统音频链路；再次开启时先保持 dry，在
+  控制线程准备 fresh state 后淡入已保存效果；真正的引擎 Start/Stop
   保留为高级生命周期和恢复命令；
 - 默认处理系统当前默认输出的音频；
 - 应用启动时恢复配置和 Processing 旁路状态，但系统处理保持停止，直到用户显式开启
@@ -353,10 +355,14 @@ MVP 完成需满足：
 | M7 开源技术预览发布 | GPL 来源完整、源码与 arm64 ad-hoc Release ZIP 可验证重放，用户可按逐应用 Gatekeeper 流程安装 |
 | M8 Convolution 外部源路径 | schema v8 不复制 WAV，每次生效重新加载，资源局部故障可见旁路并自动恢复 |
 | M9 菜单栏与中英 i18n | 关闭窗口后 Dock 与菜单栏均驻留并恢复同一主窗口；精简菜单并支持中英切换 |
+| M10 Convolution 长度、computational bypass 与 long-IR 内核 | IR 不设文件时长/taps 配额且不做 SRC；Processing Off 停止 wet DSP；dense long IR 使用已测最优多级卷积 |
 
 M0 已完成，详见 [`milestones/M0-native-route.md`](./milestones/M0-native-route.md)。M8、M9 已完成并关闭，
 验收证据分别见 [`milestones/M8-convolution-source-path.md`](./milestones/M8-convolution-source-path.md) 和
-[`milestones/M9-menu-bar-i18n.md`](./milestones/M9-menu-bar-i18n.md)。
+[`milestones/M9-menu-bar-i18n.md`](./milestones/M9-menu-bar-i18n.md)。M10 的 ADR-0017 长度自由、
+ADR-0018 computational bypass 和 ADR-0019 Float64 deadline-distributed long-IR 内核均已完成
+自动化、Release probe、签名候选和用户真实音频验收；M10 已完成并关闭，证据见
+[`milestones/M10-convolution-ir-length.md`](./milestones/M10-convolution-ir-length.md)。
 
 ## 12. 待确认产品事项
 

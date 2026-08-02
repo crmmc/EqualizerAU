@@ -1,6 +1,7 @@
 #import <XCTest/XCTest.h>
 
 #include "EAUM1Runtime.h"
+#include "../EqualizerAUM1Runtime/src/EAUM1Convolution.hpp"
 
 #include <cmath>
 #include <atomic>
@@ -46,6 +47,8 @@ uintptr_t retiredPrepared(const EAUM1Runtime *runtime);
 uintptr_t pendingPrepared(const EAUM1Runtime *runtime);
 uint64_t storedRetirementTicket(const EAUM1Runtime *runtime);
 uint64_t livePreparedCount();
+uintptr_t activePreparedConvolutionKernel(const EAUM1Runtime *runtime, uint32_t index);
+uintptr_t activeSlotConvolutionKernel(const EAUM1Runtime *runtime, uint32_t index);
 }
 
 static EAUM1PreparedState *createPrepared(float gain) {
@@ -226,7 +229,7 @@ static EAUM1Runtime *createRuntimeWithPrepared(
     XCTAssertEqual(EAUM1PreparedStateCreateV2(&description, &prepared), EAUM1StatusCapacityExceeded);
 }
 
-- (void)testPreparedV3RejectsMalformedConvolutionAndCapacityViolations {
+- (void)testPreparedV3RejectsMalformedConvolutionAndInstanceCapacityViolations {
     float tap = 1.0f;
     EAUM1PreparedConvolution convolution = {.tapCount = 1, .taps = &tap};
     EAUM1PreparedStage stage = {
@@ -270,24 +273,28 @@ static EAUM1Runtime *createRuntimeWithPrepared(
     XCTAssertEqual(EAUM1PreparedStateCreateV3(&description, &prepared), EAUM1StatusInvalidArgument);
     tap = 1.0f;
 
-    std::vector<float> excessive(EAUM1_MAX_TOTAL_CONVOLUTION_TAPS / 2 + 1, 0.0f);
+    std::vector<float> formerTotalBoundary(65'537, 0.0f);
     convolution = {
-        .tapCount = static_cast<uint32_t>(excessive.size()),
-        .taps = excessive.data(),
+        .tapCount = static_cast<uint32_t>(formerTotalBoundary.size()),
+        .taps = formerTotalBoundary.data(),
     };
     const EAUM1PreparedStage twoStages[] = {stage, stage};
     description.stageCount = 2;
     description.stages = twoStages;
-    XCTAssertEqual(EAUM1PreparedStateCreateV3(&description, &prepared), EAUM1StatusCapacityExceeded);
+    XCTAssertEqual(EAUM1PreparedStateCreateV3(&description, &prepared), EAUM1StatusOK);
+    EAUM1PreparedStateDestroy(prepared);
+    prepared = nullptr;
 
-    std::vector<float> tooLarge(EAUM1_MAX_CONVOLUTION_TAPS + 1, 0.0f);
+    std::vector<float> formerKernelBoundary(384'001, 0.0f);
     convolution = {
-        .tapCount = static_cast<uint32_t>(tooLarge.size()),
-        .taps = tooLarge.data(),
+        .tapCount = static_cast<uint32_t>(formerKernelBoundary.size()),
+        .taps = formerKernelBoundary.data(),
     };
     description.stageCount = 1;
     description.stages = &stage;
-    XCTAssertEqual(EAUM1PreparedStateCreateV3(&description, &prepared), EAUM1StatusCapacityExceeded);
+    XCTAssertEqual(EAUM1PreparedStateCreateV3(&description, &prepared), EAUM1StatusOK);
+    EAUM1PreparedStateDestroy(prepared);
+    prepared = nullptr;
 
     convolution = {.tapCount = 1, .taps = &tap};
     std::vector<EAUM1PreparedStage> tooMany(EAUM1_MAX_CONVOLUTION_STAGES + 1, stage);
@@ -328,6 +335,26 @@ static EAUM1Runtime *createRuntimeWithPrepared(
     XCTAssertEqual(EAUM1RuntimeProcess(runtime, &buffer, 1, 16), EAUM1StatusOK);
     for (size_t index = 0; index < samples.size(); ++index) {
         XCTAssertEqualWithAccuracy(samples[index], index == 0 ? 1.0f : 0.0f, 1e-12f);
+    }
+    EAUM1RuntimeDestroy(runtime);
+}
+
+- (void)testZeroConvolutionKernelSilencesNonzeroInput {
+    const float tap = 0.0f;
+    const EAUM1PreparedConvolution convolution = {.tapCount = 1, .taps = &tap};
+    const EAUM1PreparedStage stage = {
+        .kind = EAUM1PreparedStageConvolution,
+        .channelIndex = 0,
+        .b0 = 0.0,
+    };
+    EAUM1PreparedState *prepared = createPreparedV3(1, &stage, 1, &convolution, 1);
+    EAUM1Runtime *runtime = createRuntimeWithPrepared(&prepared, 1);
+
+    std::vector<float> samples(16, 0.25f);
+    EAUM1AudioBuffer buffer = {.samples = samples.data(), .channelCount = 1};
+    XCTAssertEqual(EAUM1RuntimeProcess(runtime, &buffer, 1, 16), EAUM1StatusOK);
+    for (float sample : samples) {
+        XCTAssertEqual(sample, 0.0f);
     }
     EAUM1RuntimeDestroy(runtime);
 }
@@ -415,6 +442,348 @@ static EAUM1Runtime *createRuntimeWithPrepared(
         }
         XCTAssertEqualWithAccuracy(actual[frame], static_cast<float>(expected), 3e-6f);
     }
+    EAUM1RuntimeDestroy(runtime);
+}
+
+- (void)testMultistageSegmentBoundariesMatchImpulseAcrossVariableBlocks {
+    std::vector<float> taps(35'329, 0.0f);
+    const size_t positions[] = {
+        0, 255, 256, 511, 512, 2'559, 2'560,
+        18'943, 18'944, 35'327, 35'328,
+    };
+    for (size_t index = 0; index < std::size(positions); ++index) {
+        taps[positions[index]] = static_cast<float>(index + 1) / 16.0f;
+    }
+    const EAUM1PreparedConvolution convolution = {
+        .tapCount = static_cast<uint32_t>(taps.size()),
+        .taps = taps.data(),
+    };
+    const EAUM1PreparedStage stage = {
+        .kind = EAUM1PreparedStageConvolution,
+        .channelIndex = 0,
+        .b0 = 0.0,
+    };
+    EAUM1PreparedState *prepared = createPreparedV3(1, &stage, 1, &convolution, 1);
+    EAUM1Runtime *runtime = createRuntimeWithPrepared(&prepared, 1, 257);
+    std::vector<float> output(taps.size() + 8, 0.0f);
+    output[0] = 1.0f;
+    const uint32_t blockSizes[] = {1, 255, 0, 7, 63, 2, 97, 256, 257};
+    size_t offset = 0;
+    size_t blockIndex = 0;
+    while (offset < output.size()) {
+        const uint32_t requested = blockSizes[blockIndex++ % std::size(blockSizes)];
+        const uint32_t frameCount = static_cast<uint32_t>(std::min(
+            output.size() - offset,
+            static_cast<size_t>(requested)
+        ));
+        EAUM1AudioBuffer buffer = {.samples = output.data() + offset, .channelCount = 1};
+        XCTAssertEqual(EAUM1RuntimeProcess(runtime, &buffer, 1, frameCount), EAUM1StatusOK);
+        offset += frameCount;
+    }
+    for (size_t frame = 0; frame < output.size(); ++frame) {
+        const float expected = frame < taps.size() ? taps[frame] : 0.0f;
+        XCTAssertEqualWithAccuracy(output[frame], expected, 5e-6f);
+    }
+    EAUM1RuntimeDestroy(runtime);
+}
+
+- (void)testMultistageS3CrossChunkAndPartitionCancellation {
+    std::vector<float> taps(35'329, 0.0f);
+    taps[18'944] = 0.5f;
+    taps[35'328] = -0.25f;
+    const EAUM1PreparedConvolution convolution = {
+        .tapCount = static_cast<uint32_t>(taps.size()),
+        .taps = taps.data(),
+    };
+    const EAUM1PreparedStage stage = {
+        .kind = EAUM1PreparedStageConvolution,
+        .channelIndex = 0,
+        .b0 = 0.0,
+    };
+    EAUM1PreparedState *prepared = createPreparedV3(1, &stage, 1, &convolution, 1);
+    EAUM1Runtime *runtime = createRuntimeWithPrepared(&prepared, 1, 257);
+    std::vector<float> output(51'713, 0.0f);
+    output[0] = 0.5f;
+    output[16'384] = 0.25f;
+    const uint32_t blockSizes[] = {257, 1, 7, 63, 2, 97, 256};
+    size_t offset = 0;
+    size_t blockIndex = 0;
+    while (offset < output.size()) {
+        const uint32_t frameCount = static_cast<uint32_t>(std::min(
+            output.size() - offset,
+            static_cast<size_t>(blockSizes[blockIndex++ % std::size(blockSizes)])
+        ));
+        EAUM1AudioBuffer buffer = {.samples = output.data() + offset, .channelCount = 1};
+        XCTAssertEqual(EAUM1RuntimeProcess(runtime, &buffer, 1, frameCount), EAUM1StatusOK);
+        offset += frameCount;
+    }
+    for (size_t frame = 0; frame < output.size(); ++frame) {
+        float expected = 0.0f;
+        if (frame == 18'944) expected = 0.25f;
+        if (frame == 51'712) expected = -0.0625f;
+        XCTAssertEqualWithAccuracy(output[frame], expected, 5e-6f);
+    }
+    EAUM1RuntimeDestroy(runtime);
+}
+
+- (void)testMultistageOutputIsBitwiseInvariantToCallbackSegmentation {
+    std::vector<float> taps(20'000);
+    for (size_t index = 0; index < taps.size(); ++index) {
+        taps[index] = static_cast<float>(
+            (static_cast<int>(index % 19) - 9) * 0.00001
+        );
+    }
+    taps.back() = 0.00002f;
+    const EAUM1PreparedConvolution convolution = {
+        .tapCount = static_cast<uint32_t>(taps.size()),
+        .taps = taps.data(),
+    };
+    const EAUM1PreparedStage stage = {
+        .kind = EAUM1PreparedStageConvolution,
+        .channelIndex = 0,
+        .b0 = 0.0,
+    };
+    EAUM1PreparedState *fixedPrepared = createPreparedV3(1, &stage, 1, &convolution, 1);
+    EAUM1PreparedState *variablePrepared = createPreparedV3(1, &stage, 1, &convolution, 1);
+    EAUM1Runtime *fixedRuntime = createRuntimeWithPrepared(&fixedPrepared, 1, 257);
+    EAUM1Runtime *variableRuntime = createRuntimeWithPrepared(&variablePrepared, 1, 257);
+    std::vector<float> input(40'000);
+    for (size_t index = 0; index < input.size(); ++index) {
+        input[index] = static_cast<float>(
+            (static_cast<int>(index % 23) - 11) * 0.002
+        );
+    }
+    std::vector<float> fixed = input;
+    std::vector<float> variable = input;
+    for (size_t offset = 0; offset < fixed.size();) {
+        const uint32_t count = static_cast<uint32_t>(std::min<size_t>(
+            256,
+            fixed.size() - offset
+        ));
+        EAUM1AudioBuffer buffer = {.samples = fixed.data() + offset, .channelCount = 1};
+        XCTAssertEqual(EAUM1RuntimeProcess(fixedRuntime, &buffer, 1, count), EAUM1StatusOK);
+        offset += count;
+    }
+    const uint32_t blockSizes[] = {0, 1, 7, 63, 2, 97, 256, 257, 31};
+    size_t blockIndex = 0;
+    for (size_t offset = 0; offset < variable.size();) {
+        const uint32_t requested = blockSizes[blockIndex++ % std::size(blockSizes)];
+        const uint32_t count = static_cast<uint32_t>(std::min(
+            variable.size() - offset,
+            static_cast<size_t>(requested)
+        ));
+        EAUM1AudioBuffer buffer = {.samples = variable.data() + offset, .channelCount = 1};
+        XCTAssertEqual(EAUM1RuntimeProcess(variableRuntime, &buffer, 1, count), EAUM1StatusOK);
+        offset += count;
+    }
+    XCTAssertEqual(
+        std::memcmp(fixed.data(), variable.data(), fixed.size() * sizeof(float)),
+        0
+    );
+    EAUM1RuntimeDestroy(fixedRuntime);
+    EAUM1RuntimeDestroy(variableRuntime);
+}
+
+- (void)testMultistageExtremeFiniteCancellationAndSaturation {
+    const float maximum = std::numeric_limits<float>::max();
+    const EAUM1PreparedStage stage = {
+        .kind = EAUM1PreparedStageConvolution,
+        .channelIndex = 0,
+        .b0 = 0.0,
+    };
+
+    std::vector<float> cancellingTaps(257, 0.0f);
+    cancellingTaps[0] = 2.0f;
+    cancellingTaps[256] = -2.0f;
+    EAUM1PreparedConvolution convolution = {
+        .tapCount = static_cast<uint32_t>(cancellingTaps.size()),
+        .taps = cancellingTaps.data(),
+    };
+    EAUM1PreparedState *prepared = createPreparedV3(1, &stage, 1, &convolution, 1);
+    EAUM1Runtime *runtime = createRuntimeWithPrepared(&prepared, 1, 257);
+    std::vector<float> cancellation(257, 0.0f);
+    cancellation[0] = maximum;
+    cancellation[256] = maximum;
+    EAUM1AudioBuffer buffer = {.samples = cancellation.data(), .channelCount = 1};
+    XCTAssertEqual(EAUM1RuntimeProcess(runtime, &buffer, 1, 257), EAUM1StatusOK);
+    XCTAssertEqual(cancellation[0], maximum);
+    XCTAssertTrue(std::isfinite(cancellation[256]));
+    XCTAssertLessThan(
+        std::abs(static_cast<double>(cancellation[256])) / static_cast<double>(maximum),
+        1e-12
+    );
+    EAUM1RuntimeDiagnostics diagnostics = {};
+    XCTAssertEqual(EAUM1RuntimeCopyDiagnostics(runtime, &diagnostics), EAUM1StatusOK);
+    XCTAssertEqual(diagnostics.saturatedOutputSampleCount, 1u);
+    EAUM1RuntimeDestroy(runtime);
+
+    std::vector<float> saturatingTaps(257, 0.0f);
+    saturatingTaps[256] = 0.75f * maximum;
+    convolution.taps = saturatingTaps.data();
+    prepared = createPreparedV3(1, &stage, 1, &convolution, 1);
+    runtime = createRuntimeWithPrepared(&prepared, 1, 257);
+    std::vector<float> saturation(257, 0.0f);
+    saturation[0] = 0.75f * maximum;
+    buffer.samples = saturation.data();
+    XCTAssertEqual(EAUM1RuntimeProcess(runtime, &buffer, 1, 257), EAUM1StatusOK);
+    XCTAssertEqual(saturation[256], maximum);
+    diagnostics = {};
+    XCTAssertEqual(EAUM1RuntimeCopyDiagnostics(runtime, &diagnostics), EAUM1StatusOK);
+    XCTAssertEqual(diagnostics.saturatedOutputSampleCount, 1u);
+    EAUM1RuntimeDestroy(runtime);
+}
+
+- (void)testSharedKernelOwnerSurvivesEquivalentPublicationWithPendingS3State {
+    std::vector<float> taps(20'000, 0.0f);
+    taps.back() = 1.0f;
+    const EAUM1PreparedConvolution convolutions[] = {
+        {.tapCount = static_cast<uint32_t>(taps.size()), .taps = taps.data()},
+        {.tapCount = static_cast<uint32_t>(taps.size()), .taps = taps.data()},
+    };
+    const EAUM1PreparedStage stages[] = {
+        {.kind = EAUM1PreparedStageConvolution, .channelIndex = 0, .b0 = 0.0},
+        {.kind = EAUM1PreparedStageConvolution, .channelIndex = 1, .b0 = 1.0},
+    };
+    EAUM1PreparedState *prepared = createPreparedV3(
+        2,
+        stages,
+        2,
+        convolutions,
+        2
+    );
+    EAUM1Runtime *runtime = createRuntimeWithPrepared(&prepared, 2, 257);
+    const uintptr_t sharedKernel = EAUM1TestHooks::activePreparedConvolutionKernel(
+        runtime, 0
+    );
+    XCTAssertNotEqual(sharedKernel, 0u);
+    XCTAssertEqual(
+        EAUM1TestHooks::activePreparedConvolutionKernel(runtime, 1),
+        sharedKernel
+    );
+    XCTAssertEqual(EAUM1TestHooks::activeSlotConvolutionKernel(runtime, 0), sharedKernel);
+    XCTAssertEqual(EAUM1TestHooks::activeSlotConvolutionKernel(runtime, 1), sharedKernel);
+
+    std::vector<float> samples(40'000, 0.0f);
+    samples[0] = 1.0f;
+    auto processFrames = [&](size_t startFrame, size_t frameCount) {
+        size_t processed = 0;
+        while (processed < frameCount) {
+            const uint32_t count = static_cast<uint32_t>(std::min<size_t>(
+                257,
+                frameCount - processed
+            ));
+            EAUM1AudioBuffer buffer = {
+                .samples = samples.data() + (startFrame + processed) * 2,
+                .channelCount = 2,
+            };
+            XCTAssertEqual(
+                EAUM1RuntimeProcess(runtime, &buffer, 1, count),
+                EAUM1StatusOK
+            );
+            processed += count;
+        }
+    };
+    processFrames(0, 5'000);
+    EAUM1PreparedState *equivalent = createPreparedV3(
+        2,
+        stages,
+        2,
+        convolutions,
+        2
+    );
+    EAUM1PublicationOutcome outcome = {};
+    XCTAssertEqual(
+        EAUM1RuntimePublishPrepared(runtime, &equivalent, &outcome),
+        EAUM1StatusOK
+    );
+    XCTAssertEqual(outcome.flags, EAUM1PublicationCandidatePublished);
+    XCTAssertEqual(
+        EAUM1TestHooks::activePreparedConvolutionKernel(runtime, 0),
+        sharedKernel
+    );
+    XCTAssertEqual(
+        EAUM1TestHooks::activePreparedConvolutionKernel(runtime, 1),
+        sharedKernel
+    );
+    XCTAssertEqual(EAUM1TestHooks::activeSlotConvolutionKernel(runtime, 0), sharedKernel);
+    XCTAssertEqual(EAUM1TestHooks::activeSlotConvolutionKernel(runtime, 1), sharedKernel);
+
+    processFrames(5'000, 15'000);
+    XCTAssertEqualWithAccuracy(samples[39'998], 1.0f, 5e-6f);
+    for (size_t frame = 0; frame < 20'000; ++frame) {
+        XCTAssertEqualWithAccuracy(samples[frame * 2 + 1], 0.0f, 1e-12f);
+    }
+    EAUM1RuntimeDestroy(runtime);
+}
+
+- (void)testDistributedSegmentsPublishAtFixedFinalQuantum {
+    const auto makeConvolution = [](size_t tapCount) {
+        std::vector<float> taps(tapCount, 0.0f);
+        taps.back() = 0.25f;
+        auto kernel = std::make_shared<eaum1::PreparedConvolutionKernel>(
+            taps.data(), taps.size()
+        );
+        return eaum1::RuntimeConvolution(std::move(kernel));
+    };
+
+    auto third = makeConvolution(2'561);
+    for (size_t sample = 0; sample < 2'048; ++sample) {
+        third.process(sample == 0 ? 1.0 : 0.0);
+    }
+    XCTAssertEqual(third.jobPhaseForTesting(eaum1::kThirdOffset), 1u);
+    third.process(0.0);
+    XCTAssertEqual(third.jobPhaseForTesting(eaum1::kThirdOffset), 2u);
+    for (size_t sample = 0; sample < 255; ++sample) {
+        third.process(0.0);
+    }
+    XCTAssertEqual(third.jobPhaseForTesting(eaum1::kThirdOffset), 2u);
+    third.process(0.0);
+    XCTAssertEqual(third.jobPhaseForTesting(eaum1::kThirdOffset), 0u);
+
+    auto tail = makeConvolution(18'945);
+    for (size_t sample = 0; sample < 16'384; ++sample) {
+        tail.process(sample == 0 ? 1.0 : 0.0);
+    }
+    XCTAssertEqual(tail.jobPhaseForTesting(eaum1::kTailOffset), 1u);
+    tail.process(0.0);
+    for (size_t sample = 0; sample < 2'303; ++sample) {
+        tail.process(0.0);
+    }
+    XCTAssertEqual(tail.jobPhaseForTesting(eaum1::kTailOffset), 10u);
+    tail.process(0.0);
+    XCTAssertEqual(tail.jobPhaseForTesting(eaum1::kTailOffset), 0u);
+}
+
+- (void)testMultistageReconstructsFull432kTail {
+    std::vector<float> taps(432'000, 0.0f);
+    taps.back() = 0.25f;
+    const EAUM1PreparedConvolution convolution = {
+        .tapCount = static_cast<uint32_t>(taps.size()),
+        .taps = taps.data(),
+    };
+    const EAUM1PreparedStage stage = {
+        .kind = EAUM1PreparedStageConvolution,
+        .channelIndex = 0,
+        .b0 = 0.0,
+    };
+    EAUM1PreparedState *prepared = createPreparedV3(1, &stage, 1, &convolution, 1);
+    EAUM1Runtime *runtime = createRuntimeWithPrepared(&prepared, 1, 257);
+    std::vector<float> output(taps.size(), 0.0f);
+    output[0] = 1.0f;
+    for (size_t offset = 0; offset < output.size();) {
+        const uint32_t count = static_cast<uint32_t>(std::min<size_t>(
+            257,
+            output.size() - offset
+        ));
+        EAUM1AudioBuffer buffer = {.samples = output.data() + offset, .channelCount = 1};
+        XCTAssertEqual(EAUM1RuntimeProcess(runtime, &buffer, 1, count), EAUM1StatusOK);
+        offset += count;
+    }
+    float maximumError = 0.0f;
+    for (size_t index = 0; index < output.size(); ++index) {
+        maximumError = std::max(maximumError, std::abs(output[index] - taps[index]));
+    }
+    XCTAssertLessThanOrEqual(maximumError, 5e-6f);
     EAUM1RuntimeDestroy(runtime);
 }
 
@@ -736,7 +1105,7 @@ static EAUM1Runtime *createRuntimeWithPrepared(
     EAUM1RuntimeDestroy(runtime);
 }
 
-- (void)testEffectsSwitchUsesExactTenMillisecondRampAndContinuousRestart {
+- (void)testEffectsSwitchUsesExactTenMillisecondRampAndTerminalStateAcknowledgement {
     const float target = 2.0f;
     EAUM1PreparedState *prepared = nullptr;
     XCTAssertEqual(EAUM1PreparedStateCreate(&target, 1, &prepared), EAUM1StatusOK);
@@ -752,42 +1121,60 @@ static EAUM1Runtime *createRuntimeWithPrepared(
     EAUM1Runtime *runtime = nullptr;
     XCTAssertEqual(EAUM1RuntimeCreate(&description, &prepared, &runtime), EAUM1StatusOK);
 
+    EAUM1EffectsState state = 0;
+    XCTAssertEqual(EAUM1RuntimeCopyEffectsState(runtime, &state), EAUM1StatusOK);
+    XCTAssertEqual(state, EAUM1EffectsStateActive);
     XCTAssertEqual(EAUM1RuntimeSetEffectsEnabled(runtime, 0), EAUM1StatusOK);
+    XCTAssertEqual(EAUM1RuntimeSetEffectsEnabled(runtime, 1), EAUM1StatusNotReady);
     float fadeOut[11];
-    for (float &sample : fadeOut) {
-        sample = 1.0f;
-    }
+    std::fill(std::begin(fadeOut), std::end(fadeOut), 1.0f);
     EAUM1AudioBuffer buffer = {.samples = fadeOut, .channelCount = 1};
-    XCTAssertEqual(EAUM1RuntimeProcess(runtime, &buffer, 1, 11), EAUM1StatusOK);
+    XCTAssertEqual(EAUM1RuntimeProcess(runtime, &buffer, 1, 1), EAUM1StatusOK);
+    XCTAssertEqual(EAUM1RuntimeCopyEffectsState(runtime, &state), EAUM1StatusOK);
+    XCTAssertEqual(state, EAUM1EffectsStateFadingOut);
+    XCTAssertEqual(EAUM1RuntimeSetEffectsEnabled(runtime, 1), EAUM1StatusNotReady);
+    buffer.samples = fadeOut + 1;
+    XCTAssertEqual(EAUM1RuntimeProcess(runtime, &buffer, 1, 10), EAUM1StatusOK);
     for (uint32_t frame = 0; frame < 11; ++frame) {
         const float expected = static_cast<float>(
             2.0 - static_cast<double>(frame + 1) / 11.0
         );
         XCTAssertEqualWithAccuracy(fadeOut[frame], expected, 1e-6f);
     }
-    XCTAssertEqual(fadeOut[10], 1.0f);
+    XCTAssertEqual(EAUM1RuntimeCopyEffectsState(runtime, &state), EAUM1StatusOK);
+    XCTAssertEqual(state, EAUM1EffectsStateBypassed);
+    XCTAssertEqual(EAUM1RuntimeSetEffectsEnabled(runtime, 1), EAUM1StatusNotReady);
 
-    XCTAssertEqual(EAUM1RuntimeSetEffectsEnabled(runtime, 1), EAUM1StatusOK);
-    float fadeIn[] = {1.0f, 1.0f, 1.0f};
-    buffer.samples = fadeIn;
-    XCTAssertEqual(EAUM1RuntimeProcess(runtime, &buffer, 1, 3), EAUM1StatusOK);
-    XCTAssertEqualWithAccuracy(fadeIn[0], static_cast<float>(1.0 + 1.0 / 11.0), 1e-6f);
-    XCTAssertEqualWithAccuracy(fadeIn[1], static_cast<float>(1.0 + 2.0 / 11.0), 1e-6f);
-    XCTAssertEqualWithAccuracy(fadeIn[2], static_cast<float>(1.0 + 3.0 / 11.0), 1e-6f);
-
-    XCTAssertEqual(EAUM1RuntimeSetEffectsEnabled(runtime, 0), EAUM1StatusOK);
-    float restarted = 1.0f;
-    buffer.samples = &restarted;
-    XCTAssertEqual(EAUM1RuntimeProcess(runtime, &buffer, 1, 1), EAUM1StatusOK);
-    const float expectedRestart = static_cast<float>(
-        static_cast<double>(fadeIn[2])
-            + (1.0 - static_cast<double>(fadeIn[2])) / 11.0
+    EAUM1PreparedState *fresh = nullptr;
+    XCTAssertEqual(EAUM1PreparedStateCreate(&target, 1, &fresh), EAUM1StatusOK);
+    EAUM1PublicationOutcome outcome = {};
+    XCTAssertEqual(
+        EAUM1RuntimeReplacePreparedWhileBypassed(runtime, &fresh, &outcome),
+        EAUM1StatusOK
     );
-    XCTAssertEqualWithAccuracy(restarted, expectedRestart, 1e-6f);
+    XCTAssertEqual(fresh, nullptr);
+    XCTAssertEqual(outcome.flags, EAUM1PublicationCandidatePublished);
+    float bypassedSample = 1.0f;
+    buffer.samples = &bypassedSample;
+    XCTAssertEqual(EAUM1RuntimeProcess(runtime, &buffer, 1, 1), EAUM1StatusOK);
+    XCTAssertEqual(bypassedSample, 1.0f);
+    XCTAssertEqual(EAUM1RuntimeSetEffectsEnabled(runtime, 1), EAUM1StatusOK);
+    float fadeIn[11];
+    std::fill(std::begin(fadeIn), std::end(fadeIn), 1.0f);
+    buffer.samples = fadeIn;
+    XCTAssertEqual(EAUM1RuntimeProcess(runtime, &buffer, 1, 11), EAUM1StatusOK);
+    for (uint32_t frame = 0; frame < 11; ++frame) {
+        const float expected = static_cast<float>(
+            1.0 + static_cast<double>(frame + 1) / 11.0
+        );
+        XCTAssertEqualWithAccuracy(fadeIn[frame], expected, 1e-6f);
+    }
+    XCTAssertEqual(EAUM1RuntimeCopyEffectsState(runtime, &state), EAUM1StatusOK);
+    XCTAssertEqual(state, EAUM1EffectsStateActive);
     EAUM1RuntimeDestroy(runtime);
 }
 
-- (void)testBypassKeepsBiquadStateHotForSmoothRestore {
+- (void)testBypassSkipsBiquadStateAndFreshReplaceRestartsCold {
     const EAUM1PreparedStage stage = {
         .kind = EAUM1PreparedStageBiquad,
         .channelIndex = 0,
@@ -801,7 +1188,7 @@ static EAUM1Runtime *createRuntimeWithPrepared(
     const uint32_t channelCount = 1;
     const EAUM1RuntimeDescription description = {
         .sampleRate = 1000.0,
-        .maximumFrameCount = 1,
+        .maximumFrameCount = 10,
         .bufferCount = 1,
         .channelCounts = &channelCount,
         .effectsEnabled = 0,
@@ -809,16 +1196,32 @@ static EAUM1Runtime *createRuntimeWithPrepared(
     EAUM1Runtime *runtime = nullptr;
     XCTAssertEqual(EAUM1RuntimeCreate(&description, &prepared, &runtime), EAUM1StatusOK);
 
+    EAUM1EffectsState state = 0;
+    XCTAssertEqual(EAUM1RuntimeCopyEffectsState(runtime, &state), EAUM1StatusOK);
+    XCTAssertEqual(state, EAUM1EffectsStateBypassed);
     float impulse = 1.0f;
     EAUM1AudioBuffer buffer = {.samples = &impulse, .channelCount = 1};
     XCTAssertEqual(EAUM1RuntimeProcess(runtime, &buffer, 1, 1), EAUM1StatusOK);
     XCTAssertEqual(impulse, 1.0f);
 
+    EAUM1PreparedState *fresh = createPreparedV2(1, &stage, 1);
+    EAUM1PublicationOutcome outcome = {};
+    XCTAssertEqual(
+        EAUM1RuntimeReplacePreparedWhileBypassed(runtime, &fresh, &outcome),
+        EAUM1StatusOK
+    );
+    XCTAssertEqual(fresh, nullptr);
+    XCTAssertEqual(outcome.flags, EAUM1PublicationCandidatePublished);
+
     XCTAssertEqual(EAUM1RuntimeSetEffectsEnabled(runtime, 1), EAUM1StatusOK);
-    float restored = 0.0f;
-    buffer.samples = &restored;
-    XCTAssertEqual(EAUM1RuntimeProcess(runtime, &buffer, 1, 1), EAUM1StatusOK);
-    XCTAssertEqualWithAccuracy(restored, 0.025f, 1e-7f);
+    float restored[10] = {};
+    buffer.samples = restored;
+    XCTAssertEqual(EAUM1RuntimeProcess(runtime, &buffer, 1, 10), EAUM1StatusOK);
+    for (float sample : restored) {
+        XCTAssertEqual(sample, 0.0f);
+    }
+    XCTAssertEqual(EAUM1RuntimeCopyEffectsState(runtime, &state), EAUM1StatusOK);
+    XCTAssertEqual(state, EAUM1EffectsStateActive);
     EAUM1RuntimeDestroy(runtime);
 }
 
@@ -1086,6 +1489,60 @@ static EAUM1Runtime *createRuntimeWithPrepared(
     );
     XCTAssertEqual(completed.flags, EAUM1PublicationRetiredReclaimed);
 
+    EAUM1RuntimeDestroy(runtime);
+    XCTAssertEqual(EAUM1TestHooks::livePreparedCount(), liveBefore);
+}
+
+- (void)testBypassedMaintenanceColdPromotesLatestPendingWithoutRetirement {
+    const uint64_t liveBefore = EAUM1TestHooks::livePreparedCount();
+    EAUM1Runtime *runtime = createRuntime(1.0f);
+
+    EAUM1PreparedState *notReady = createPrepared(5.0f);
+    EAUM1PublicationOutcome outcome = {};
+    XCTAssertEqual(
+        EAUM1RuntimeReplacePreparedWhileBypassed(runtime, &notReady, &outcome),
+        EAUM1StatusNotReady
+    );
+    XCTAssertNotEqual(notReady, nullptr);
+    EAUM1PreparedStateDestroy(notReady);
+
+    XCTAssertTrue(EAUM1TestHooks::acquireCallback(runtime));
+    EAUM1PreparedState *gain2 = createPrepared(2.0f);
+    EAUM1PublicationOutcome first = {};
+    XCTAssertEqual(EAUM1RuntimePublishPrepared(runtime, &gain2, &first), EAUM1StatusOK);
+    EAUM1PreparedState *gain3 = createPrepared(3.0f);
+    const uintptr_t latestAddress = reinterpret_cast<uintptr_t>(gain3);
+    EAUM1PublicationOutcome pending = {};
+    XCTAssertEqual(EAUM1RuntimePublishPrepared(runtime, &gain3, &pending), EAUM1StatusOK);
+    EAUM1TestHooks::completeCallback(runtime);
+
+    XCTAssertEqual(EAUM1RuntimeSetEffectsEnabled(runtime, 0), EAUM1StatusOK);
+    float fadeOut[10];
+    std::fill(std::begin(fadeOut), std::end(fadeOut), 1.0f);
+    EAUM1AudioBuffer buffer = {.samples = fadeOut, .channelCount = 1};
+    XCTAssertEqual(EAUM1RuntimeProcess(runtime, &buffer, 1, 10), EAUM1StatusOK);
+    EAUM1EffectsState state = 0;
+    XCTAssertEqual(EAUM1RuntimeCopyEffectsState(runtime, &state), EAUM1StatusOK);
+    XCTAssertEqual(state, EAUM1EffectsStateBypassed);
+
+    EAUM1PublicationOutcome promoted = {};
+    XCTAssertEqual(
+        EAUM1RuntimePerformMaintenance(runtime, first.retirementTicket, &promoted),
+        EAUM1StatusOK
+    );
+    XCTAssertEqual(
+        promoted.flags,
+        EAUM1PublicationRetiredReclaimed | EAUM1PublicationCandidatePublished
+    );
+    XCTAssertEqual(EAUM1TestHooks::activePrepared(runtime), latestAddress);
+    XCTAssertEqual(EAUM1TestHooks::retiredPrepared(runtime), 0u);
+    XCTAssertEqual(EAUM1TestHooks::pendingPrepared(runtime), 0u);
+
+    float dry[] = {1.0f, -1.0f};
+    buffer.samples = dry;
+    XCTAssertEqual(EAUM1RuntimeProcess(runtime, &buffer, 1, 2), EAUM1StatusOK);
+    XCTAssertEqual(dry[0], 1.0f);
+    XCTAssertEqual(dry[1], -1.0f);
     EAUM1RuntimeDestroy(runtime);
     XCTAssertEqual(EAUM1TestHooks::livePreparedCount(), liveBefore);
 }

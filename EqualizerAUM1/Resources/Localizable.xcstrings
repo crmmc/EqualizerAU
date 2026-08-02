@@ -385,6 +385,16 @@
         }
       }
     },
+    "Bypassing processing…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在旁路音频处理…"
+          }
+        }
+      }
+    },
     "Cancel": {
       "localizations": {
         "zh-Hans": {
@@ -695,6 +705,16 @@
         }
       }
     },
+    "Enabling processing…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在启用音频处理…"
+          }
+        }
+      }
+    },
     "English": {
       "localizations": {
         "zh-Hans": {
@@ -721,6 +741,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "退出"
+          }
+        }
+      }
+    },
+    "Expected activation": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "预期启用结果"
           }
         }
       }
@@ -963,16 +993,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "隐藏其他应用"
-          }
-        }
-      }
-    },
-    "IR exceeds 2 seconds": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "IR 超过 2 秒"
           }
         }
       }
@@ -1267,6 +1287,22 @@
         }
       }
     },
+    "Performance may degrade · %lld Hz · %lld ch · %@ s": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Performance may degrade · %1$lld Hz · %2$lld ch · %3$@ s"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "性能可能下降 · %lld Hz · %lld 声道 · %@ 秒"
+          }
+        }
+      }
+    },
     "Preamp": {
       "localizations": {
         "zh-Hans": {
@@ -1293,6 +1329,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "前置放大增益"
+          }
+        }
+      }
+    },
+    "Preparing processing…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在准备音频处理…"
           }
         }
       }
@@ -1859,16 +1905,6 @@
         }
       }
     },
-    "file exceeds 32 MiB": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "文件超过 32 MiB"
-          }
-        }
-      }
-    },
     "invalid WAV": {
       "localizations": {
         "zh-Hans": {
@@ -1899,12 +1935,18 @@
         }
       }
     },
-    "source invalid": {
+    "sample rate mismatch: %lld Hz source, %lld Hz output": {
       "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "sample rate mismatch: %1$lld Hz source, %2$lld Hz output"
+          }
+        },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "源文件无效"
+            "value": "采样率不匹配：源文件 %lld Hz，输出 %lld Hz"
           }
         }
       }

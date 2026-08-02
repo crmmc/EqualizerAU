@@ -38,8 +38,7 @@ the Runtime retains a generic biquad execution stage for migrated and compatible
 ## Dependency boundary
 
 EqualizerAU does not copy, link or distribute EqualizerAPO's bundled libHybridConv, FFTW or
-libsndfile code. Its Runtime FFT/convolution engine, WAV decoder and windowed-sinc resampler are
-independent implementations. The project also does not bundle source or binary code from the local
+libsndfile code. Its Runtime FFT/convolution engine and WAV decoder are independent implementations. The project also does not bundle source or binary code from the local
 Resonance reference project or its Rust dependencies.
 
 Apple Accelerate, Foundation, CryptoKit, CoreAudio and AudioToolbox are operating-system frameworks

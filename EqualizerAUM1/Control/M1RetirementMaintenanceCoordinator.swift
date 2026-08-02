@@ -11,6 +11,7 @@ enum M1RetirementMaintenanceStep: Equatable, Sendable {
 enum M1RetirementStopReason: Equatable, Sendable {
     case ticketTimedOut(ticket: UInt64)
     case maintenanceFailed(ticket: UInt64, status: Int32)
+    case effectsBypassTimedOut
 }
 
 protocol M1RetirementMaintenanceAccess: Sendable {
@@ -236,6 +237,24 @@ actor M1RetirementMaintenanceCoordinator {
                         pendingTicket = nil
                     }
                     ticketStartedAt = await timing.nowNanoseconds()
+                } else {
+                    let now = await timing.nowNanoseconds()
+                    guard !Task.isCancelled else {
+                        _ = finishRun(identifier: identifier)
+                        return
+                    }
+                    let elapsed = now >= ticketStartedAt
+                        ? now - ticketStartedAt
+                        : UInt64.max
+                    if elapsed >= timing.ticketDeadline {
+                        let reason = M1RetirementStopReason.ticketTimedOut(ticket: ticket)
+                        guard finishRun(identifier: identifier) else { return }
+                        await access.requestRecoverableStop(
+                            reason: reason,
+                            bridgeGeneration: bridgeGeneration
+                        )
+                        return
+                    }
                 }
 
             case let .failed(status):

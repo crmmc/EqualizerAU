@@ -651,7 +651,7 @@ final class M1ProcessingBuilderTests: XCTestCase {
         XCTAssertEqual(outsideTaps, activeTaps)
     }
 
-    func testGraphicEQAndWAVConvolutionShareCapacityBudgets() throws {
+    func testGraphicEQAndWAVConvolutionShareOnlyInstanceCapacity() throws {
         let mono = monoLayout()
         let eqNodes = (0..<7).map { offset in
             nonFlatGraphicEQ(id: UUID(), gainDB: Double(offset + 1))
@@ -683,8 +683,7 @@ final class M1ProcessingBuilderTests: XCTestCase {
             XCTAssertEqual($0 as? M1ProcessingBuildError, .convolutionStageCapacityExceeded)
         }
 
-        let longTapCount = M1ProcessingBuilder.maximumTotalConvolutionTaps
-            - 7 * M1ProcessingBuilder.graphicEQTapCount + 1
+        let longTapCount = 16_385
         let longReference = convolutionReference(storageID: UUID(), frameCount: longTapCount)
         let longLoader = MockConvolutionIRLoader(loadedBySourcePath: [
             longReference.sourcePath: M1LoadedConvolutionIR(
@@ -696,13 +695,12 @@ final class M1ProcessingBuilderTests: XCTestCase {
                 channels: [impulse(count: longTapCount)]
             )
         ])
-        XCTAssertThrowsError(try M1ProcessingBuilder.build(
+        let longBuild = try M1ProcessingBuilder.build(
             nodes: eqNodes + [.convolution(ir: longReference)],
             layout: mono,
             irLoader: longLoader
-        )) {
-            XCTAssertEqual($0 as? M1ProcessingBuildError, .convolutionTapCapacityExceeded)
-        }
+        )
+        XCTAssertEqual(longBuild.stagesByChannel[0].count, 8)
     }
 
     func testGraphicEQRepresentativeFIRResponseStaysWithinBroadSlopeTolerance() throws {

@@ -549,8 +549,7 @@ struct M1ConvolutionIRReferenceWire: Codable {
               sampleRate >= M1ConvolutionIRStore.minimumSampleRate,
               sampleRate <= M1ConvolutionIRStore.maximumSampleRate,
               (1...64).contains(channelCount),
-              frameCount > 0,
-              Double(frameCount) / sampleRate <= M1ConvolutionIRStore.maximumDurationSeconds
+              frameCount > 0
         else {
             throw M1ConfigurationCodecError.invalidJSON
         }

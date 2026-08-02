@@ -2,12 +2,11 @@ import Darwin
 import Foundation
 
 enum M1ConvolutionIRError: Error, Equatable, Sendable {
-    case fileTooLarge
     case invalidWAV
     case unsupportedEncoding
     case invalidMetadata
+    case sampleRateMismatch(source: Double, target: Double)
     case emptyAudio
-    case durationExceeded
     case invalidSample
     case missingResource
     case resourceIO
@@ -30,10 +29,9 @@ protocol M1ConvolutionIRLoading: Sendable {
 }
 
 struct M1ConvolutionIRStore: M1ConvolutionIRLoading, Sendable {
-    static let maximumFileSize = 32 * 1024 * 1024
-    static let maximumDurationSeconds = 2.0
     static let minimumSampleRate = 8_000.0
     static let maximumSampleRate = 768_000.0
+    static let performanceWarningDurationSeconds = 8.0
 
     let directoryURL: URL
 
@@ -70,20 +68,15 @@ struct M1ConvolutionIRStore: M1ConvolutionIRLoading, Sendable {
         let url = URL(fileURLWithPath: reference.sourcePath)
         let data = try readData(at: url)
         let decoded = try M1WAVDecoder.decode(data)
-        let channels = try decoded.sampleRate == targetSampleRate
-            ? decoded.channels
-            : decoded.channels.map {
-                try M1WindowedSincResampler.convert(
-                    $0,
-                    sourceRate: decoded.sampleRate,
-                    targetRate: targetSampleRate
-                )
-            }
+        guard abs(decoded.sampleRate - targetSampleRate) <= 1 else {
+            throw M1ConvolutionIRError.sampleRateMismatch(
+                source: decoded.sampleRate,
+                target: targetSampleRate
+            )
+        }
+        let channels = decoded.channels
         guard let targetFrameCount = channels.first?.count, targetFrameCount > 0 else {
             throw M1ConvolutionIRError.emptyAudio
-        }
-        guard targetFrameCount <= Int(targetSampleRate * Self.maximumDurationSeconds) else {
-            throw M1ConvolutionIRError.durationExceeded
         }
         for channel in channels {
             guard channel.count == targetFrameCount else { throw M1ConvolutionIRError.invalidSample }
@@ -125,26 +118,70 @@ struct M1ConvolutionIRStore: M1ConvolutionIRLoading, Sendable {
             try Task.checkCancellation()
             throw M1ConvolutionIRError.resourceIO
         }
-        guard status.st_size >= 0, status.st_size <= Self.maximumFileSize else {
-            throw M1ConvolutionIRError.fileTooLarge
+        guard status.st_size >= 0, let fileSize = Int(exactly: status.st_size) else {
+            throw M1ConvolutionIRError.resourceIO
+        }
+        guard fileSize >= 12 else { throw M1ConvolutionIRError.invalidWAV }
+        var header = [UInt8](repeating: 0, count: 12)
+        var headerOffset = 0
+        while headerOffset < header.count {
+            try Task.checkCancellation()
+            let requestedCount = header.count - headerOffset
+            let count = header.withUnsafeMutableBytes { bytes in
+                pread(
+                    descriptor,
+                    bytes.baseAddress!.advanced(by: headerOffset),
+                    requestedCount,
+                    off_t(headerOffset)
+                )
+            }
+            if count == 0 { throw M1ConvolutionIRError.resourceIO }
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw M1ConvolutionIRError.resourceIO
+            }
+            headerOffset += count
+        }
+        let riffSize = Int(UInt32(header[4])
+            | (UInt32(header[5]) << 8)
+            | (UInt32(header[6]) << 16)
+            | (UInt32(header[7]) << 24))
+        guard header[0..<4].elementsEqual("RIFF".utf8),
+              header[8..<12].elementsEqual("WAVE".utf8),
+              riffSize + 8 == fileSize
+        else {
+            throw M1ConvolutionIRError.invalidWAV
         }
 
         var data = Data()
-        data.reserveCapacity(Int(status.st_size))
+        if fileSize <= 64 * 1024 * 1024 {
+            data.reserveCapacity(fileSize)
+        }
         var buffer = [UInt8](repeating: 0, count: 64 * 1024)
-        while true {
+        while data.count < fileSize {
             try Task.checkCancellation()
-            let count = read(descriptor, &buffer, buffer.count)
-            if count == 0 { break }
+            let requestedCount = min(buffer.count, fileSize - data.count)
+            let count = read(descriptor, &buffer, requestedCount)
+            if count == 0 { throw M1ConvolutionIRError.resourceIO }
             if count < 0 {
                 if errno == EINTR { continue }
                 try Task.checkCancellation()
                 throw M1ConvolutionIRError.resourceIO
             }
-            guard data.count + count <= Self.maximumFileSize else {
-                throw M1ConvolutionIRError.fileTooLarge
+            guard count <= Int.max - data.count else {
+                throw M1ConvolutionIRError.resourceIO
             }
             data.append(buffer, count: count)
+        }
+        var finalStatus = stat()
+        guard fstat(descriptor, &finalStatus) == 0,
+              finalStatus.st_size == status.st_size,
+              finalStatus.st_mtimespec.tv_sec == status.st_mtimespec.tv_sec,
+              finalStatus.st_mtimespec.tv_nsec == status.st_mtimespec.tv_nsec,
+              finalStatus.st_ctimespec.tv_sec == status.st_ctimespec.tv_sec,
+              finalStatus.st_ctimespec.tv_nsec == status.st_ctimespec.tv_nsec
+        else {
+            throw M1ConvolutionIRError.resourceIO
         }
         try Task.checkCancellation()
         return data
@@ -196,9 +233,6 @@ private enum M1WAVDecoder {
         guard audioRange.count % format.blockAlign == 0 else { throw M1ConvolutionIRError.invalidWAV }
         let frameCount = audioRange.count / format.blockAlign
         guard frameCount > 0 else { throw M1ConvolutionIRError.emptyAudio }
-        guard Double(frameCount) / Double(format.sampleRate) <= M1ConvolutionIRStore.maximumDurationSeconds else {
-            throw M1ConvolutionIRError.durationExceeded
-        }
 
         let bytesPerSample = format.bits / 8
         var channels = Array(repeating: [Float](), count: format.channels)
@@ -307,43 +341,5 @@ private enum M1WAVDecoder {
             | (UInt32(data[offset + 1]) << 8)
             | (UInt32(data[offset + 2]) << 16)
             | (UInt32(data[offset + 3]) << 24)
-    }
-}
-
-private enum M1WindowedSincResampler {
-    private static let radius = 16
-
-    static func convert(_ source: [Float], sourceRate: Double, targetRate: Double) throws -> [Float] {
-        let outputCount = max(
-            1,
-            min(
-                Int((Double(source.count) * targetRate / sourceRate).rounded()),
-                Int(targetRate * M1ConvolutionIRStore.maximumDurationSeconds)
-            )
-        )
-        let cutoff = min(1, targetRate / sourceRate)
-        let impulseResponseGain = sourceRate / targetRate
-        let sourceRadius = Int(ceil(Double(radius) / cutoff))
-        var output = Array(repeating: Float.zero, count: outputCount)
-        for outputIndex in output.indices {
-            if outputIndex.isMultiple(of: 64) { try Task.checkCancellation() }
-            let position = Double(outputIndex) * sourceRate / targetRate
-            let center = Int(floor(position))
-            var value = 0.0
-            let lowerBound = max(source.startIndex, center - sourceRadius + 1)
-            let upperBound = min(source.endIndex - 1, center + sourceRadius)
-            guard lowerBound <= upperBound else { continue }
-            for sourceIndex in lowerBound...upperBound {
-                let distance = position - Double(sourceIndex)
-                let normalized = distance * cutoff / Double(radius)
-                let window = 0.5 + 0.5 * cos(Double.pi * normalized)
-                let argument = Double.pi * distance * cutoff
-                let sinc = argument == 0 ? 1 : sin(argument) / argument
-                let weight = cutoff * sinc * window
-                value += Double(source[sourceIndex]) * weight
-            }
-            output[outputIndex] = Float(value * impulseResponseGain)
-        }
-        return output
     }
 }

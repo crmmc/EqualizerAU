@@ -17,6 +17,33 @@ struct M1OutputFormatStabilityTiming: Sendable {
     )
 }
 
+struct M1EffectsTransitionTiming: Sendable {
+    static let production = M1EffectsTransitionTiming(
+        pollInterval: 1_000_000,
+        deadline: 2_000_000_000,
+        nowNanoseconds: { DispatchTime.now().uptimeNanoseconds },
+        sleep: { try await Task.sleep(nanoseconds: $0) }
+    )
+
+    let pollInterval: UInt64
+    let deadline: UInt64
+    let nowNanoseconds: @Sendable () async -> UInt64
+    let sleep: @Sendable (UInt64) async throws -> Void
+
+    init(
+        pollInterval: UInt64,
+        deadline: UInt64,
+        nowNanoseconds: @escaping @Sendable () async -> UInt64,
+        sleep: @escaping @Sendable (UInt64) async throws -> Void
+    ) {
+        precondition(pollInterval > 0 && deadline >= pollInterval)
+        self.pollInterval = pollInterval
+        self.deadline = deadline
+        self.nowNanoseconds = nowNanoseconds
+        self.sleep = sleep
+    }
+}
+
 protocol M1RuntimeCreating: Sendable {
     func createRuntime(
         bridgeGeneration: UInt64,
@@ -105,6 +132,7 @@ actor M1NativeAudioRouteCoordinator {
     private let retirementMaintenance: M1RetirementMaintenanceCoordinator
     private let irLoader: any M1ConvolutionIRLoading
     private let outputFormatStabilityTiming: M1OutputFormatStabilityTiming
+    private let effectsTransitionTiming: M1EffectsTransitionTiming
     private var current: RouteResources?
     private var nextGeneration: UInt64 = 0
     private var nextBridgeGeneration: UInt64 = 0
@@ -124,7 +152,8 @@ actor M1NativeAudioRouteCoordinator {
         runtimeAccess: M1RuntimeLeaseAccess,
         retirementMaintenance: M1RetirementMaintenanceCoordinator,
         irLoader: any M1ConvolutionIRLoading = M1ConvolutionIRStore(),
-        outputFormatStabilityTiming: M1OutputFormatStabilityTiming = .production
+        outputFormatStabilityTiming: M1OutputFormatStabilityTiming = .production,
+        effectsTransitionTiming: M1EffectsTransitionTiming = .production
     ) {
         self.routeResources = routeResources
         self.audioIO = audioIO
@@ -134,6 +163,7 @@ actor M1NativeAudioRouteCoordinator {
         self.irLoader = irLoader
         precondition(outputFormatStabilityTiming.maximumObservations >= 2)
         self.outputFormatStabilityTiming = outputFormatStabilityTiming
+        self.effectsTransitionTiming = effectsTransitionTiming
     }
 
     func state() -> M1NativeAudioRouteState {
@@ -454,8 +484,106 @@ actor M1NativeAudioRouteCoordinator {
     }
 
     func setEffectsEnabled(_ enabled: Bool) async throws {
-        guard let current, current.phase == .running else { return }
-        try await runtimeAccess.setEffectsEnabled(enabled, bridgeGeneration: current.bridgeGeneration)
+        guard let current, current.phase == .running else {
+            throw M1AudioIOError.generationMismatch
+        }
+        guard !enabled else {
+            throw M1AudioIOError.invalidState("effects activation requires a fresh preparation")
+        }
+        let startedAt = await effectsTransitionTiming.nowNanoseconds()
+        try await runtimeAccess.setEffectsEnabled(false, bridgeGeneration: current.bridgeGeneration)
+        if try await waitForEffectsState(
+            .bypassed,
+            resources: current,
+            startedAt: startedAt
+        ) { return }
+        await runtimeAccess.requestRecoverableStop(
+            reason: .effectsBypassTimedOut,
+            bridgeGeneration: current.bridgeGeneration
+        )
+        throw M1AudioIOError.invalidState("effects bypass timed out")
+    }
+
+    func activateEffects(
+        preparation: M1AudioConfigurationPreparation,
+        activationToken: M1EffectsActivationToken
+    ) async throws -> M1ProcessingBuildDiagnostics? {
+        guard activationToken.isCurrent else { throw CancellationError() }
+        guard let current,
+              current.phase == .running,
+              preparation.bridgeGeneration == current.bridgeGeneration,
+              preparation.layout == current.output?.layout,
+              let compiled = preparation.compiled
+        else {
+            throw M1AudioIOError.generationMismatch
+        }
+        await retirementMaintenance.waitUntilIdle()
+        guard activationToken.isCurrent else { throw CancellationError() }
+        guard self.current === current, current.phase == .running else {
+            throw M1AudioIOError.generationMismatch
+        }
+
+        let startedAt = await effectsTransitionTiming.nowNanoseconds()
+        while true {
+            try Task.checkCancellation()
+            guard activationToken.isCurrent else { throw CancellationError() }
+            let ready = try await runtimeAccess.canReplaceWhileBypassed(
+                bridgeGeneration: current.bridgeGeneration
+            )
+            guard self.current === current, current.phase == .running else {
+                throw M1AudioIOError.generationMismatch
+            }
+            guard activationToken.isCurrent else { throw CancellationError() }
+            if ready {
+                let replaced = try await runtimeAccess.replaceWhileBypassed(
+                    stagesByChannel: compiled.stagesByChannel,
+                    configurationGeneration: nil,
+                    bridgeGeneration: current.bridgeGeneration
+                )
+                guard self.current === current, current.phase == .running else {
+                    throw M1AudioIOError.generationMismatch
+                }
+                guard activationToken.isCurrent else { throw CancellationError() }
+                if replaced {
+                    guard !(await effectsDeadlineReached(since: startedAt)) else {
+                        throw M1AudioIOError.invalidState("bypassed replacement timed out")
+                    }
+                    break
+                }
+            }
+            guard !(await effectsDeadlineReached(since: startedAt)) else {
+                throw M1AudioIOError.invalidState("bypassed replacement timed out")
+            }
+            try await effectsTransitionTiming.sleep(effectsTransitionTiming.pollInterval)
+            guard self.current === current, current.phase == .running else {
+                throw M1AudioIOError.generationMismatch
+            }
+        }
+
+        let fadeInStartedAt = await effectsTransitionTiming.nowNanoseconds()
+        guard self.current === current, current.phase == .running else {
+            throw M1AudioIOError.generationMismatch
+        }
+        try await runtimeAccess.enableEffects(
+            bridgeGeneration: current.bridgeGeneration,
+            activationToken: activationToken
+        )
+        do {
+            if try await waitForEffectsState(
+                .active,
+                resources: current,
+                startedAt: fadeInStartedAt
+            ) {
+                current.diagnostics = compiled.diagnostics
+                return compiled.diagnostics
+            }
+        } catch {
+            await compensateFailedActivation(resources: current)
+            throw error
+        }
+
+        await compensateFailedActivation(resources: current)
+        throw M1AudioIOError.invalidState("effects activation timed out")
     }
 
     func waitForPublication(configurationGeneration: UInt64) async -> Bool {
@@ -568,6 +696,64 @@ actor M1NativeAudioRouteCoordinator {
         guard formatRecoveryGuardBridgeGeneration == bridgeGeneration else { return false }
         try await stop()
         return true
+    }
+
+    private func compensateFailedActivation(resources: RouteResources) async {
+        let startedAt = await effectsTransitionTiming.nowNanoseconds()
+        do {
+            try await runtimeAccess.setEffectsEnabled(
+                false,
+                bridgeGeneration: resources.bridgeGeneration
+            )
+        } catch {
+            await runtimeAccess.requestRecoverableStop(
+                reason: .effectsBypassTimedOut,
+                bridgeGeneration: resources.bridgeGeneration
+            )
+            return
+        }
+        let acknowledgement = Task {
+            try await self.waitForEffectsState(
+                .bypassed,
+                resources: resources,
+                startedAt: startedAt
+            )
+        }
+        do {
+            if try await acknowledgement.value { return }
+        } catch {}
+        await runtimeAccess.requestRecoverableStop(
+            reason: .effectsBypassTimedOut,
+            bridgeGeneration: resources.bridgeGeneration
+        )
+    }
+
+    private func waitForEffectsState(
+        _ expected: M1RuntimeEffectsState,
+        resources: RouteResources,
+        startedAt: UInt64
+    ) async throws -> Bool {
+        while true {
+            try Task.checkCancellation()
+            let state = try await runtimeAccess.effectsState(
+                bridgeGeneration: resources.bridgeGeneration
+            )
+            guard current === resources, resources.phase == .running else {
+                throw M1AudioIOError.generationMismatch
+            }
+            if state == expected { return true }
+            if await effectsDeadlineReached(since: startedAt) { return false }
+            try await effectsTransitionTiming.sleep(effectsTransitionTiming.pollInterval)
+            guard current === resources, resources.phase == .running else {
+                throw M1AudioIOError.generationMismatch
+            }
+        }
+    }
+
+    private func effectsDeadlineReached(since startedAt: UInt64) async -> Bool {
+        let now = await effectsTransitionTiming.nowNanoseconds()
+        let elapsed = now >= startedAt ? now - startedAt : UInt64.max
+        return elapsed >= effectsTransitionTiming.deadline
     }
 
     private func checkStartCancellation() throws {

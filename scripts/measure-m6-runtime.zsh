@@ -5,6 +5,9 @@ root=${0:A:h:h}
 products="$root/.build/M6ReleaseProbeProducts"
 intermediates="$root/.build/M6ReleaseProbeIntermediates"
 binary="$root/.build/m6-runtime-probe"
+tap_count=${1:-16384}
+measured_blocks=${2:-2000}
+run_prefix=${EAUM1_RUN_PREFIX:-M6_RUNTIME_RUN}
 
 xcodebuild \
   -project "$root/EqualizerAU.xcodeproj" \
@@ -24,9 +27,10 @@ clang++ \
   -I "$root/EqualizerAUM1Runtime/include" \
   "$root/scripts/m6-runtime-probe.cpp" \
   "$runtime_library" \
+  -framework Accelerate \
   -o "$binary"
 
 for run in 1 2 3 4 5; do
-  print "M6_RUNTIME_RUN run=$run"
-  "$binary"
+  print "$run_prefix run=$run"
+  EAUM1_PROBE_RUN_INDEX="$run" "$binary" "$tap_count" "$measured_blocks"
 done

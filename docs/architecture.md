@@ -33,12 +33,15 @@ sidecar 的绝对路径，迁移不读取或删除文件。编码结果按键排
 
 Convolution 配置保存用户选择 WAV 的标准化绝对源路径，不复制、移动、删除或监听外部文件。
 Add/Replace 只修改草稿引用；Start、运行中 Save、路线重建和输出格式恢复在 detached 控制路径
-重新读取最大 `32 MiB`、最长 2 秒、1...64 声道、8...768 kHz 的 RIFF/WAVE linear PCM
-8/16/24/32 或 Float32，拒绝空、非有限和 subnormal 样本，并按真实输出采样率执行 windowed-sinc
-SRC。单声道 IR 广播，多声道 IR 必须与当前有效 Channels 作用域严格等宽并按作用域顺序映射。
-文件不可用、不可读、损坏、超限、不支持或声道不匹配时，该节点在对应 Prepared 中有效旁路并
-产生 owned diagnostic，配置 `isEnabled` 不变；下一次生效重新尝试。schema、stage、tap 和
-Prepared 全局容量错误仍整批失败。没有可发现输出时 Save 只做设备无关结构校验，资源读取延后到
+重新读取 1...64 声道、8...768 kHz 的 RIFF/WAVE linear PCM 8/16/24/32 或 Float32，不设置文件
+字节数、时长、单 kernel taps 或所有实例总 taps 上限。loader 拒绝非普通文件、损坏结构、空音频、
+不支持编码、非有限和 subnormal samples，且不执行 IR SRC；源采样率与输出偏差超过 1 Hz 时节点
+旁路并显示 source/target 原因。严格超过 8 秒的 IR 继续加载，同时显示非阻塞性能下降警告；
+Builder 仅在 Runtime stage 中逐声道去除末尾精确零值，不改变源文件帧数、警告或任何非零 tap。
+单声道 IR 广播，多声道 IR 必须与当前有效 Channels 作用域严格等宽并按作用域顺序映射。
+文件不可用、不可读、损坏、不支持、采样率或声道不匹配时，该节点在对应 Prepared 中有效旁路并
+产生 owned diagnostic，配置 `isEnabled` 不变；下一次生效重新尝试。schema、stage、整数表示和
+Prepared 动态分配错误仍整批失败。没有可发现输出时 Save 只做设备无关结构校验，资源读取延后到
 真正得到布局的生效边界。
 
 Graphic EQ 保存 `0...512` 个按频率严格升序的正有限频率控制点，不设输入频率上限，gain 为
@@ -52,12 +55,16 @@ Graphic EQ 保存 `0...512` 个按频率严格升序的正有限频率控制点�
 Import/Export/Invert/Normalize/Reset 工具；所有表格编辑在弹窗关闭时一次提交。
 
 Runtime ABI v3 的 Convolution stage 引用 Prepared 中的 planar taps。Graphic EQ FIR 与 WAV IR
-共同使用该 stage；每个 kernel 前 256 taps
-逐样本直接卷积，余下 tail 使用 256-frame partition、512-point FFT 的 overlap-add，因此不引入
-算法延迟并可与 Gain/Biquad 任意排序。所有 taps 复制、FFT plan 和频谱预计算均在控制线程完成；
-回调只使用预分配状态。单 Prepared 最多 8 个 Convolution stages，所有声道实例 taps 合计最多
-131072；未引用 descriptor、格式错误和全局容量超限均在发布前失败。WAV taps 在每次生效时重新
-生成并由新 Prepared 深拷贝持有，不使用跨生效周期的长期 IR 缓存。
+共同使用该 stage；每个 kernel 前 256 taps 逐样本 Float64 direct FIR，余下 tail 按
+`256×1 @ 256`、`512×≤4 @ 512`、`2048×≤8 @ 2560`、`16384×N @ 18944` 分段，使用
+Accelerate Float64 packed-real FFT 与 deadline-distributed MAC。调度由累计 sample cursor 的
+256-sample quantum 驱动，与 callback 分块无关，保持第 0 帧响应和零算法延迟。相同 taps 共享
+immutable FFT setup/spectra；每个声道、stage 和 execution slot 的 history、job 与 timeline 独立。
+所有 taps copy、FFT setup、频谱和状态分配在 control path 完成，callback 只执行预分配 vDSP 和
+array 运算。单 Prepared 最多 8 个 Convolution stages，但不限制每个 kernel 或所有实例 taps 数量；
+`uint32_t tapCount` 无法表示、非法 taps、未引用 descriptor 或动态分配失败均在发布前失败并保留
+旧活动链。normal/pending/bypass publication 使用 build-then-commit，只有 inactive slot 完整构建后
+才交换 owner/generation/ticket。WAV taps 每次生效重新生成并由 Prepared 持有，不使用跨生效长期缓存。
 
 `M1ConfigurationStore` actor 串行化完整快照提交。它通过同目录临时文件、文件同步、原子
 替换和目录同步维护 `config.json` 与上一版完整 `config.previous.json`；首次创建和 Repair
@@ -90,9 +97,15 @@ typed 剪贴板和 Undo/Redo。剪贴板沿用规范 JSON 和 `4 MiB` 限制；U
 节点的更新，其他编辑形成独立历史步骤。草稿与独立已保存基线按语义比较，历史淘汰不改变
 未保存判断。
 
-主窗口只暴露一个 Processing 控件。停止状态下开启会使用已保存配置启动路线；运行中关闭
-只通过独立 Runtime 通道以 10 ms dry/wet 混合旁路效果而不销毁路线，wet chain 状态继续推进，
-再次开启从热状态恢复效果。真正的 Start/Stop 位于
+主窗口只暴露一个 Processing 控件。停止状态下开启会使用已保存配置启动路线。运行中关闭的
+**目标合同**是以 10 ms wet→dry 淡出后停止全部 wet DSP，只保留 `采集 → finite sanitize → 输出`
+的应用内直通；Tap、Aggregate、Audio Unit 和 Runtime handle 不销毁。重新开启时保持 dry，在控制
+线程按 `runtimeBaseline.nodes` 构建并安装 fresh Prepared 后再 10 ms 淡入，不恢复缺失输入历史的
+旧状态。Accepted [`ADR-0018`](./adr/0018-computational-processing-bypass.md) 已将该目标实现为
+callback dry fast path、block-boundary ack 与 fresh Prepared 冷恢复。
+
+ADR-0018 computational bypass 和 ADR-0019 Float64 deadline-distributed 多级卷积均已完成
+hostless/Release/签名候选和用户真实音频验收，M10 已完成并关闭。真正的 Start/Stop 位于
 高级 Audio 命令，用于生命周期和恢复。Runtime 已应用的效果状态独立于草稿记录，失败的
 持久化或 Runtime 切换不会让 Processing 控件冒充成功。效果切换随后以最近一次成功保存的
 节点链提交完整快照；
@@ -140,11 +153,12 @@ flowchart LR
     E[预分配固定容量 SPSC]
     F[有限值清理]
     G[已编译的每声道有序<br/>Gain / Biquad / Convolution chain]
-    H[有限值边界与 10 ms<br/>双链 / dry-wet 切换]
+    H[有限值边界与 10 ms<br/>双链 / Processing 切换]
     I[绑定并校验临时设备 ID 与格式的<br/>DefaultOutput Audio Unit]
     J[扬声器或耳机]
 
     A --> B --> C --> D --> E --> F --> G --> H --> I --> J
+    F -. M10 fully-bypassed 目标<br/>当前未实现 .-> I
 ```
 
 启动构建期间，实际路线 Tap 先以 `.unmuted` 创建；捕获 IOProc 注册后，在同一 Tap 上完成权限
@@ -391,8 +405,8 @@ flowchart LR
   但未执行 hosted 自动化验收。
 - M2 Graphic EQ 已完成 hostless 数值、状态、发布和产品层验证，但尚未执行 hosted GUI 或真实
   音频验收。
-- M3 Convolution 已完成 hostless 文件、SRC、数值、容量、发布和产品层验证，但尚未执行 hosted
-  文件选择器、GUI 或真实音频验收；sidecar 当前不执行自动垃圾回收。
+- M3 Convolution 的历史 sidecar、SRC 与固定容量契约已分别被 M8 source-path 和 M10
+  原采样率/长度自由契约取代；当前文件选择器、GUI 与真实音频证据以 M8/M10 milestone 为准。
 - M4 已完成设备/服务事件监听、有界恢复、格式稳定确认与恢复输出释放、启动及运行期权限门禁、
   sleep/wake、权限提示和持久 UID 所有权复核的 hostless 实现；格式恢复听感已通过人工复测，
   冷启动拒权已通过人工复测；系统设置未使当前进程授权失效时，运行路线保持正常也已按平台

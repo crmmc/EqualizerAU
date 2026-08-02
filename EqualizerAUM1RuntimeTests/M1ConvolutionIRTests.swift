@@ -32,68 +32,32 @@ final class M1ConvolutionIRTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: storeDirectory.path))
     }
 
-    func testFloat32ImportAndWindowedSincSampleRateConversion() throws {
+    func testSampleRateMismatchBypassesWithoutResampling() throws {
         let source = temporaryDirectory.appendingPathComponent("delta.wav")
         try wavFloat32(sampleRate: 24_000, channels: [[1, 0, 0, 0]]).write(to: source)
         let store = M1ConvolutionIRStore(directoryURL: temporaryDirectory.appendingPathComponent("store"))
         let reference = M1ConvolutionIRStore.reference(sourceURL: source)
 
-        let loaded = try store.load(reference: reference, targetSampleRate: 48_000)
+        XCTAssertThrowsError(try store.load(reference: reference, targetSampleRate: 24_001.01)) {
+            XCTAssertEqual(
+                $0 as? M1ConvolutionIRError,
+                .sampleRateMismatch(source: 24_000, target: 24_001.01)
+            )
+        }
 
-        XCTAssertEqual(loaded.channels[0].count, 8)
-        XCTAssertEqual(loaded.targetSampleRate, 48_000)
-        XCTAssertTrue(loaded.channels[0].allSatisfy(\.isFinite))
-        XCTAssertEqual(loaded.channels[0][0], 0.5, accuracy: 0.0001)
+        let loaded = try store.load(reference: reference, targetSampleRate: 24_001)
+        XCTAssertEqual(loaded.channels[0], [1, 0, 0, 0])
+        XCTAssertEqual(loaded.sourceFrameCount, 4)
+        XCTAssertEqual(loaded.targetSampleRate, 24_001)
     }
 
-    func testHighRatioDownsamplingAttenuatesContentAboveTargetNyquist() throws {
-        let samples = (0..<16_384).map { $0.isMultiple(of: 2) ? Float(0.5) : Float(-0.5) }
-        let source = temporaryDirectory.appendingPathComponent("high-frequency.wav")
-        try wavFloat32(sampleRate: 768_000, channels: [samples]).write(to: source)
-        let store = M1ConvolutionIRStore(directoryURL: temporaryDirectory.appendingPathComponent("store"))
-        let reference = M1ConvolutionIRStore.reference(sourceURL: source)
-
-        let loaded = try store.load(reference: reference, targetSampleRate: 48_000)
-        let interior = loaded.channels[0].dropFirst(32).dropLast(32)
-
-        XCTAssertFalse(interior.isEmpty)
-        XCTAssertLessThan(interior.map { abs($0) }.max() ?? 1, 0.01)
-    }
-
-    func testExtremeRateSingleFrameResamplingUsesZeroExtensionAndPreservesImpulseGain() throws {
-        let store = M1ConvolutionIRStore(directoryURL: temporaryDirectory.appendingPathComponent("store"))
-        let downsampleSource = temporaryDirectory.appendingPathComponent("single-768k.wav")
-        try wavFloat32(sampleRate: 768_000, channels: [[1]]).write(to: downsampleSource)
-        let downsampleReference = M1ConvolutionIRStore.reference(sourceURL: downsampleSource)
-        let downsampled = try store.load(reference: downsampleReference, targetSampleRate: 8_000)
-        XCTAssertEqual(downsampled.channels[0].count, 1)
-        XCTAssertEqual(downsampled.channels[0][0], 1, accuracy: 0.0001)
-
-        let upsampleSource = temporaryDirectory.appendingPathComponent("single-8k.wav")
-        try wavFloat32(sampleRate: 8_000, channels: [[1]]).write(to: upsampleSource)
-        let upsampleReference = M1ConvolutionIRStore.reference(sourceURL: upsampleSource)
-        let upsampled = try store.load(reference: upsampleReference, targetSampleRate: 768_000)
-        XCTAssertEqual(upsampled.channels[0].count, 96)
-        XCTAssertEqual(upsampled.channels[0][0], 1.0 / 96.0, accuracy: 0.0001)
-        XCTAssertLessThan(abs(upsampled.channels[0].last!), 0.001)
-
-        let centeredSource = temporaryDirectory.appendingPathComponent("centered-delta-8k.wav")
-        var centeredDelta = Array(repeating: Float.zero, count: 65)
-        centeredDelta[32] = 1
-        try wavFloat32(sampleRate: 8_000, channels: [centeredDelta]).write(to: centeredSource)
-        let centeredReference = M1ConvolutionIRStore.reference(sourceURL: centeredSource)
-        let centered = try store.load(reference: centeredReference, targetSampleRate: 768_000)
-        XCTAssertEqual(centered.channels[0].reduce(0, +), 1, accuracy: 0.001)
-    }
-
-    func testRejectsNonWAVCompressionFloat64EmptyOverDurationOversizeAndNonFinite() throws {
+    func testRejectsInvalidWAVEncodingEmptyAndNonFiniteSamples() throws {
         let store = M1ConvolutionIRStore(directoryURL: temporaryDirectory.appendingPathComponent("store"))
         let fixtures: [(String, Data, M1ConvolutionIRError)] = [
             ("not.wav", Data("not wave".utf8), .invalidWAV),
             ("compressed.wav", wav(format: 6, bits: 8, sampleRate: 48_000, channels: 1, payload: Data([0])), .unsupportedEncoding),
             ("float64.wav", wav(format: 3, bits: 64, sampleRate: 48_000, channels: 1, payload: Data(repeating: 0, count: 8)), .unsupportedEncoding),
             ("empty.wav", wav(format: 1, bits: 16, sampleRate: 48_000, channels: 1, payload: Data()), .emptyAudio),
-            ("long.wav", wavPCM16(sampleRate: 48_000, channels: [Array(repeating: 0, count: 96_001)]), .durationExceeded),
             ("nan.wav", wavFloat32Bits(sampleRate: 48_000, bits: [Float.nan.bitPattern]), .invalidSample),
             ("infinity.wav", wavFloat32Bits(sampleRate: 48_000, bits: [Float.infinity.bitPattern]), .invalidSample),
             ("subnormal.wav", wavFloat32Bits(sampleRate: 48_000, bits: [1]), .invalidSample),
@@ -106,13 +70,140 @@ final class M1ConvolutionIRTests: XCTestCase {
                 XCTAssertEqual($0 as? M1ConvolutionIRError, expected, name)
             }
         }
+    }
 
-        let oversized = temporaryDirectory.appendingPathComponent("oversized.wav")
-        try Data(repeating: 0, count: M1ConvolutionIRStore.maximumFileSize + 1).write(to: oversized)
-        let oversizedReference = M1ConvolutionIRStore.reference(sourceURL: oversized)
-        XCTAssertThrowsError(try store.load(reference: oversizedReference, targetSampleRate: 48_000)) {
-            XCTAssertEqual($0 as? M1ConvolutionIRError, .fileTooLarge)
+    func testRejectsNonRegularAndImpossibleSparseRIFFBeforeReadingBody() throws {
+        let store = M1ConvolutionIRStore(directoryURL: temporaryDirectory.appendingPathComponent("store"))
+        let directoryReference = M1ConvolutionIRStore.reference(sourceURL: temporaryDirectory)
+        XCTAssertThrowsError(try store.load(reference: directoryReference, targetSampleRate: 48_000)) {
+            XCTAssertEqual($0 as? M1ConvolutionIRError, .resourceIO)
         }
+
+        let sparse = temporaryDirectory.appendingPathComponent("oversized-sparse.wav")
+        XCTAssertTrue(FileManager.default.createFile(
+            atPath: sparse.path,
+            contents: Data(repeating: 0, count: 12)
+        ))
+        let handle = try FileHandle(forWritingTo: sparse)
+        try handle.truncate(atOffset: UInt64(UInt32.max) + 9)
+        try handle.close()
+        let sparseReference = M1ConvolutionIRStore.reference(sourceURL: sparse)
+        XCTAssertThrowsError(try store.load(reference: sparseReference, targetSampleRate: 48_000)) {
+            XCTAssertEqual($0 as? M1ConvolutionIRError, .invalidWAV)
+        }
+    }
+
+    func testLongIRLoadsCreatesPreparedStateAndReportsPerformanceWarning() throws {
+        let source = temporaryDirectory.appendingPathComponent("long.wav")
+        var samples = Array(repeating: Float.zero, count: 384_000)
+        samples[0] = 1
+        try wavFloat32(sampleRate: 48_000, channels: [samples]).write(to: source)
+        let store = M1ConvolutionIRStore(directoryURL: temporaryDirectory.appendingPathComponent("store"))
+        let reference = M1ConvolutionIRStore.reference(sourceURL: source)
+        let mono = M1OutputLayoutSnapshot(
+            sampleRate: 48_000,
+            maximumFrameCount: 512,
+            bufferChannelCounts: [1],
+            semanticPositionsByChannelIndex: [.left]
+        )!
+
+        let threshold = try M1ProcessingBuilder.build(
+            nodes: [.convolution(ir: reference)],
+            layout: mono,
+            irLoader: store
+        )
+        XCTAssertFalse(try XCTUnwrap(threshold.diagnostics.convolutionSources.first).hasPerformanceWarning)
+        guard case let .convolution(_, thresholdTaps) = try XCTUnwrap(
+            threshold.stagesByChannel[0].first
+        ) else {
+            return XCTFail("Expected convolution stage")
+        }
+        XCTAssertEqual(thresholdTaps, [1])
+
+        samples.append(0)
+        try wavFloat32(sampleRate: 48_000, channels: [samples]).write(to: source)
+        let overThreshold = try M1ProcessingBuilder.build(
+            nodes: [.convolution(ir: reference)],
+            layout: mono,
+            irLoader: store
+        )
+        let sourceDiagnostic = try XCTUnwrap(overThreshold.diagnostics.convolutionSources.first)
+        XCTAssertTrue(sourceDiagnostic.hasPerformanceWarning)
+        XCTAssertEqual(sourceDiagnostic.sourceFrameCount, 384_001)
+        XCTAssertEqual(sourceDiagnostic.targetFrameCount, 384_001)
+        guard case let .convolution(_, overThresholdTaps) = try XCTUnwrap(
+            overThreshold.stagesByChannel[0].first
+        ) else {
+            return XCTFail("Expected convolution stage")
+        }
+        XCTAssertEqual(overThresholdTaps, [1])
+        let prepared = try M1RuntimePreparedStateFactory.create(
+            stagesByChannel: overThreshold.stagesByChannel
+        )
+        EAUM1PreparedStateDestroy(prepared)
+    }
+
+    func testBuilderTrimsOnlyExactTrailingZerosFromRuntimeTaps() throws {
+        let fixture = try makeStore(channels: [
+            [1, 0, 0.5, 0, 0],
+            [0, 0, 0, 0, 0],
+        ])
+        let reference = try XCTUnwrap(fixture.reference)
+        let loaded = try fixture.store.load(reference: reference, targetSampleRate: 48_000)
+        XCTAssertEqual(loaded.channels.map(\.count), [5, 5])
+
+        let result = try M1ProcessingBuilder.build(
+            nodes: [.convolution(ir: reference)],
+            layout: stereoLayout(),
+            irLoader: fixture.store
+        )
+        guard case let .convolution(_, leftTaps) = try XCTUnwrap(
+            result.stagesByChannel[0].first
+        ), case let .convolution(_, rightTaps) = try XCTUnwrap(
+            result.stagesByChannel[1].first
+        ) else {
+            return XCTFail("Expected convolution stages")
+        }
+        XCTAssertEqual(leftTaps, [1, 0, 0.5])
+        XCTAssertEqual(rightTaps, [0])
+        XCTAssertEqual(result.diagnostics.convolutionSources.first?.sourceFrameCount, 5)
+        XCTAssertEqual(result.diagnostics.convolutionSources.first?.targetFrameCount, 5)
+    }
+
+    func testTwoAndNineSecondUnitImpulsesCompileToIdenticalRuntimeStages() throws {
+        let shortURL = temporaryDirectory.appendingPathComponent("unit-2s.wav")
+        let longURL = temporaryDirectory.appendingPathComponent("unit-9s.wav")
+        var shortSamples = Array(repeating: Float.zero, count: 96_000)
+        var longSamples = Array(repeating: Float.zero, count: 432_000)
+        shortSamples[0] = 1
+        longSamples[0] = 1
+        try wavFloat32(sampleRate: 48_000, channels: [shortSamples]).write(to: shortURL)
+        try wavFloat32(sampleRate: 48_000, channels: [longSamples]).write(to: longURL)
+
+        let store = M1ConvolutionIRStore(directoryURL: temporaryDirectory.appendingPathComponent("store"))
+        let nodeID = UUID()
+        let short = try M1ProcessingBuilder.build(
+            nodes: [.convolution(
+                id: nodeID,
+                ir: M1ConvolutionIRStore.reference(sourceURL: shortURL)
+            )],
+            layout: stereoLayout(),
+            irLoader: store
+        )
+        let long = try M1ProcessingBuilder.build(
+            nodes: [.convolution(
+                id: nodeID,
+                ir: M1ConvolutionIRStore.reference(sourceURL: longURL)
+            )],
+            layout: stereoLayout(),
+            irLoader: store
+        )
+
+        XCTAssertEqual(short.stagesByChannel, long.stagesByChannel)
+        XCTAssertEqual(short.diagnostics.convolutionSources.first?.sourceFrameCount, 96_000)
+        XCTAssertEqual(long.diagnostics.convolutionSources.first?.sourceFrameCount, 432_000)
+        XCTAssertFalse(try XCTUnwrap(short.diagnostics.convolutionSources.first).hasPerformanceWarning)
+        XCTAssertTrue(try XCTUnwrap(long.diagnostics.convolutionSources.first).hasPerformanceWarning)
     }
 
     func testRejectsMalformedExtensibleEncodingAndUnsupportedSampleRatesWithoutTrapping() throws {
@@ -206,6 +297,30 @@ final class M1ConvolutionIRTests: XCTestCase {
         XCTAssertEqual(restored.stagesByChannel.map(\.count), [1, 1])
     }
 
+    func testBuilderBypassesSampleRateMismatchWithoutResampling() throws {
+        let source = temporaryDirectory.appendingPathComponent("mismatched.wav")
+        try wavFloat32(sampleRate: 44_100, channels: [[1, 0]]).write(to: source)
+        let reference = M1ConvolutionIRStore.reference(sourceURL: source)
+        let node = M1ProcessingNode.convolution(ir: reference)
+        let result = try M1ProcessingBuilder.build(
+            nodes: [node],
+            layout: stereoLayout(),
+            irLoader: M1ConvolutionIRStore(directoryURL: temporaryDirectory)
+        )
+
+        XCTAssertEqual(result.stagesByChannel, [[], []])
+        XCTAssertEqual(
+            result.diagnostics.convolutionBypasses,
+            [
+                M1ConvolutionBypassDiagnostic(
+                    nodeID: node.id,
+                    source: reference,
+                    reason: .resource(.sampleRateMismatch(source: 44_100, target: 48_000))
+                ),
+            ]
+        )
+    }
+
     func testCancelledMissingSourceLoadPreservesCancellation() async {
         let reference = M1ConvolutionIRReference(sourcePath: "/missing/cancelled.wav")
         let store = M1ConvolutionIRStore()
@@ -237,12 +352,13 @@ final class M1ConvolutionIRTests: XCTestCase {
 
         XCTAssertEqual(result.processingLatencyFrames, 0)
         XCTAssertEqual(result.diagnostics.convolutionSources.count, 1)
+        XCTAssertFalse(result.diagnostics.convolutionSources[0].hasPerformanceWarning)
         for stages in result.stagesByChannel {
             guard case .gain = stages[0], case let .convolution(nodeID, taps) = stages[1] else {
                 return XCTFail("expected Gain followed by Convolution")
             }
             XCTAssertEqual(nodeID, convolution.id)
-            XCTAssertFloatArraysEqual(taps, [1, 0, 0], accuracy: 0.000_1)
+            XCTAssertFloatArraysEqual(taps, [1], accuracy: 0.000_1)
         }
     }
 
@@ -312,7 +428,7 @@ final class M1ConvolutionIRTests: XCTestCase {
         }
     }
 
-    func testBuilderAccumulatesSerialLatencyAndEnforcesTotalTapCapacity() throws {
+    func testBuilderAccumulatesSerialLatencyAndAllowsFormerTotalTapBoundary() throws {
         let short = try makeStore(channels: [[1]])
         let serial = try M1ProcessingBuilder.build(
             nodes: [
@@ -324,14 +440,18 @@ final class M1ConvolutionIRTests: XCTestCase {
         )
         XCTAssertEqual(serial.processingLatencyFrames, 0)
 
-        let long = try makeStore(channels: [Array(repeating: 0, count: 65_537)])
-        XCTAssertThrowsError(try M1ProcessingBuilder.build(
+        var longTaps = Array(repeating: Float.zero, count: 65_537)
+        longTaps[0] = 1
+        longTaps[longTaps.count - 1] = 0.5
+        let long = try makeStore(channels: [longTaps])
+        let compiled = try M1ProcessingBuilder.build(
             nodes: [.convolution(ir: long.reference!)],
             layout: stereoLayout(),
             irLoader: long.store
-        )) {
-            XCTAssertEqual($0 as? M1ProcessingBuildError, .convolutionTapCapacityExceeded)
-        }
+        )
+        XCTAssertEqual(compiled.stagesByChannel.map(\.count), [1, 1])
+        let prepared = try M1RuntimePreparedStateFactory.create(stagesByChannel: compiled.stagesByChannel)
+        EAUM1PreparedStateDestroy(prepared)
     }
 
     func testSwiftBridgeCreatesV3PreparedStateWithConvolutionDescriptors() throws {
@@ -345,6 +465,23 @@ final class M1ConvolutionIRTests: XCTestCase {
         XCTAssertNotNil(prepared)
         EAUM1PreparedStateDestroy(prepared)
         XCTAssertEqual(EAUM1RuntimeABIVersion(), 3)
+    }
+
+    func testCancelledPreparedCreationStopsBeforeNativeWork() async {
+        let cancelled = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            do {
+                _ = try M1RuntimePreparedStateFactory.create(stagesByChannel: [[
+                    .convolution(nodeID: UUID(), taps: [1]),
+                ]])
+                return false
+            } catch is CancellationError {
+                return true
+            } catch {
+                return false
+            }
+        }.value
+        XCTAssertTrue(cancelled)
     }
 
     private func makeStore(channels: [[Float]]) throws -> (store: M1ConvolutionIRStore, reference: M1ConvolutionIRReference?) {

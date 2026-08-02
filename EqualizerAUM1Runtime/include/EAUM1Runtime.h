@@ -12,8 +12,6 @@ extern "C" {
 #define EAUM1_MAX_PREPARED_STAGE_COUNT 4096u
 #define EAUM1_CONVOLUTION_PARTITION_SIZE 256u
 #define EAUM1_CONVOLUTION_FFT_SIZE 512u
-#define EAUM1_MAX_CONVOLUTION_TAPS 384000u
-#define EAUM1_MAX_TOTAL_CONVOLUTION_TAPS 131072u
 #define EAUM1_MAX_CONVOLUTION_STAGES 8u
 
 typedef int32_t EAUM1Status;
@@ -27,6 +25,16 @@ enum {
     EAUM1StatusCapacityExceeded = 5,
     EAUM1StatusCallbackOverlap = 6,
     EAUM1StatusStaleRetirementTicket = 7,
+    EAUM1StatusNotReady = 8,
+};
+
+typedef uint32_t EAUM1EffectsState;
+
+enum {
+    EAUM1EffectsStateActive = 1,
+    EAUM1EffectsStateFadingOut = 2,
+    EAUM1EffectsStateBypassed = 3,
+    EAUM1EffectsStateFadingIn = 4,
 };
 
 enum {
@@ -167,6 +175,21 @@ EAUM1Status EAUM1RuntimePublishPrepared(
     EAUM1PublicationOutcome *outcomeOut
 );
 
+/* No-allocation preflight; replace still repeats every safety check. */
+EAUM1Status EAUM1RuntimeCanReplacePreparedWhileBypassed(
+    const EAUM1Runtime *runtime
+);
+
+/*
+ * Fully-bypassed control operation. On success, installs a fresh execution
+ * state without a wet-chain crossfade and consumes *candidateInOut.
+ */
+EAUM1Status EAUM1RuntimeReplacePreparedWhileBypassed(
+    EAUM1Runtime *runtime,
+    EAUM1PreparedState **candidateInOut,
+    EAUM1PublicationOutcome *outcomeOut
+);
+
 /*
  * Polls one exact transition ticket. A stale ticket never reclaims memory.
  * Control owns the 1 ms polling cadence, 100 ms deadline and bridge generation.
@@ -188,6 +211,12 @@ void EAUM1RuntimeDestroy(EAUM1Runtime *runtime);
 
 /* Control-thread operation. The callback reads this lock-free value once per block. */
 EAUM1Status EAUM1RuntimeSetEffectsEnabled(EAUM1Runtime *runtime, uint8_t effectsEnabled);
+
+/* Lock-free acknowledged callback state. */
+EAUM1Status EAUM1RuntimeCopyEffectsState(
+    const EAUM1Runtime *runtime,
+    EAUM1EffectsState *stateOut
+);
 
 /*
  * In-place processing for the topology supplied at runtime creation. An

@@ -12,6 +12,13 @@ struct M1RuntimeCounters: Equatable, Sendable {
     let overlappingCallbacks: UInt64
 }
 
+enum M1RuntimeEffectsState: Equatable, Sendable {
+    case active
+    case fadingOut
+    case bypassed
+    case fadingIn
+}
+
 enum M1RuntimePreparedStateFactory {
     static func create(stagesByChannel: [[M1CompiledProcessingStage]]) throws -> OpaquePointer {
         guard let channelCount = UInt32(exactly: stagesByChannel.count), channelCount > 0 else {
@@ -78,7 +85,8 @@ enum M1RuntimePreparedStateFactory {
         var prepared: OpaquePointer?
         var convolutionDescriptors: [EAUM1PreparedConvolution] = []
         convolutionDescriptors.reserveCapacity(convolutionTaps.count)
-        let status = withUnsafeConvolutionDescriptors(
+        try Task.checkCancellation()
+        let status = try withUnsafeConvolutionDescriptors(
             taps: convolutionTaps,
             index: 0,
             descriptors: &convolutionDescriptors
@@ -99,6 +107,12 @@ enum M1RuntimePreparedStateFactory {
         guard status == EAUM1StatusOK, let prepared else {
             throw M1AudioIOError.invalidConfiguration("Prepared creation failed: \(status)")
         }
+        do {
+            try Task.checkCancellation()
+        } catch {
+            EAUM1PreparedStateDestroy(prepared)
+            throw error
+        }
         return prepared
     }
 
@@ -107,12 +121,15 @@ enum M1RuntimePreparedStateFactory {
         index: Int,
         descriptors: inout [EAUM1PreparedConvolution],
         _ body: ([EAUM1PreparedConvolution]) throws -> Result
-    ) rethrows -> Result {
+    ) throws -> Result {
         guard index < taps.count else { return try body(descriptors) }
         return try taps[index].withUnsafeBufferPointer { values in
+            guard let tapCount = UInt32(exactly: values.count) else {
+                throw M1AudioIOError.invalidConfiguration("Convolution tap count is not representable")
+            }
             descriptors.append(
                 EAUM1PreparedConvolution(
-                    tapCount: UInt32(values.count),
+                    tapCount: tapCount,
                     taps: values.baseAddress
                 )
             )
@@ -191,6 +208,66 @@ actor M1RuntimeLeaseAccess: M1RetirementMaintenanceAccess {
         throw M1AudioIOError.invalidState("Prepared publication returned no disposition")
     }
 
+    func canReplaceWhileBypassed(bridgeGeneration: UInt64) throws -> Bool {
+        guard let retained = lease, retained.bridgeGeneration == bridgeGeneration else {
+            throw M1AudioIOError.generationMismatch
+        }
+        let status = EAUM1RuntimeCanReplacePreparedWhileBypassed(retained.pointer)
+        if status == EAUM1StatusNotReady { return false }
+        guard status == EAUM1StatusOK else {
+            throw M1AudioIOError.invalidState("Bypassed replacement unavailable: \(status)")
+        }
+        return true
+    }
+
+    func replaceWhileBypassed(
+        stagesByChannel: [[M1CompiledProcessingStage]],
+        configurationGeneration: UInt64?,
+        bridgeGeneration: UInt64
+    ) throws -> Bool {
+        guard let retained = lease, retained.bridgeGeneration == bridgeGeneration else {
+            throw M1AudioIOError.generationMismatch
+        }
+        var prepared: OpaquePointer? = try M1RuntimePreparedStateFactory.create(
+            stagesByChannel: stagesByChannel
+        )
+        var outcome = EAUM1PublicationOutcome()
+        let status = EAUM1RuntimeReplacePreparedWhileBypassed(
+            retained.pointer,
+            &prepared,
+            &outcome
+        )
+        if let prepared { EAUM1PreparedStateDestroy(prepared) }
+        if status == EAUM1StatusNotReady { return false }
+        guard status == EAUM1StatusOK,
+              outcome.flags & UInt32(EAUM1PublicationCandidatePublished) != 0
+        else {
+            throw M1AudioIOError.invalidConfiguration("Bypassed replacement failed: \(status)")
+        }
+        if let configurationGeneration {
+            activeConfigurationGeneration = configurationGeneration
+            pendingConfigurationGeneration = nil
+        }
+        return true
+    }
+
+    func enableEffects(
+        bridgeGeneration: UInt64,
+        activationToken: M1EffectsActivationToken
+    ) throws {
+        guard let retained = lease, retained.bridgeGeneration == bridgeGeneration else {
+            throw M1AudioIOError.generationMismatch
+        }
+        guard let status = activationToken.performIfCurrent({
+            EAUM1RuntimeSetEffectsEnabled(retained.pointer, 1)
+        }) else {
+            throw CancellationError()
+        }
+        guard status == EAUM1StatusOK else {
+            throw M1AudioIOError.invalidState("effects update failed: \(status)")
+        }
+    }
+
     func setEffectsEnabled(_ enabled: Bool, bridgeGeneration: UInt64) throws {
         guard let retained = lease, retained.bridgeGeneration == bridgeGeneration else {
             throw M1AudioIOError.generationMismatch
@@ -198,6 +275,24 @@ actor M1RuntimeLeaseAccess: M1RetirementMaintenanceAccess {
         let status = EAUM1RuntimeSetEffectsEnabled(retained.pointer, enabled ? 1 : 0)
         guard status == EAUM1StatusOK else {
             throw M1AudioIOError.invalidState("effects update failed: \(status)")
+        }
+    }
+
+    func effectsState(bridgeGeneration: UInt64) throws -> M1RuntimeEffectsState {
+        guard let retained = lease, retained.bridgeGeneration == bridgeGeneration else {
+            throw M1AudioIOError.generationMismatch
+        }
+        var state: EAUM1EffectsState = 0
+        let status = EAUM1RuntimeCopyEffectsState(retained.pointer, &state)
+        guard status == EAUM1StatusOK else {
+            throw M1AudioIOError.invalidState("effects state unavailable: \(status)")
+        }
+        switch state {
+        case EAUM1EffectsState(EAUM1EffectsStateActive): return .active
+        case EAUM1EffectsState(EAUM1EffectsStateFadingOut): return .fadingOut
+        case EAUM1EffectsState(EAUM1EffectsStateBypassed): return .bypassed
+        case EAUM1EffectsState(EAUM1EffectsStateFadingIn): return .fadingIn
+        default: throw M1AudioIOError.invalidState("unknown effects state: \(state)")
         }
     }
 

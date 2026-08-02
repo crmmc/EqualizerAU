@@ -3,9 +3,11 @@
 > **当前状态**：已完成并关闭；hostless 实现由 M4 T10–T15 真实音频和 M5-B 编辑器人工验收补齐
 
 本文记录 M3 当时的 schema v4 immutable sidecar 契约。2026-07-28 批准的
-[`ADR-0014`](../adr/0014-convolution-source-path-loading.md) 和
-[`M8`](./M8-convolution-source-path.md) 已取代资源复制、storage ID、预检及资源错误整批失败语义；
-ABI v3 hybrid convolution、WAV/SRC、声道映射、容量与实时边界继续有效。
+[`ADR-0014`](../adr/0014-convolution-source-path-loading.md) 和 [`M8`](./M8-convolution-source-path.md)
+已取代资源复制、storage ID、预检及资源错误整批失败语义；2026-07-30 批准的
+[`ADR-0017`](../adr/0017-unbounded-convolution-ir.md) 和 [`M10`](./M10-convolution-ir-length.md)
+进一步取代 IR SRC、32 MiB/2 秒和固定 taps 容量。ABI v3 hybrid convolution、声道映射、
+Prepared 所有权与 realtime callback 边界继续有效。
 
 ## 1. 目标
 

@@ -99,7 +99,9 @@ final class M1AppModel: ObservableObject {
         activeConfigurationGeneration: nil,
         expectedConfigurationGeneration: nil,
         realtimeDiagnostics: nil,
+        requestedEffectsEnabled: M1ConfigurationSnapshot.transparentRecovery.effectsEnabled,
         appliedEffectsEnabled: nil,
+        processingTransition: .idle,
         canEdit: false,
         canSetEffects: false,
         canSave: false,
@@ -346,7 +348,9 @@ final class M1AppModel: ObservableObject {
     func refreshDiagnostics() { perform { try await self.controller.refreshDiagnostics() } }
     func setEffects(_ enabled: Bool) { perform { try await self.controller.setEffectsEnabled(enabled) } }
     func setProcessing(_ enabled: Bool) {
-        perform { try await self.controller.setProcessingEnabled(enabled) }
+        perform(waitsForPredecessor: false) {
+            try await self.controller.setProcessingEnabled(enabled)
+        }
     }
 
     private func selectWAV() -> URL? {
@@ -439,13 +443,16 @@ final class M1AppModel: ObservableObject {
         return decision
     }
 
-    private func perform(_ operation: @escaping @MainActor () async throws -> Void) {
+    private func perform(
+        waitsForPredecessor: Bool = true,
+        _ operation: @escaping @MainActor () async throws -> Void
+    ) {
         guard !terminationPending else { return }
         commandSequence &+= 1
         let predecessor = commandTask
         let precedingEdits = editTask
-        let task = Task {
-            await predecessor?.value
+        let operationTask = Task {
+            if waitsForPredecessor { await predecessor?.value }
             await precedingEdits?.value
             async let operationResult: Void = operation()
             await Task.yield()
@@ -461,7 +468,14 @@ final class M1AppModel: ObservableObject {
                 snapshot = await controller.snapshot()
             }
         }
-        commandTask = task
+        if waitsForPredecessor {
+            commandTask = operationTask
+        } else {
+            commandTask = Task {
+                await predecessor?.value
+                await operationTask.value
+            }
+        }
     }
 
     private func performEdit(
@@ -708,7 +722,7 @@ private final class M1TerminationDelegate: NSObject, NSApplicationDelegate {
             keyEquivalent: ""
         )
         processing.target = self
-        processing.state = snapshot?.processingEnabled == true ? .on : .off
+        processing.state = snapshot?.processingRequested == true ? .on : .off
         processing.isEnabled = snapshot?.canSetProcessing == true
         menu.addItem(processing)
         menu.addItem(.separator())
@@ -752,7 +766,7 @@ private final class M1TerminationDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleProcessingFromStatusItem(_ sender: Any?) {
         guard let model else { return }
-        model.setProcessing(!model.snapshot.processingEnabled)
+        model.setProcessing(!model.snapshot.processingRequested)
     }
 
     @objc private func selectLanguageFromStatusItem(_ sender: NSMenuItem) {
@@ -814,6 +828,16 @@ private final class M1TerminationDelegate: NSObject, NSApplicationDelegate {
             return String(localized: "Automatic recovery paused; start Processing to retry", locale: locale)
         case .permissionRequired:
             return String(localized: "System audio capture permission is required", locale: locale)
+        }
+        switch snapshot.processingTransition {
+        case .idle:
+            break
+        case .fadingOut:
+            return String(localized: "Bypassing processing…", locale: locale)
+        case .preparing:
+            return String(localized: "Preparing processing…", locale: locale)
+        case .fadingIn:
+            return String(localized: "Enabling processing…", locale: locale)
         }
         switch snapshot.persistence {
         case .clean:
@@ -1242,7 +1266,7 @@ private struct M1EditorView: View {
             Toggle(
                 "Processing",
                 isOn: Binding(
-                    get: { model.snapshot.processingEnabled },
+                    get: { model.snapshot.processingRequested },
                     set: { model.setProcessing($0) }
                 )
             )
@@ -1375,12 +1399,11 @@ private struct M1EditorView: View {
                     diagnostics: diagnostics
                 )
             }
-            if let diagnostics = model.snapshot.expectedDiagnostics,
-               let generation = model.snapshot.expectedConfigurationGeneration {
-                diagnosticLine(
-                    label: String(localized: "Expected G\(generation)", locale: locale),
-                    diagnostics: diagnostics
-                )
+            if let diagnostics = model.snapshot.expectedDiagnostics {
+                let label = model.snapshot.expectedConfigurationGeneration.map {
+                    String(localized: "Expected G\($0)", locale: locale)
+                } ?? String(localized: "Expected activation", locale: locale)
+                diagnosticLine(label: label, diagnostics: diagnostics)
             }
         }
         .font(.caption)
@@ -1404,6 +1427,16 @@ private struct M1EditorView: View {
             return "Automatic recovery paused; start Processing to retry"
         case .permissionRequired:
             return "System audio capture permission is required"
+        }
+        switch model.snapshot.processingTransition {
+        case .idle:
+            break
+        case .fadingOut:
+            return "Bypassing processing…"
+        case .preparing:
+            return "Preparing processing…"
+        case .fadingIn:
+            return "Enabling processing…"
         }
         switch model.snapshot.persistence {
         case .clean:
@@ -1734,10 +1767,17 @@ private struct M1EditorView: View {
                         .foregroundStyle(.orange)
                 } else if let source {
                     let duration = Double(source.sourceFrameCount) / source.sourceSampleRate
-                    Text("\(Int(source.sourceSampleRate)) Hz · \(source.sourceChannelCount) ch · \(duration.formatted(.number.precision(.fractionLength(3)))) s")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    if source.hasPerformanceWarning {
+                        Text("Performance may degrade · \(Int(source.sourceSampleRate)) Hz · \(source.sourceChannelCount) ch · \(duration.formatted(.number.precision(.fractionLength(3)))) s")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .lineLimit(1)
+                    } else {
+                        Text("\(Int(source.sourceSampleRate)) Hz · \(source.sourceChannelCount) ch · \(duration.formatted(.number.precision(.fractionLength(3)))) s")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 } else {
                     Text("Not loaded · Save or Start to apply")
                         .font(.caption)
@@ -1781,22 +1821,21 @@ private struct M1EditorView: View {
             return String(localized: "source unavailable", locale: locale)
         case .resource(.resourceIO):
             return String(localized: "source unreadable", locale: locale)
-        case .resource(.fileTooLarge):
-            return String(localized: "file exceeds 32 MiB", locale: locale)
         case .resource(.invalidWAV):
             return String(localized: "invalid WAV", locale: locale)
         case .resource(.unsupportedEncoding):
             return String(localized: "unsupported WAV encoding", locale: locale)
         case .resource(.invalidMetadata):
             return String(localized: "invalid WAV metadata", locale: locale)
+        case let .resource(.sampleRateMismatch(source, target)):
+            return String(
+                localized: "sample rate mismatch: \(Int(source)) Hz source, \(Int(target)) Hz output",
+                locale: locale
+            )
         case .resource(.emptyAudio):
             return String(localized: "empty WAV", locale: locale)
-        case .resource(.durationExceeded):
-            return String(localized: "IR exceeds 2 seconds", locale: locale)
         case .resource(.invalidSample):
             return String(localized: "invalid audio sample", locale: locale)
-        case .resource:
-            return String(localized: "source invalid", locale: locale)
         case let .channelCountMismatch(expected, actual):
             return String(localized: "expected \(expected) ch, found \(actual)", locale: locale)
         }

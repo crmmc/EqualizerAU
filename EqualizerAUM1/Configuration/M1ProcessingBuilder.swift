@@ -15,7 +15,6 @@ enum M1ProcessingBuildError: Error, Equatable, Sendable {
     case invalidGraphicEQTaps(nodeID: UUID)
     case invalidConvolutionIRReference(nodeID: UUID)
     case convolutionStageCapacityExceeded
-    case convolutionTapCapacityExceeded
     case stageCapacityExceeded(channel: M1ChannelIdentifier)
     case totalStageCapacityExceeded
 }
@@ -82,6 +81,7 @@ struct M1ConvolutionSourceDiagnostic: Equatable, Sendable {
     let sourceFrameCount: Int
     let targetSampleRate: Double
     let targetFrameCount: Int
+    let hasPerformanceWarning: Bool
 }
 
 enum M1ConvolutionBypassReason: Equatable, Sendable {
@@ -120,7 +120,6 @@ enum M1ProcessingBuilder {
     static let maximumStagesPerChannel = 512
     static let maximumPreparedStageCount = 4_096
     static let maximumConvolutionStages = Int(EAUM1_MAX_CONVOLUTION_STAGES)
-    static let maximumTotalConvolutionTaps = 131_072
     static let convolutionLatencyFrames = 0
     static let graphicEQDesignLength = 32_768
     static let graphicEQTapCount = 16_384
@@ -156,7 +155,6 @@ enum M1ProcessingBuilder {
         var convolutionSources: [M1ConvolutionSourceDiagnostic] = []
         var convolutionBypasses: [M1ConvolutionBypassDiagnostic] = []
         var convolutionStageCount = 0
-        var totalConvolutionTaps = 0
         var latencyByChannel = Array(repeating: 0, count: layout.channels.count)
         var reportedUnresolvedOwners: Set<UUID> = []
 
@@ -249,12 +247,8 @@ enum M1ProcessingBuilder {
                         stages: &stagesByChannel
                     )
                     convolutionStageCount += 1
-                    totalConvolutionTaps += taps.count
                     guard convolutionStageCount <= maximumConvolutionStages else {
                         throw M1ProcessingBuildError.convolutionStageCapacityExceeded
-                    }
-                    guard totalConvolutionTaps <= maximumTotalConvolutionTaps else {
-                        throw M1ProcessingBuildError.convolutionTapCapacityExceeded
                     }
                     stagesByChannel[index].append(.convolution(nodeID: node.id, taps: taps))
                     latencyByChannel[index] += convolutionLatencyFrames
@@ -302,6 +296,7 @@ enum M1ProcessingBuilder {
                     )
                     continue
                 }
+                let effectiveChannels = loaded.channels.map(effectiveConvolutionTaps)
                 convolutionSources.append(
                     M1ConvolutionSourceDiagnostic(
                         nodeID: node.id,
@@ -310,7 +305,10 @@ enum M1ProcessingBuilder {
                         sourceChannelCount: loaded.sourceChannelCount,
                         sourceFrameCount: loaded.sourceFrameCount,
                         targetSampleRate: loaded.targetSampleRate,
-                        targetFrameCount: loaded.channels[0].count
+                        targetFrameCount: loaded.channels[0].count,
+                        hasPerformanceWarning: Double(loaded.sourceFrameCount)
+                            > loaded.sourceSampleRate
+                                * M1ConvolutionIRStore.performanceWarningDurationSeconds
                     )
                 )
                 for (selectionOffset, index) in selectedIndexes.enumerated() {
@@ -319,16 +317,12 @@ enum M1ProcessingBuilder {
                         pending: &pendingPreampGainsByChannel,
                         stages: &stagesByChannel
                     )
-                    let taps = loaded.channels.count == 1
-                        ? loaded.channels[0]
-                        : loaded.channels[selectionOffset]
+                    let taps = effectiveChannels.count == 1
+                        ? effectiveChannels[0]
+                        : effectiveChannels[selectionOffset]
                     convolutionStageCount += 1
-                    totalConvolutionTaps += taps.count
                     guard convolutionStageCount <= maximumConvolutionStages else {
                         throw M1ProcessingBuildError.convolutionStageCapacityExceeded
-                    }
-                    guard totalConvolutionTaps <= maximumTotalConvolutionTaps else {
-                        throw M1ProcessingBuildError.convolutionTapCapacityExceeded
                     }
                     stagesByChannel[index].append(.convolution(nodeID: node.id, taps: taps))
                     latencyByChannel[index] += convolutionLatencyFrames
@@ -865,6 +859,16 @@ enum M1ProcessingBuilder {
         let upperLog = log(max(magnitudeSpectrum[upper], 1e-12))
         let magnitude = exp(lowerLog + (upperLog - lowerLog) * fraction)
         return 20 * log10(max(magnitude, 1e-12))
+    }
+
+    private static func effectiveConvolutionTaps(_ taps: [Float]) -> [Float] {
+        guard let lastNonzeroIndex = taps.lastIndex(where: { $0 != 0 }) else {
+            return [0]
+        }
+        guard lastNonzeroIndex != taps.index(before: taps.endIndex) else {
+            return taps
+        }
+        return Array(taps[...lastNonzeroIndex])
     }
 
     private static func appendPendingGainStage(
