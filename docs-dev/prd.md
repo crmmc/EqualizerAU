@@ -217,6 +217,7 @@ flowchart LR
   DSP 设计，域外点只保留、不参与目标计算；域外目标为 `0 dB`，不对输出硬切；
 - 默认配置保持 `0 dB` 透明目标；
 - 采样率变化后仍保持正确频响；
+- 频率分辨率不得随输出采样率升高而下降，高采样率用户不得获得更差的均衡精度；
 - 参数变化不得产生明显爆音或长期中断；
 - 控制点范围、插值、端点和容量语义在 M6 实施前形成独立契约。
 
@@ -356,6 +357,7 @@ MVP 完成需满足：
 | M8 Convolution 外部源路径 | schema v8 不复制 WAV，每次生效重新加载，资源局部故障可见旁路并自动恢复 |
 | M9 菜单栏与中英 i18n | 关闭窗口后 Dock 与菜单栏均驻留并恢复同一主窗口；精简菜单并支持中英切换 |
 | M10 Convolution 长度、computational bypass 与 long-IR 内核 | IR 不设文件时长/taps 配额且不做 SRC；Processing Off 停止 wet DSP；dense long IR 使用已测最优多级卷积 |
+| M11 Graphic EQ FIR 随采样率缩放 | 任意输出采样率下均衡频率分辨率不低于 48 kHz 基准，高采样率用户获得同等精度 |
 
 M0 已完成，详见 [`milestones/M0-native-route.md`](./milestones/M0-native-route.md)。M8、M9 已完成并关闭，
 验收证据分别见 [`milestones/M8-convolution-source-path.md`](./milestones/M8-convolution-source-path.md) 和
@@ -363,6 +365,8 @@ M0 已完成，详见 [`milestones/M0-native-route.md`](./milestones/M0-native-r
 ADR-0018 computational bypass 和 ADR-0019 Float64 deadline-distributed long-IR 内核均已完成
 自动化、Release probe、签名候选和用户真实音频验收；M10 已完成并关闭，证据见
 [`milestones/M10-convolution-ir-length.md`](./milestones/M10-convolution-ir-length.md)。
+M11 决策 [`ADR-0020`](./adr/0020-sample-rate-scaled-graphic-eq-fir.md) 已接受，实现与验收计划见
+[`milestones/M11-sample-rate-scaled-graphic-eq-fir.md`](./milestones/M11-sample-rate-scaled-graphic-eq-fir.md)。
 
 ## 12. 待确认产品事项
 
