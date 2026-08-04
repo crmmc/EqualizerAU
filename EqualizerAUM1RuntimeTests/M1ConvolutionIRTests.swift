@@ -93,9 +93,13 @@ final class M1ConvolutionIRTests: XCTestCase {
         }
     }
 
-    func testLongIRLoadsCreatesPreparedStateWithoutPerformanceWarning() throws {
+    func testLongIRLoadsCreatesPreparedStateAndReportsPerformanceWarningAtThirtySeconds() throws {
         let source = temporaryDirectory.appendingPathComponent("long.wav")
-        var samples = Array(repeating: Float.zero, count: 384_000)
+        // Exactly 30 s at 48 kHz must not warn; one frame over must warn.
+        var samples = Array(
+            repeating: Float.zero,
+            count: Int(48_000 * M1ConvolutionIRStore.performanceWarningDurationSeconds)
+        )
         samples[0] = 1
         try wavFloat32(sampleRate: 48_000, channels: [samples]).write(to: source)
         let store = M1ConvolutionIRStore(directoryURL: temporaryDirectory.appendingPathComponent("store"))
@@ -128,9 +132,12 @@ final class M1ConvolutionIRTests: XCTestCase {
             irLoader: store
         )
         let sourceDiagnostic = try XCTUnwrap(overThreshold.diagnostics.convolutionSources.first)
-        XCTAssertFalse(sourceDiagnostic.hasPerformanceWarning)
-        XCTAssertEqual(sourceDiagnostic.sourceFrameCount, 384_001)
-        XCTAssertEqual(sourceDiagnostic.targetFrameCount, 384_001)
+        XCTAssertTrue(sourceDiagnostic.hasPerformanceWarning)
+        XCTAssertEqual(
+            sourceDiagnostic.sourceFrameCount,
+            Int(48_000 * M1ConvolutionIRStore.performanceWarningDurationSeconds) + 1
+        )
+        XCTAssertEqual(sourceDiagnostic.targetFrameCount, sourceDiagnostic.sourceFrameCount)
         guard case let .convolution(_, overThresholdTaps) = try XCTUnwrap(
             overThreshold.stagesByChannel[0].first
         ) else {
@@ -203,6 +210,7 @@ final class M1ConvolutionIRTests: XCTestCase {
         XCTAssertEqual(short.diagnostics.convolutionSources.first?.sourceFrameCount, 96_000)
         XCTAssertEqual(long.diagnostics.convolutionSources.first?.sourceFrameCount, 432_000)
         XCTAssertFalse(try XCTUnwrap(short.diagnostics.convolutionSources.first).hasPerformanceWarning)
+        // 9 s is below the measured-safe band and the 30 s warning threshold.
         XCTAssertFalse(try XCTUnwrap(long.diagnostics.convolutionSources.first).hasPerformanceWarning)
     }
 

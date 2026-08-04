@@ -31,6 +31,12 @@ protocol M1ConvolutionIRLoading: Sendable {
 struct M1ConvolutionIRStore: M1ConvolutionIRLoading, Sendable {
     static let minimumSampleRate = 8_000.0
     static let maximumSampleRate = 768_000.0
+    /// Source duration above which the UI shows a non-blocking performance hint.
+    /// 2026-08-04: raised from 8 s after ADR-0019 / M11 Release probes on M1.
+    /// Dense ~9 s (432k) × 8 ch stayed under ~33% of a 5.33 ms deadline; 8 s was the
+    /// old 2 s product limit ×4, not a measured risk line. 30 s keeps common long IRs
+    /// quiet while still flagging multi-minute / multi-million-tap sources.
+    static let performanceWarningDurationSeconds = 30.0
 
     let directoryURL: URL
 

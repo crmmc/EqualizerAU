@@ -76,7 +76,7 @@ EqualizerAU 是一款独立运行的 macOS 全局音频处理工具。它通过�
 
 - 仅支持 Apple Silicon 和当前默认输出设备，不支持 Intel Mac 或手动选择输出设备。
 - 图形均衡器最多支持 512 个控制点，增益范围为 −24 至 +24 dB。
-- 卷积支持采样率 8–768 kHz 的 RIFF/WAVE PCM 8/16/24/32-bit 或 Float32，不限制文件时长或 taps；源采样率必须与当前输出匹配；末尾精确零值不进入 Runtime kernel。
+- 卷积支持采样率 8–768 kHz 的 RIFF/WAVE PCM 8/16/24/32-bit 或 Float32，不限制文件时长或 taps；源采样率必须与当前输出匹配，超过 30 秒时显示性能下降警告，末尾精确零值不进入 Runtime kernel。
 - 图形均衡器和卷积合计最多使用 8 个 convolution channel instances，但不设置单 kernel 或所有实例总 taps 上限。
 - system tap 与输出设备之间没有 realtime sample-rate conversion；格式不兼容时无法启动音频处理。
 - M10 的 ADR-0017 长度自由、Accepted [`ADR-0018`](docs-dev/adr/0018-computational-processing-bypass.md)

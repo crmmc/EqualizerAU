@@ -328,7 +328,9 @@ enum M1ProcessingBuilder {
                         sourceFrameCount: loaded.sourceFrameCount,
                         targetSampleRate: loaded.targetSampleRate,
                         targetFrameCount: loaded.channels[0].count,
-                        hasPerformanceWarning: false
+                        hasPerformanceWarning: Double(loaded.sourceFrameCount)
+                            > loaded.sourceSampleRate
+                                * M1ConvolutionIRStore.performanceWarningDurationSeconds
                     )
                 )
                 for (selectionOffset, index) in selectedIndexes.enumerated() {
