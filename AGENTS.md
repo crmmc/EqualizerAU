@@ -6,16 +6,16 @@
 
 ```mermaid
 flowchart LR
-    A[README.md] --> B[docs/prd.md]
-    B --> C[docs/architecture.md]
+    A[README.md] --> B[docs-dev/prd.md]
+    B --> C[docs-dev/architecture.md]
     C --> D[相关 ADR]
     D --> E[相关测试]
 ```
 
 1. 从 [`README.md`](README.md) 获取入口和命令。
-2. 从 [`docs/prd.md`](docs/prd.md) 确认产品需求。
-3. 修改音频生命周期或 DSP 前阅读 [`docs/architecture.md`](docs/architecture.md)。
-4. 阅读相关 [`docs/adr/`](docs/adr/) 了解决策约束。
+2. 从 [`docs-dev/prd.md`](docs-dev/prd.md) 确认产品需求。
+3. 修改音频生命周期或 DSP 前阅读 [`docs-dev/architecture.md`](docs-dev/architecture.md)。
+4. 阅读相关 [`docs-dev/adr/`](docs-dev/adr/) 了解决策约束。
 5. 阅读相关测试；测试是可执行的行为契约。
 
 ## 本地参考项目
@@ -47,7 +47,7 @@ PRD、架构、ADR 或测试契约；采用不同设计时，以本项目已记�
 | `EqualizerAUM1RuntimeTests/` | 不加载应用宿主的 M1 Runtime 测试 |
 | `EqualizerAUM1Tests/` | M1 app hosted 单元测试 |
 | `EqualizerAUM1IntegrationTests/` | M1 hosted、默认不启动音频的集成测试 |
-| `docs/` | PRD、架构、ADR 和里程碑 |
+| `docs-dev/` | PRD、架构、ADR 和里程碑 |
 
 ## 构建与测试
 
@@ -139,6 +139,28 @@ flowchart LR
   里程碑以及项目级 `AGENTS.md`。
 - 文档必须遵守唯一事实所有者和提交范围；与当前实现无关的后续阶段规划应使用独立提交，
   不与源码修复混杂。
+- 面向用户的变化按 `CHANGELOG.md` 头部约定写入 `[Unreleased]` 节；发布版本小节由 CI 按 tag
+  提取为 Release Notes，版本号与日期在发布时落定。
+
+## 发布流水线
+
+两条 GitHub Actions 流水线，均不使用 Developer ID、不公证，产物仅为 arm64 ad-hoc 签名：
+
+- `.github/workflows/ci.yml`：push 到 `main` 或 PR 触发，执行 project/Plist lint、shell 语法检查和
+  `EqualizerAUM1` scheme 全量测试（`CODE_SIGNING_ALLOWED=NO`）。
+- `.github/workflows/release.yml`：推送 `v*` tag 触发，`test` job 先复跑同一套测试，通过后 `release`
+  job 调用 `scripts/package-adhoc-preview.zsh` 打包，从 `CHANGELOG.md` 提取对应版本小节作为 notes，
+  产出 **draft** Release（ZIP + `.sha256`），由用户审阅后手动发布。
+
+发布操作约定：
+
+1. 版本号三处必须一致：tag（`v0.1.0`）、`project.pbxproj` 的 `MARKETING_VERSION`（`0.1.0`）、
+   `CHANGELOG.md` 版本小节（`[0.1.0]`，不带 `v`）。`CURRENT_PROJECT_VERSION` 必须保持 `1`，与打包
+   脚本 `EXPECTED_BUILD` 默认值一致。
+2. 发布前把 `CHANGELOG.md` 的 `[Unreleased]` 内容移入新版本小节并写日期；tag 无对应小节则流水线
+   发布失败。格式契约见 `CHANGELOG.md` 头部。
+3. 发布只通过推送 tag 触发流水线完成，不从本地产出或手动上传发布物；本地打包脚本仅用于验证。
+4. tag、push 等变更线上仓库的操作必须先获得用户明确授权。
 
 ## 完成标准
 
