@@ -36,4 +36,5 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             CODE_SIGNING_ALLOWED=NO \
             -only-testing:EqualizerAUM1RuntimeTests \
+            -skip-testing:EqualizerAUM1RuntimeTests/EAUM1RuntimeSmokeTests/testTenThousandPublicationsRaceARealCallbackThreadWithoutLeaks \
             test

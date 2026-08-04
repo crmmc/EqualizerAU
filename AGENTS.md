@@ -149,6 +149,8 @@ flowchart LR
 - `.github/workflows/ci.yml`：push 到 `main` 或 PR 触发，执行 project/Plist lint、shell 语法检查和
   `EqualizerAUM1RuntimeTests` 全量（`CODE_SIGNING_ALLOWED=NO`）。CI 只跑 hostless 套件，与 M7 自动化
   门禁口径一致；hosted 套件需启动 GUI 宿主，属于本地签名验收，runner 上启动不稳定，不纳入 CI。
+  实时竞态压力测试 `testTenThousandPublicationsRaceARealCallbackThreadWithoutLeaks` 依赖独占调度，
+  共享 runner 上偶发超时，CI 跳过，本地完整验证仍执行。
 - `.github/workflows/release.yml`：推送 `v*` tag 触发，`test` job 先复跑同一套测试，通过后 `release`
   job 调用 `scripts/package-adhoc-preview.zsh` 打包，从 `CHANGELOG.md` 提取对应版本小节作为 notes，
   产出 **draft** Release（ZIP + `.sha256`），由用户审阅后手动发布。
