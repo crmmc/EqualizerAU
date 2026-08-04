@@ -31,7 +31,6 @@ protocol M1ConvolutionIRLoading: Sendable {
 struct M1ConvolutionIRStore: M1ConvolutionIRLoading, Sendable {
     static let minimumSampleRate = 8_000.0
     static let maximumSampleRate = 768_000.0
-    static let performanceWarningDurationSeconds = 8.0
 
     let directoryURL: URL
 

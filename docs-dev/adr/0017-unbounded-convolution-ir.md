@@ -24,8 +24,9 @@ EqualizerAU 原先把 WAV IR 限制为最大 32 MiB、最长 2 秒，并在 ABI 
    Convolution 节点并显示 source/target 采样率；配置 `isEnabled` 保持用户意图，下一次生效重试。
 5. 不修改或写回用户文件。受支持的整数 PCM 和 Float32 均解码为内部 Float taps，这与
    EqualizerAPO/libsndfile 的 float processing boundary 等价，不承诺内部保留源位深表示。
-6. 源 IR 严格超过 8 秒，即旧 2 秒边界的四倍时仍正常加载，但 source diagnostic 标记性能可能
-   下降；UI 以橙色弱警告显示。恰好 8 秒不警告。
+6. 源 IR 长度不再触发性能下降警告。2026-08-04 在 M1 机器上的 Release dense probe（含 432k-tap
+   与 65,536-tap × 8 声道实例）表明当前 Runtime 内核可覆盖既有产品容量；超过固定秒数的橙色弱
+   警告会误导用户，因此移除时长门限。恰好 8 秒亦不警告。
 7. 单 Prepared 最多 8 个 convolution channel instances、每声道 512 stages 和总计 4096 stages
    的结构容量保持不变；这些限制约束拓扑数量，不限制每个 IR 的样本数。
 8. Runtime 继续在控制路径复制 taps、生成 partition spectra 和分配全部历史状态；callback 不做
@@ -34,19 +35,21 @@ EqualizerAU 原先把 WAV IR 限制为最大 32 MiB、最长 2 秒，并在 ABI 
    这是机器资源或表示失败，不重新包装为固定产品样本数上限。Swift 在进入和离开 C ABI 时检查
    Task cancellation；ABI v3 内部同步 FFT prepare 不可中途取消，长 IR 取消需等待当前创建返回。
 10. Builder 只在降低为 Runtime stage 时逐声道移除最后一个非零 sample 之后的精确零值；全零声道
-    保留一个零 tap。源 WAV、schema、source/target frame metadata 和超过 8 秒警告均保持完整。
-    该处理不删除任何可能影响输出的 sample，2 秒与 9 秒但有效 taps 相同的 IR 会生成相同 kernel。
+    保留一个零 tap。源 WAV、schema、source/target frame metadata 保持完整；不再根据时长设置
+    `hasPerformanceWarning`。该处理不删除任何可能影响输出的 sample，2 秒与 9 秒但有效 taps
+    相同的 IR 会生成相同 kernel。
 
 ## 结果
 
 长 IR 的初始化时间、常驻内存、每个 256-frame partition 的 FFT 累加工作和 10 ms 双链切换成本
-随有效 taps 数增长。应用只在源文件超过 8 秒时提示，不替用户删除任何可能影响输出的 sample、
-降采样或静默降质；末尾精确零值不进入 Runtime kernel，因为它们对卷积结果无贡献。采样率不匹配、
-文件损坏和不支持编码保持节点级旁路；全局 Prepared 分配失败保持整批失败。
+随有效 taps 数增长。应用不再按固定秒数提示性能下降；用户通过实际听感与系统负载自行判断。
+末尾精确零值不进入 Runtime kernel，因为它们对卷积结果无贡献。采样率不匹配、文件损坏和不支持
+编码保持节点级旁路；全局 Prepared 分配失败保持整批失败。
 
 ## 拒绝的替代方案
 
 - 自动截断到固定 taps 或删除非零尾部：改变用户 IR，且没有透明的声学语义。
 - 自动重采样：偏离 EqualizerAPO 行为并改变用户提供的离散冲击响应。
-- 超过阈值直接拒绝：把性能建议错误提升为产品能力限制。
+- 超过固定秒数直接拒绝：把性能建议错误提升为产品能力限制。
+- 保留超过 8 秒橙色警告：与 2026-08-04 Release 测量及 ADR-0019 内核结果不符，误报“可能降级”。
 - callback 中按需读取或扩容：引入文件 IO、锁或动态分配，破坏 realtime 边界。

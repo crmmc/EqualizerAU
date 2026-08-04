@@ -13,7 +13,7 @@
 2026-07-28，ADR-0014 取代本文关于 immutable sidecar、storage ID、导入时复制、hash/metadata
 预检和资源失败整批拒绝的决策。2026-07-30，ADR-0017 进一步取代 WAV 字节/时长、IR SRC、
 单 kernel/总 taps 容量和对应失败语义。当前 schema v8 保存外部绝对源路径，每次生效重读且不
-重采样；采样率不匹配只旁路所属节点，超过 8 秒只警告。2026-08-01，ADR-0019 取代本文
+重采样；采样率不匹配只旁路所属节点。超过固定秒数的性能警告已于 2026-08-04 移除（见 ADR-0017 修订）。2026-08-01，ADR-0019 取代本文
 关于 256-frame scalar full-complex uniform tail 的实现，改为 256-tap direct head 加 Accelerate
 Float64 deadline-distributed multistage NUP。本文的声道映射、ABI v3、零延迟 direct head、
 Prepared ownership 和 realtime callback 无 IO/分配约束继续有效。

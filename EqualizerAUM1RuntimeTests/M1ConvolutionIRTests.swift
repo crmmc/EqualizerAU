@@ -93,7 +93,7 @@ final class M1ConvolutionIRTests: XCTestCase {
         }
     }
 
-    func testLongIRLoadsCreatesPreparedStateAndReportsPerformanceWarning() throws {
+    func testLongIRLoadsCreatesPreparedStateWithoutPerformanceWarning() throws {
         let source = temporaryDirectory.appendingPathComponent("long.wav")
         var samples = Array(repeating: Float.zero, count: 384_000)
         samples[0] = 1
@@ -128,7 +128,7 @@ final class M1ConvolutionIRTests: XCTestCase {
             irLoader: store
         )
         let sourceDiagnostic = try XCTUnwrap(overThreshold.diagnostics.convolutionSources.first)
-        XCTAssertTrue(sourceDiagnostic.hasPerformanceWarning)
+        XCTAssertFalse(sourceDiagnostic.hasPerformanceWarning)
         XCTAssertEqual(sourceDiagnostic.sourceFrameCount, 384_001)
         XCTAssertEqual(sourceDiagnostic.targetFrameCount, 384_001)
         guard case let .convolution(_, overThresholdTaps) = try XCTUnwrap(
@@ -203,7 +203,7 @@ final class M1ConvolutionIRTests: XCTestCase {
         XCTAssertEqual(short.diagnostics.convolutionSources.first?.sourceFrameCount, 96_000)
         XCTAssertEqual(long.diagnostics.convolutionSources.first?.sourceFrameCount, 432_000)
         XCTAssertFalse(try XCTUnwrap(short.diagnostics.convolutionSources.first).hasPerformanceWarning)
-        XCTAssertTrue(try XCTUnwrap(long.diagnostics.convolutionSources.first).hasPerformanceWarning)
+        XCTAssertFalse(try XCTUnwrap(long.diagnostics.convolutionSources.first).hasPerformanceWarning)
     }
 
     func testRejectsMalformedExtensibleEncodingAndUnsupportedSampleRatesWithoutTrapping() throws {

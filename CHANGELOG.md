@@ -14,6 +14,7 @@
 ### Changed
 
 - Graphic EQ FIR 长度随输出采样率缩放（ADR-0020）：`N(Fs) = 16384 × 2^max(0, ceil(log2(Fs/48000)))`，≤48 kHz 保持 16,384 taps，96 kHz→32,768，192 kHz→65,536，高采样率频率分辨率不低于 48 kHz 基准。
+- 移除卷积 IR 超过固定秒数的性能下降橙色警告；以 2026-08-04 Release dense probe（含长 IR 与缩放 Graphic EQ）为准，不再按 8 秒门限提示。
 
 ## [0.1.0] - 2026-08-04
 

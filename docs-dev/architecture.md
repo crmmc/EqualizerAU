@@ -36,8 +36,8 @@ Add/Replace 只修改草稿引用；Start、运行中 Save、路线重建和输�
 重新读取 1...64 声道、8...768 kHz 的 RIFF/WAVE linear PCM 8/16/24/32 或 Float32，不设置文件
 字节数、时长、单 kernel taps 或所有实例总 taps 上限。loader 拒绝非普通文件、损坏结构、空音频、
 不支持编码、非有限和 subnormal samples，且不执行 IR SRC；源采样率与输出偏差超过 1 Hz 时节点
-旁路并显示 source/target 原因。严格超过 8 秒的 IR 继续加载，同时显示非阻塞性能下降警告；
-Builder 仅在 Runtime stage 中逐声道去除末尾精确零值，不改变源文件帧数、警告或任何非零 tap。
+旁路并显示 source/target 原因。IR 不设文件时长或 taps 配额；超过固定秒数的性能下降警告已移除（2026-08-04 测量后更新）。末尾精确零值不进入 Runtime kernel。
+Builder 仅在 Runtime stage 中逐声道去除末尾精确零值，不改变源文件帧数或任何非零 tap。
 单声道 IR 广播，多声道 IR 必须与当前有效 Channels 作用域严格等宽并按作用域顺序映射。
 文件不可用、不可读、损坏、不支持、采样率或声道不匹配时，该节点在对应 Prepared 中有效旁路并
 产生 owned diagnostic，配置 `isEnabled` 不变；下一次生效重新尝试。schema、stage、整数表示和
