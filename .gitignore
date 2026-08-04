@@ -1,6 +1,6 @@
-.DS_Store
 .build/
-DerivedData/
+.codegraph/
+.DS_Store
 build/
-*.xcresult
-xcuserdata/
+EqualizerAU.xcodeproj/project.xcworkspace/
+EqualizerAU.xcodeproj/xcuserdata/

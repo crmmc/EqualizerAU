@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+
+jobs:
+  test:
+    name: Build & Test (macOS arm64)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select latest stable Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Lint project and plist
+        run: plutil -lint EqualizerAU.xcodeproj/project.pbxproj EqualizerAU/Resources/Info.plist EqualizerAUM1/Resources/Info.plist
+
+      - name: Shell syntax checks
+        run: |
+          for script in scripts/*.sh; do bash -n "$script"; done
+          for script in scripts/*.zsh; do zsh -n "$script"; done
+
+      - name: Run M1 runtime tests
+        run: |
+          xcodebuild \
+            -project EqualizerAU.xcodeproj \
+            -scheme EqualizerAUM1 \
+            -configuration Debug \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            test
+
+  release:
+    name: Package & draft release
+    runs-on: macos-15
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select latest stable Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Derive version from tag
+        run: echo "EXPECTED_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Package ad-hoc preview
+        run: ./scripts/package-adhoc-preview.zsh
+
+      - name: Extract release notes from CHANGELOG
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          awk -v ver="$version" '
+            $0 ~ "^## \\[" ver "\\]" { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > dist/release-notes.md
+          [ -s dist/release-notes.md ] || { echo "::error::CHANGELOG.md has no section for version $version"; exit 1; }
+
+      - name: Collect release assets
+        run: |
+          mkdir -p dist
+          cp .build/release/EqualizerAU-*-arm64-preview.zip dist/
+          cp .build/release/EqualizerAU-*-arm64-preview.zip.sha256 dist/
+
+      - name: Publish draft GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          body_path: dist/release-notes.md
+          files: |
+            dist/*.zip
+            dist/*.zip.sha256
