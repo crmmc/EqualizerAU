@@ -11,6 +11,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Graphic EQ FIR 长度随输出采样率缩放（ADR-0020）：`N(Fs) = 16384 × 2^max(0, ceil(log2(Fs/48000)))`，≤48 kHz 保持 16,384 taps，96 kHz→32,768，192 kHz→65,536，高采样率频率分辨率不低于 48 kHz 基准。
+
 ## [0.1.0] - 2026-08-04
 
 ### Added

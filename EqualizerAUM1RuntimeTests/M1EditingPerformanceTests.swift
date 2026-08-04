@@ -111,11 +111,11 @@ final class M1EditingPerformanceTests: XCTestCase {
         report("graphic_eq_fir_build", builder, [
             "channels": 2,
             "points": points.count,
-            "taps": M1ProcessingBuilder.graphicEQTapCount,
+            "taps": M1ProcessingBuilder.graphicEQTapCount(forSampleRate: layout.sampleRate),
         ], prefix: "M6_METRIC")
         report("graphic_eq_prepared_create", preparedCreation, [
             "channels": 2,
-            "taps_per_channel": M1ProcessingBuilder.graphicEQTapCount,
+            "taps_per_channel": M1ProcessingBuilder.graphicEQTapCount(forSampleRate: layout.sampleRate),
         ], prefix: "M6_METRIC")
         report("graphic_eq_preview", preview, [
             "points": points.count,

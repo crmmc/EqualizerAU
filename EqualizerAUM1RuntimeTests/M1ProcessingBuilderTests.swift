@@ -14,7 +14,7 @@ final class M1ProcessingBuilderTests: XCTestCase {
         guard case let .convolution(_, taps) = compiled.stagesByChannel[0][0] else {
             return XCTFail("expected Graphic EQ convolution stage")
         }
-        XCTAssertEqual(taps.count, M1ProcessingBuilder.graphicEQTapCount)
+        XCTAssertEqual(taps.count, M1ProcessingBuilder.graphicEQTapCount(forSampleRate: 48_000))
 
         let prepared = try M1RuntimePreparedStateFactory.create(
             stagesByChannel: compiled.stagesByChannel
@@ -461,7 +461,7 @@ final class M1ProcessingBuilderTests: XCTestCase {
             return XCTFail("expected Graphic EQ convolution stage")
         }
         XCTAssertEqual(nodeID, eq.id)
-        XCTAssertEqual(taps.count, M1ProcessingBuilder.graphicEQTapCount)
+        XCTAssertEqual(taps.count, M1ProcessingBuilder.graphicEQTapCount(forSampleRate: 48_000))
         XCTAssertTrue(taps.contains { $0 != 0 })
 
         let empty = try M1ProcessingBuilder.build(
@@ -720,6 +720,11 @@ final class M1ProcessingBuilderTests: XCTestCase {
             guard case let .convolution(_, taps) = compiled.stagesByChannel[0][0] else {
                 return XCTFail("expected Graphic EQ convolution stage at \(sampleRate) Hz")
             }
+            XCTAssertEqual(
+                taps.count,
+                M1ProcessingBuilder.graphicEQTapCount(forSampleRate: sampleRate),
+                "sampleRate=\(sampleRate)"
+            )
 
             let frequencies = logarithmicFrequencies(
                 minimum: M1GraphicEQContract.minimumResponseEvaluationFrequencyHz,
@@ -745,6 +750,135 @@ final class M1ProcessingBuilderTests: XCTestCase {
             XCTAssertLessThanOrEqual(maximum, 0.75, "sampleRate=\(sampleRate) max=\(maximum)")
             XCTAssertLessThanOrEqual(p99, 0.1, "sampleRate=\(sampleRate) p99=\(p99)")
         }
+    }
+
+    func testGraphicEQTapCountScalesWithSampleRatePerADR0020() {
+        let cases: [(Double, Int)] = [
+            (8_000, 16_384),
+            (44_100, 16_384),
+            (48_000, 16_384),
+            (48_000.1, 32_768),
+            (88_200, 32_768),
+            (96_000, 32_768),
+            (176_400, 65_536),
+            (192_000, 65_536),
+            (384_000, 131_072),
+            (0, 16_384),
+            (-1, 16_384),
+            (.nan, 16_384),
+        ]
+        for (sampleRate, expected) in cases {
+            XCTAssertEqual(
+                M1ProcessingBuilder.graphicEQTapCount(forSampleRate: sampleRate),
+                expected,
+                "sampleRate=\(sampleRate)"
+            )
+            XCTAssertEqual(
+                M1ProcessingBuilder.graphicEQDesignLength(forSampleRate: sampleRate),
+                expected * 2,
+                "designLength sampleRate=\(sampleRate)"
+            )
+        }
+    }
+
+    func testGraphicEQLowSampleRateTapsMatchLegacyFixedLength() throws {
+        let points = [
+            M1GraphicEQPoint(frequencyHz: 20, gainDB: -6),
+            M1GraphicEQPoint(frequencyHz: 80, gainDB: -3),
+            M1GraphicEQPoint(frequencyHz: 1_000, gainDB: 0),
+            M1GraphicEQPoint(frequencyHz: 8_000, gainDB: 3),
+            M1GraphicEQPoint(frequencyHz: 20_000, gainDB: 6),
+        ]
+        for sampleRate in [44_100.0, 48_000.0] {
+            let compiled = try M1ProcessingBuilder.build(
+                nodes: [M1ProcessingNode.graphicEQ(id: UUID(), points: points)],
+                layout: monoLayout(sampleRate: sampleRate)
+            )
+            guard case let .convolution(_, taps) = compiled.stagesByChannel[0][0] else {
+                return XCTFail("expected Graphic EQ convolution at \(sampleRate)")
+            }
+            XCTAssertEqual(taps.count, M1ProcessingBuilder.graphicEQTapCount)
+            XCTAssertEqual(taps.count, 16_384)
+            XCTAssertTrue(taps.contains { $0 != 0 })
+        }
+    }
+
+    func testGraphicEQScaledLengthImprovesDenseLowFrequencyAt192k() throws {
+        // Feature scale ~20 Hz in the low band: fixed 16k taps at 192 kHz (~11.7 Hz
+        // bins) under-resolve; scaled 65k (~2.9 Hz bins) meets the contract.
+        let points = [
+            M1GraphicEQPoint(frequencyHz: 20, gainDB: -6),
+            M1GraphicEQPoint(frequencyHz: 40, gainDB: 6),
+            M1GraphicEQPoint(frequencyHz: 80, gainDB: -3),
+            M1GraphicEQPoint(frequencyHz: 200, gainDB: 0),
+            M1GraphicEQPoint(frequencyHz: 1_000, gainDB: 0),
+            M1GraphicEQPoint(frequencyHz: 20_000, gainDB: 0),
+        ]
+
+        let sampleRate = 192_000.0
+        let scaled = try M1ProcessingBuilder.build(
+            nodes: [M1ProcessingNode.graphicEQ(id: UUID(), points: points)],
+            layout: monoLayout(sampleRate: sampleRate)
+        )
+        guard case let .convolution(_, scaledTaps) = scaled.stagesByChannel[0][0] else {
+            return XCTFail("expected scaled Graphic EQ convolution")
+        }
+        XCTAssertEqual(scaledTaps.count, 65_536)
+
+        let frequencies = logarithmicFrequencies(
+            minimum: M1GraphicEQContract.minimumResponseEvaluationFrequencyHz,
+            maximum: min(
+                M1GraphicEQContract.maximumResponseEvaluationFrequencyHz,
+                sampleRate * 0.45
+            ),
+            count: 193
+        )
+        func errors(for taps: [Float]) -> (max: Double, p99: Double) {
+            let values = frequencies.map { frequencyHz in
+                abs(
+                    responseDB(taps: taps, frequencyHz: frequencyHz, sampleRate: sampleRate)
+                        - M1ProcessingBuilder.graphicEQProcessingGainDB(
+                            frequencyHz: frequencyHz,
+                            points: points
+                        )
+                )
+            }.sorted()
+            let p99 = values[min(values.count - 1, Int(Double(values.count - 1) * 0.99))]
+            return (values.last ?? .infinity, p99)
+        }
+
+        let scaledErrors = errors(for: scaledTaps)
+        XCTAssertLessThanOrEqual(
+            scaledErrors.max,
+            M1ProcessingBuilder.graphicEQMaximumResponseErrorDB,
+            "scaled max=\(scaledErrors.max)"
+        )
+        XCTAssertLessThanOrEqual(
+            scaledErrors.p99,
+            M1ProcessingBuilder.graphicEQPercentile99ResponseErrorDB,
+            "scaled p99=\(scaledErrors.p99)"
+        )
+        XCTAssertTrue(scaled.diagnostics.graphicEQResolution.isEmpty)
+
+        let fixedTaps = try XCTUnwrap(
+            try M1ProcessingBuilder.graphicEQCompiledTaps(
+                points: points,
+                sampleRate: sampleRate,
+                tapCount: 16_384
+            )
+        )
+        XCTAssertEqual(fixedTaps.count, 16_384)
+        let fixedErrors = errors(for: fixedTaps)
+        XCTAssertTrue(
+            fixedErrors.max > M1ProcessingBuilder.graphicEQMaximumResponseErrorDB
+                || fixedErrors.p99 > M1ProcessingBuilder.graphicEQPercentile99ResponseErrorDB,
+            "fixed 16k taps at 192 kHz must fail; max=\(fixedErrors.max) p99=\(fixedErrors.p99)"
+        )
+        XCTAssertLessThan(
+            scaledErrors.max,
+            fixedErrors.max,
+            "scaled must improve absolute tracking error"
+        )
     }
 
     func testGraphicEQConstantActiveCurveKeepsOutOfDomainTargetNeutral() throws {

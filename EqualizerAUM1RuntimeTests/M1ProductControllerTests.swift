@@ -250,7 +250,7 @@ final class M1ProductControllerTests: XCTestCase {
             return XCTFail("Expected a scoped Graphic EQ convolution")
         }
         XCTAssertEqual(nodeID, equalizerID)
-        XCTAssertEqual(taps.count, M1ProcessingBuilder.graphicEQTapCount)
+        XCTAssertEqual(taps.count, M1ProcessingBuilder.graphicEQTapCount(forSampleRate: 48_000))
     }
 
     func testEffectsToggleUpdatesRuntimeAndPersistsWithoutPublishingChain() async throws {

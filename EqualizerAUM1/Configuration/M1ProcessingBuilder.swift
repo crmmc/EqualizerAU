@@ -121,10 +121,32 @@ enum M1ProcessingBuilder {
     static let maximumPreparedStageCount = 4_096
     static let maximumConvolutionStages = Int(EAUM1_MAX_CONVOLUTION_STAGES)
     static let convolutionLatencyFrames = 0
-    static let graphicEQDesignLength = 32_768
+    /// 48 kHz reference length; higher sample rates scale via `graphicEQTapCount(forSampleRate:)`.
     static let graphicEQTapCount = 16_384
+    static let graphicEQDesignLength = 32_768
+    static let graphicEQReferenceSampleRate = 48_000.0
     static let graphicEQMaximumResponseErrorDB = 0.75
     static let graphicEQPercentile99ResponseErrorDB = 0.1
+
+    /// ADR-0020: `N(Fs) = 16384 × 2^max(0, ceil(log2(Fs / 48000)))`.
+    static func graphicEQTapCount(forSampleRate sampleRate: Double) -> Int {
+        guard sampleRate.isFinite, sampleRate > 0 else {
+            return graphicEQTapCount
+        }
+        let ratio = sampleRate / graphicEQReferenceSampleRate
+        guard ratio > 1 else {
+            return graphicEQTapCount
+        }
+        let exponent = Int(ceil(log2(ratio)))
+        guard exponent > 0, exponent < 31 else {
+            return graphicEQTapCount
+        }
+        return graphicEQTapCount << exponent
+    }
+
+    static func graphicEQDesignLength(forSampleRate sampleRate: Double) -> Int {
+        graphicEQTapCount(forSampleRate: sampleRate) * 2
+    }
     private static let minimumGainDB = -100.0
     private static let maximumGainDB = 100.0
     private static let maximumFiniteGainDB = 20 * log10(Double(Float.greatestFiniteMagnitude))
@@ -547,18 +569,51 @@ enum M1ProcessingBuilder {
         points: [M1GraphicEQPoint],
         sampleRate: Double
     ) throws -> [Float]? {
+        try compileGraphicEQTaps(
+            nodeID: nodeID,
+            points: points,
+            sampleRate: sampleRate,
+            designLength: graphicEQDesignLength(forSampleRate: sampleRate)
+        )
+    }
+
+    /// Production uses sample-rate mapping; tests may pin `designLength` for contrast.
+    static func graphicEQCompiledTaps(
+        points: [M1GraphicEQPoint],
+        sampleRate: Double,
+        tapCount: Int
+    ) throws -> [Float]? {
+        try compileGraphicEQTaps(
+            nodeID: UUID(),
+            points: points,
+            sampleRate: sampleRate,
+            designLength: tapCount * 2
+        )
+    }
+
+    private static func compileGraphicEQTaps(
+        nodeID: UUID,
+        points: [M1GraphicEQPoint],
+        sampleRate: Double,
+        designLength: Int
+    ) throws -> [Float]? {
         let processingPoints = graphicEQProcessingPoints(points)
         guard !processingPoints.isEmpty else {
             return nil
         }
+        guard designLength >= 2,
+              designLength.isMultiple(of: 2),
+              (designLength & (designLength - 1)) == 0 else {
+            throw M1ProcessingBuildError.graphicEQFIRGenerationFailed(nodeID: nodeID)
+        }
 
-        let halfLength = graphicEQDesignLength / 2
+        let halfLength = designLength / 2
         let magnitudeFloor = pow(10, graphicEQMagnitudeFloorDB / 20)
         var magnitudes = Array(repeating: 0.0, count: halfLength + 1)
         var isFlat = true
         for bin in 0...halfLength {
             if bin.isMultiple(of: 256) { try Task.checkCancellation() }
-            let frequencyHz = sampleRate * Double(bin) / Double(graphicEQDesignLength)
+            let frequencyHz = sampleRate * Double(bin) / Double(designLength)
             let targetGainDB: Double
             if frequencyHz >= M1GraphicEQContract.minimumFrequencyHz,
                frequencyHz <= M1GraphicEQContract.maximumFrequencyHz {
@@ -577,15 +632,22 @@ enum M1ProcessingBuilder {
             }
             magnitudes[bin] = magnitude
         }
-        return isFlat ? nil : try minimumPhaseTaps(nodeID: nodeID, magnitudes: magnitudes)
+        return isFlat
+            ? nil
+            : try minimumPhaseTaps(
+                nodeID: nodeID,
+                magnitudes: magnitudes,
+                designLength: designLength
+            )
     }
 
     private static func minimumPhaseTaps(
         nodeID: UUID,
-        magnitudes: [Double]
+        magnitudes: [Double],
+        designLength: Int
     ) throws -> [Float] {
-        let designLength = graphicEQDesignLength
         let halfLength = designLength / 2
+        let tapCount = designLength / 2
         guard magnitudes.count == halfLength + 1 else {
             throw M1ProcessingBuildError.graphicEQFIRGenerationFailed(nodeID: nodeID)
         }
@@ -648,11 +710,11 @@ enum M1ProcessingBuilder {
         scale(values: &impulseReal, by: 1.0 / Double(designLength))
         scale(values: &impulseImag, by: 1.0 / Double(designLength))
 
-        var truncated = Array(impulseReal.prefix(graphicEQTapCount))
-        applyOneSidedCosineTaper(to: &truncated)
+        var truncated = Array(impulseReal.prefix(tapCount))
+        applyOneSidedCosineTaper(to: &truncated, designLength: designLength)
 
         var taps: [Float] = []
-        taps.reserveCapacity(graphicEQTapCount)
+        taps.reserveCapacity(tapCount)
         for tap in truncated {
             if taps.count.isMultiple(of: 256) { try Task.checkCancellation() }
             guard tap.isFinite else {
@@ -665,7 +727,7 @@ enum M1ProcessingBuilder {
             }
             taps.append(floatTap == 0 || floatTap.isNormal ? floatTap : 0)
         }
-        guard taps.count == graphicEQTapCount else {
+        guard taps.count == tapCount else {
             throw M1ProcessingBuildError.invalidGraphicEQTaps(nodeID: nodeID)
         }
         return taps
@@ -696,10 +758,10 @@ enum M1ProcessingBuilder {
         }
     }
 
-    private static func applyOneSidedCosineTaper(to taps: inout [Double]) {
+    private static func applyOneSidedCosineTaper(to taps: inout [Double], designLength: Int) {
         for index in taps.indices {
             let weight = 0.5 * (
-                1 + cos(2 * Double.pi * Double(index) / Double(graphicEQDesignLength))
+                1 + cos(2 * Double.pi * Double(index) / Double(designLength))
             )
             taps[index] *= weight
         }
@@ -822,13 +884,14 @@ enum M1ProcessingBuilder {
         taps: [Float],
         nodeID: UUID
     ) throws -> [Double] {
-        let log2n = vDSP_Length(log2(Double(graphicEQDesignLength)))
+        let designLength = max(graphicEQDesignLength, taps.count * 2)
+        let log2n = vDSP_Length(log2(Double(designLength)))
         guard let setup = vDSP_create_fftsetupD(log2n, FFTRadix(kFFTRadix2)) else {
             throw M1ProcessingBuildError.graphicEQFIRGenerationFailed(nodeID: nodeID)
         }
         defer { vDSP_destroy_fftsetupD(setup) }
-        var real = Array(repeating: 0.0, count: graphicEQDesignLength)
-        var imaginary = Array(repeating: 0.0, count: graphicEQDesignLength)
+        var real = Array(repeating: 0.0, count: designLength)
+        var imaginary = Array(repeating: 0.0, count: designLength)
         for index in taps.indices {
             real[index] = Double(taps[index])
         }
@@ -840,7 +903,7 @@ enum M1ProcessingBuilder {
             direction: FFTDirection(FFT_FORWARD)
         )
         try Task.checkCancellation()
-        return (0...(graphicEQDesignLength / 2)).map { hypot(real[$0], imaginary[$0]) }
+        return (0...(designLength / 2)).map { hypot(real[$0], imaginary[$0]) }
     }
 
     private static func graphicEQResponseDB(
@@ -848,8 +911,9 @@ enum M1ProcessingBuilder {
         frequencyHz: Double,
         sampleRate: Double
     ) -> Double {
+        let designLength = max(graphicEQDesignLength, (magnitudeSpectrum.count - 1) * 2)
         let position = min(
-            max(frequencyHz * Double(graphicEQDesignLength) / sampleRate, 0),
+            max(frequencyHz * Double(designLength) / sampleRate, 0),
             Double(magnitudeSpectrum.count - 1)
         )
         let lower = Int(position.rounded(.down))
