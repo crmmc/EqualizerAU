@@ -35,4 +35,5 @@ jobs:
             -destination 'platform=macOS,arch=arm64' \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
             CODE_SIGNING_ALLOWED=NO \
+            -only-testing:EqualizerAUM1RuntimeTests \
             test
