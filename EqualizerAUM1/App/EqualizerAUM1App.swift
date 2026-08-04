@@ -148,8 +148,8 @@ final class M1AppModel: ObservableObject {
             try self.audioLifecycleMonitor?.start { [weak self] event in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    await controller.handleAudioLifecycleEvent(event)
-                    snapshot = await controller.snapshot()
+                    await self.controller.handleAudioLifecycleEvent(event)
+                    self.snapshot = await self.controller.snapshot()
                 }
             }
         }
