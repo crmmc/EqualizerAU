@@ -97,18 +97,24 @@ EqualizerAU 是一款独立运行的 macOS 全局音频处理工具。它通过�
 
 ### 构建
 
-无需使用仓库作者的签名身份即可完成本地构建：
+无需使用仓库作者的签名身份即可完成本地构建，Debug 和 Release 产物都写入
+`build/bin/EqualizerAU.app`：
 
 ```bash
-xcodebuild \
-  -project EqualizerAU.xcodeproj \
-  -scheme EqualizerAU \
-  -configuration Debug \
-  -destination 'platform=macOS,arch=arm64' \
-  -derivedDataPath .build/DerivedData \
-  CODE_SIGNING_ALLOWED=NO \
-  build
+make build
+make release
 ```
+
+运行完整测试和 hostless 覆盖率门禁：
+
+```bash
+make test
+make coverage
+```
+
+覆盖率门禁统计无 GUI、无真实音频即可确定性执行的 M1 核心产品逻辑，要求总行覆盖率不低于
+95%、Runtime 不低于 95%、关键文件不低于 90%。SwiftUI/AppKit 组合和直接 Core Audio
+系统调用适配器会在报告中单列，不计入核心逻辑分母，也不会被静默忽略。
 
 如需运行原生系统音频测试，请在 Xcode 中为 EqualizerAUM1 target 配置你自己的 Apple Development Team。
 

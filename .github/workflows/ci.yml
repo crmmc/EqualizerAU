@@ -26,15 +26,5 @@ jobs:
           for script in scripts/*.sh; do bash -n "$script"; done
           for script in scripts/*.zsh; do zsh -n "$script"; done
 
-      - name: Run M1 runtime tests
-        run: |
-          xcodebuild \
-            -project EqualizerAU.xcodeproj \
-            -scheme EqualizerAUM1 \
-            -configuration Debug \
-            -destination 'platform=macOS,arch=arm64' \
-            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
-            CODE_SIGNING_ALLOWED=NO \
-            -only-testing:EqualizerAUM1RuntimeTests \
-            -skip-testing:EqualizerAUM1RuntimeTests/EAUM1RuntimeSmokeTests/testTenThousandPublicationsRaceARealCallbackThreadWithoutLeaks \
-            test
+      - name: Run M1 coverage gate
+        run: make coverage DD="$RUNNER_TEMP/DerivedData"
