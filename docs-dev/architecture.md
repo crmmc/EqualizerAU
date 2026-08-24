@@ -76,14 +76,19 @@ array 运算。单 Prepared 最多 8 个 Convolution stages，但不限制每个
 Retry。应用进程只装配一个 production store，不提供跨进程写盘仲裁；产品 Info.plist 禁止
 LaunchServices 多实例，SwiftUI 使用唯一 `Window` scene，重复打开只激活或恢复主编辑窗口。
 
-`M1ProductController` actor 是 M1 的产品控制边界。它分别维护草稿修订、配置提交代次和
+`M1ProductController` actor 是 M1 的产品控制边界。`M1AppModel` 位于独立编译单元，把 AppKit
+命令、异步命令排队和产品 snapshot 投影连接到该 actor；SwiftUI scene、菜单、窗口以及
+NSApplication、面板、alert、pasteboard 的薄适配器保持在 App 层独立文件中，因此核心命令逻辑可在
+不启动 GUI 的 hostless target 中验证。它分别维护草稿修订、配置提交代次和
 音频桥接代次；编辑只改变会话草稿，Save 先针对一次发现得到的真实布局在 actor 外构建，
 再持久化不可变候选，最后才向仍匹配的运行桥发布 Prepared 状态。没有输出时仍保存并进入
 等待输出，显式 Retry、Start 或下一次 Save 各只执行一次发现。Stop 可越过 Start 和发布，
 不会取消已接纳提交；过期发布收敛为已保存待启动。
 
 `M1SystemAudioLifecycleMonitor` 在独立串行队列监听默认输出、设备列表、当前默认设备的
-alive/sample-rate/stream-layout 属性以及系统 sleep/wake。默认设备监听以临时
+alive/sample-rate/stream-layout 属性以及系统 sleep/wake。监听注册、重绑定、退役和有界重试状态机
+通过 operations/timing 边界与直接 Core Audio listener 调用分离，hostless 测试只使用 fake listener 和
+可控 scheduler，不创建音频资源。默认设备监听以临时
 `AudioObjectID` 和持久 UID 联合标识，重绑定在新监听完整建立后才移除旧监听；失败按
 250 ms、1 s、1 s 最多重试三次，耗尽后向产品层发布明确的 monitoring failure。设备列表
 变化只有在默认输出联合身份实际变化后才成为恢复事件；Tap/Aggregate 生命周期导致的
