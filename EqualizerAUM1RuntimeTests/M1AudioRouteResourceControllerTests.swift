@@ -15,6 +15,33 @@ final class M1AudioRouteResourceControllerTests: XCTestCase {
         XCTAssertEqual(state, .stopped)
     }
 
+    func testOutputDiscoveryRejectsMissingPersistentIdentity() async {
+        let hal = TestHALRouteOperations()
+        hal.defaultOutputs = [hal.outputData(sampleRate: 48_000, uid: "")]
+        let controller = M1AudioRouteResourceController(operations: hal)
+
+        do {
+            _ = try await controller.discoverOutput(generation: .init(rawValue: 1))
+            XCTFail("missing output UID must fail")
+        } catch let error as M1AudioRouteError {
+            XCTAssertEqual(error, .invalidOutputDevice("missing UID or device is not alive"))
+        } catch {
+            XCTFail("unexpected output discovery error: \(error)")
+        }
+    }
+
+    func testPassiveDiscoveryFailureReturnsNoLayoutWithoutCreatingResources() async {
+        let hal = TestHALRouteOperations()
+        hal.defaultOutputError = .noOutputDevice
+        let coordinator = makeWorkingRouteCoordinator(hal: hal)
+
+        let layout = await coordinator.discoverOutputLayout()
+
+        XCTAssertNil(layout)
+        XCTAssertTrue(hal.tapRequests.isEmpty)
+        XCTAssertTrue(hal.aggregateRequests.isEmpty)
+    }
+
     func testProvisionalTapAndAggregateRequestsAndReadbacksAreStrict() async throws {
         let hal = TestHALRouteOperations()
         let controller = M1AudioRouteResourceController(operations: hal)
@@ -251,6 +278,44 @@ final class M1AudioRouteResourceControllerTests: XCTestCase {
         try await controller.destroyTap(routeTap)
     }
 
+    func testAggregateValidationRollbackFailureIsRetainedAndCleanupRetries() async throws {
+        let hal = TestHALRouteOperations()
+        hal.aggregateDataOverride = M1HALAggregateData(
+            uid: "wrong.aggregate",
+            tapUIDs: ["tap.uid"],
+            format: hal.supportedFormat,
+            maximumFrameCount: 256,
+            bufferChannelCounts: [2]
+        )
+        hal.aggregateDestroyFailuresRemaining = 1
+        let controller = M1AudioRouteResourceController(operations: hal)
+        let generation = M1AudioRouteGeneration(rawValue: 41)
+        let output = try await controller.discoverOutput(generation: generation)
+        let tap = try await controller.createTap(generation: generation, output: output)
+
+        do {
+            _ = try await controller.createAggregate(
+                generation: generation,
+                output: output,
+                tap: tap
+            )
+            XCTFail("invalid aggregate readback must fail")
+        } catch let error as M1AudioRouteError {
+            XCTAssertEqual(
+                error,
+                .invalidAggregate("aggregate identity, tap list or format mismatch")
+            )
+        }
+        let pendingAfterFailure = await controller.hasPendingResources()
+        XCTAssertTrue(pendingAfterFailure)
+        hal.aggregateDataOverride = nil
+        try await controller.cleanupPendingResources()
+        let pendingAfterCleanup = await controller.hasPendingResources()
+        XCTAssertFalse(pendingAfterCleanup)
+        try await controller.destroyTap(tap)
+        XCTAssertEqual(hal.aggregateDestroyAttempts, [202, 202])
+    }
+
     func testAggregateIsDestroyedBeforeTap() async throws {
         let hal = TestHALRouteOperations()
         let controller = M1AudioRouteResourceController(operations: hal)
@@ -327,6 +392,34 @@ final class M1AudioRouteResourceControllerTests: XCTestCase {
         hal.tapUIDReadFailure = false
         try await controller.destroyTap(tap)
         XCTAssertEqual(hal.destroyOrder, ["tap:101"])
+    }
+
+    func testDestroyRejectsWrongKindResourcesWithoutDroppingOwnership() async throws {
+        let hal = TestHALRouteOperations()
+        let controller = M1AudioRouteResourceController(operations: hal)
+        let generation = M1AudioRouteGeneration(rawValue: 42)
+        let output = try await controller.discoverOutput(generation: generation)
+        let tap = try await controller.createTap(generation: generation, output: output)
+        let wrongKind = M1ProcessTapResource(
+            descriptor: .init(
+                ownershipToken: tap.descriptor.ownershipToken,
+                generation: generation,
+                kind: .aggregateDevice,
+                objectID: tap.descriptor.objectID,
+                persistentUID: tap.descriptor.persistentUID
+            ),
+            excludedProcessObjectID: tap.excludedProcessObjectID,
+            outputDeviceUID: tap.outputDeviceUID,
+            format: tap.format
+        )
+
+        do {
+            try await controller.destroyTap(wrongKind)
+            XCTFail("wrong-kind destroy must fail")
+        } catch let error as M1AudioRouteError {
+            XCTAssertEqual(error, .staleResource)
+        }
+        try await controller.destroyTap(tap)
     }
 
     func testWrongKindTapCannotCreateAggregate() async throws {
@@ -807,6 +900,43 @@ final class M1AudioRouteResourceControllerTests: XCTestCase {
         ))
         XCTAssertEqual(waiting, .waitingForOutput)
         XCTAssertEqual(loader.validationCount, 0)
+    }
+
+    func testStopCancelsAndJoinsInFlightStartCompilation() async throws {
+        let entered = expectation(description: "start IR compile entered")
+        let loader = CompileCancellationObservingIRLoader { entered.fulfill() }
+        let runtimeAccess = M1RuntimeLeaseAccess(stopHandler: { _, _ in })
+        let coordinator = M1NativeAudioRouteCoordinator(
+            routeResources: M1AudioRouteResourceController(operations: TestHALRouteOperations()),
+            audioIO: M1AudioIOController(
+                operations: TestAudioIOOperations(),
+                timing: M1AudioIOControlTiming(nowNanoseconds: { 0 }, sleep: { _ in })
+            ),
+            runtimeFactory: RealTestRuntimeFactory(),
+            runtimeAccess: runtimeAccess,
+            retirementMaintenance: M1RetirementMaintenanceCoordinator(
+                access: runtimeAccess,
+                timing: M1RetirementMaintenanceTiming(nowNanoseconds: { 0 }, sleep: { _ in })
+            ),
+            irLoader: loader
+        )
+        let start = Task {
+            try await coordinator.start(configuration: M1ConfigurationSnapshot(
+                effectsEnabled: true,
+                nodes: [.convolution(ir: .init(sourcePath: "/tmp/cancel-start.wav"))]
+            ))
+        }
+
+        await fulfillment(of: [entered], timeout: 1)
+        start.cancel()
+        let stop = Task { try await coordinator.stop() }
+        do {
+            try await start.value
+            XCTFail("cancelled start must fail")
+        } catch is CancellationError {}
+        try await stop.value
+        let state = await coordinator.state()
+        XCTAssertEqual(state, .stopped)
     }
 
     func testCancellingPrepareCancelsDetachedIRCompileAfterOutputDiscovery() async throws {
@@ -1482,6 +1612,308 @@ final class M1AudioRouteResourceControllerTests: XCTestCase {
         XCTAssertEqual(state, .stopped)
     }
 
+    func testCoordinatorStopFailureRetainsResourcesForRetry() async throws {
+        let operations = TestAudioIOOperations()
+        let coordinator = makeWorkingRouteCoordinator(
+            hal: TestHALRouteOperations(),
+            audioOperations: operations
+        )
+        try await coordinator.start()
+        operations.stopOutputFailuresRemaining = 1
+
+        do {
+            try await coordinator.stop()
+            XCTFail("output stop failure must surface")
+        } catch TestFailure.injected {}
+        let failedState = await coordinator.state()
+        XCTAssertEqual(failedState, .cleanupRequired(generation: .init(rawValue: 1)))
+
+        try await coordinator.stop()
+        let finalState = await coordinator.state()
+        XCTAssertEqual(finalState, .stopped)
+    }
+
+    func testStoppedCoordinatorQueriesPublicationEffectsAndStopsAreSafeNoOps() async throws {
+        let coordinator = makeWorkingRouteCoordinator(hal: TestHALRouteOperations())
+        XCTAssertEqual(M1OutputFormatStabilityTiming.production.maximumObservations, 6)
+        try await M1OutputFormatStabilityTiming.production.sleep(0)
+
+        let outputLayout = await coordinator.outputLayout()
+        let processingDiagnostics = await coordinator.processingDiagnostics()
+        let diagnostics = try await coordinator.diagnostics()
+        let publication = await coordinator.waitForPublication(configurationGeneration: 1)
+        XCTAssertNil(outputLayout)
+        XCTAssertNil(processingDiagnostics)
+        XCTAssertNil(diagnostics)
+        XCTAssertFalse(publication)
+        await coordinator.discardPendingPublication()
+        try await coordinator.stop()
+        try await coordinator.stopForOutputFormatRecovery(
+            expectedOutput: .init(objectID: 42, persistentUID: "output")
+        )
+        let stoppedGeneration = try await coordinator.stop(bridgeGeneration: 1)
+        XCTAssertFalse(stoppedGeneration)
+
+        do {
+            try await coordinator.setEffectsEnabled(false)
+            XCTFail("stopped effects update must fail")
+        } catch let error as M1AudioIOError {
+            XCTAssertEqual(error, .generationMismatch)
+        }
+        do {
+            _ = try await coordinator.activateEffects(
+                preparation: .waitingForOutput,
+                activationToken: M1EffectsActivationToken()
+            )
+            XCTFail("stopped activation must fail")
+        } catch let error as M1AudioIOError {
+            XCTAssertEqual(error, .generationMismatch)
+        }
+    }
+
+    func testPreparedStateFactoryRejectsChannelStageTotalAndNativeValidationErrors() throws {
+        XCTAssertThrowsError(try M1RuntimePreparedStateFactory.create(stagesByChannel: []))
+        let gain = M1CompiledProcessingStage.gain(nodeID: UUID(), linearGain: 1)
+        XCTAssertThrowsError(try M1RuntimePreparedStateFactory.create(
+            stagesByChannel: [Array(repeating: gain, count: Int(EAUM1_MAX_STAGES_PER_CHANNEL) + 1)]
+        ))
+        XCTAssertThrowsError(try M1RuntimePreparedStateFactory.create(
+            stagesByChannel: Array(
+                repeating: Array(repeating: gain, count: Int(EAUM1_MAX_STAGES_PER_CHANNEL)),
+                count: 9
+            )
+        ))
+        XCTAssertThrowsError(try M1RuntimePreparedStateFactory.create(
+            stagesByChannel: [[.gain(nodeID: UUID(), linearGain: .nan)]]
+        ))
+        XCTAssertThrowsError(try M1RuntimePreparedStateFactory.create(
+            stagesByChannel: [[.convolution(nodeID: UUID(), taps: [])]]
+        ))
+
+        let prepared = try M1RuntimePreparedStateFactory.create(stagesByChannel: [[
+            .biquad(
+                nodeID: UUID(),
+                bandIndex: 0,
+                coefficients: M1BiquadCoefficients(b0: 1, b1: 0, b2: 0, a1: 0, a2: 0)
+            ),
+            .convolution(nodeID: UUID(), taps: [1]),
+        ]])
+        EAUM1PreparedStateDestroy(prepared)
+    }
+
+    func testRuntimeLeaseAccessCoversPublicationDiagnosticsMaintenanceAndBypassReplacement() async throws {
+        let factory = RealTestRuntimeFactory()
+        let initialState = M1RuntimeInitialState(
+            stagesByChannel: [[], []],
+            effectsEnabled: true
+        )
+        let lease = try factory.createRuntime(
+            bridgeGeneration: 77,
+            initialState: initialState,
+            maximumFrameCount: 256,
+            sampleRate: 48_000
+        )
+        defer { factory.destroyRuntime(lease) }
+        let access = M1RuntimeLeaseAccess(stopHandler: { _, _ in })
+        let installed = await access.install(lease)
+        XCTAssertTrue(installed)
+
+        let publication = try await access.publish(
+            stagesByChannel: [
+                [.gain(nodeID: UUID(), linearGain: 0.5)],
+                [.gain(nodeID: UUID(), linearGain: 0.5)],
+            ],
+            configurationGeneration: 2,
+            bridgeGeneration: 77
+        )
+        XCTAssertEqual(publication.disposition, .active)
+        let generations = await access.configurationGenerations(bridgeGeneration: 77)
+        XCTAssertEqual(generations, .init(active: 2, pending: nil))
+        _ = try await access.diagnostics(bridgeGeneration: 77)
+        XCTAssertEqual(processRuntime(lease.pointer), EAUM1Status(EAUM1StatusOK))
+        XCTAssertEqual(processRuntime(lease.pointer), EAUM1Status(EAUM1StatusOK))
+        var maintenanceStep = await access.performMaintenance(
+            ticket: publication.retirementTicket ?? 0,
+            bridgeGeneration: 77
+        )
+        for _ in 0..<4 {
+            guard case let .maintenanceRequired(ticket) = maintenanceStep else { break }
+            maintenanceStep = await access.performMaintenance(ticket: ticket, bridgeGeneration: 77)
+        }
+        XCTAssertEqual(maintenanceStep, .completed)
+
+        try await access.setEffectsEnabled(false, bridgeGeneration: 77)
+        let preCallbackState = try await access.effectsState(bridgeGeneration: 77)
+        XCTAssertEqual(preCallbackState, .active)
+        XCTAssertEqual(processRuntime(lease.pointer), EAUM1Status(EAUM1StatusOK))
+        XCTAssertEqual(processRuntime(lease.pointer), EAUM1Status(EAUM1StatusOK))
+        let bypassedState = try await access.effectsState(bridgeGeneration: 77)
+        XCTAssertEqual(bypassedState, .bypassed)
+        let canReplace = try await access.canReplaceWhileBypassed(bridgeGeneration: 77)
+        XCTAssertTrue(canReplace)
+        let replaced = try await access.replaceWhileBypassed(
+            stagesByChannel: [[], []],
+            configurationGeneration: 3,
+            bridgeGeneration: 77
+        )
+        XCTAssertTrue(replaced)
+        try await access.enableEffects(
+            bridgeGeneration: 77,
+            activationToken: M1EffectsActivationToken()
+        )
+        await access.discardPendingPrepared(bridgeGeneration: 77)
+    }
+
+    func testRuntimeLeaseAccessRejectsStaleGenerationsAndCancelledActivation() async throws {
+        let factory = RealTestRuntimeFactory()
+        let lease = try factory.createRuntime(
+            bridgeGeneration: 88,
+            initialState: .init(stagesByChannel: [[], []], effectsEnabled: true),
+            maximumFrameCount: 256,
+            sampleRate: 48_000
+        )
+        defer { factory.destroyRuntime(lease) }
+        let stopRecorder = RetirementStopRecorder()
+        let access = M1RuntimeLeaseAccess { reason, generation in
+            await stopRecorder.record(reason: reason, generation: generation)
+        }
+        let installed = await access.install(lease)
+        XCTAssertTrue(installed)
+
+        do {
+            _ = try await access.publish(
+                stagesByChannel: [[], []],
+                configurationGeneration: 1,
+                bridgeGeneration: 999
+            )
+            XCTFail("stale publish must fail")
+        } catch let error as M1AudioIOError {
+            XCTAssertEqual(error, .generationMismatch)
+        }
+        do {
+            _ = try await access.canReplaceWhileBypassed(bridgeGeneration: 999)
+            XCTFail("stale preflight must fail")
+        } catch let error as M1AudioIOError {
+            XCTAssertEqual(error, .generationMismatch)
+        }
+        do {
+            _ = try await access.replaceWhileBypassed(
+                stagesByChannel: [[], []],
+                configurationGeneration: nil,
+                bridgeGeneration: 999
+            )
+            XCTFail("stale replacement must fail")
+        } catch let error as M1AudioIOError {
+            XCTAssertEqual(error, .generationMismatch)
+        }
+        let activeCanReplace = try await access.canReplaceWhileBypassed(bridgeGeneration: 88)
+        XCTAssertFalse(activeCanReplace)
+
+        do {
+            _ = try await access.publish(
+                stagesByChannel: [[]],
+                configurationGeneration: 2,
+                bridgeGeneration: 88
+            )
+            XCTFail("topology mismatch must fail")
+        } catch let error as M1AudioIOError {
+            guard case .invalidConfiguration = error else {
+                return XCTFail("unexpected publication error: \(error)")
+            }
+        }
+        do {
+            try await access.enableEffects(
+                bridgeGeneration: 999,
+                activationToken: M1EffectsActivationToken()
+            )
+            XCTFail("stale activation must fail")
+        } catch let error as M1AudioIOError {
+            XCTAssertEqual(error, .generationMismatch)
+        }
+        let staleTicket = await access.performMaintenance(ticket: 999, bridgeGeneration: 88)
+        guard case .failed = staleTicket else {
+            return XCTFail("stale maintenance ticket must fail")
+        }
+
+        let cancelled = M1EffectsActivationToken()
+        cancelled.invalidate()
+        do {
+            try await access.enableEffects(bridgeGeneration: 88, activationToken: cancelled)
+            XCTFail("cancelled activation must fail")
+        } catch is CancellationError {}
+        do {
+            try await access.setEffectsEnabled(false, bridgeGeneration: 999)
+            XCTFail("stale effects update must fail")
+        } catch let error as M1AudioIOError {
+            XCTAssertEqual(error, .generationMismatch)
+        }
+        do {
+            _ = try await access.effectsState(bridgeGeneration: 999)
+            XCTFail("stale effects query must fail")
+        } catch let error as M1AudioIOError {
+            XCTAssertEqual(error, .generationMismatch)
+        }
+        let staleGenerations = await access.configurationGenerations(bridgeGeneration: 999)
+        XCTAssertNil(staleGenerations)
+        do {
+            _ = try await access.diagnostics(bridgeGeneration: 999)
+            XCTFail("stale diagnostics must fail")
+        } catch let error as M1AudioIOError {
+            XCTAssertEqual(error, .generationMismatch)
+        }
+        let staleMaintenance = await access.performMaintenance(ticket: 1, bridgeGeneration: 999)
+        XCTAssertEqual(staleMaintenance, .bridgeGenerationChanged)
+        await access.discardPendingPrepared(bridgeGeneration: 999)
+        await access.requestRecoverableStop(
+            reason: .effectsBypassTimedOut,
+            bridgeGeneration: 999
+        )
+        let staleStopEvents = await stopRecorder.events()
+        XCTAssertTrue(staleStopEvents.isEmpty)
+        await access.requestRecoverableStop(
+            reason: .effectsBypassTimedOut,
+            bridgeGeneration: 88
+        )
+        let stopEvents = await stopRecorder.events()
+        XCTAssertEqual(stopEvents.count, 1)
+    }
+
+    func testCoordinatorExposesLayoutDiagnosticsAndPublicationControl() async throws {
+        let hal = TestHALRouteOperations()
+        let audioOperations = TestAudioIOOperations()
+        let coordinator = makeWorkingRouteCoordinator(
+            hal: hal,
+            audioOperations: audioOperations
+        )
+        try await coordinator.start()
+        await coordinator.discardPendingPublication()
+
+        let outputLayout = await coordinator.outputLayout()
+        let diagnostics = try await coordinator.diagnostics()
+        XCTAssertEqual(outputLayout?.channels.count, 2)
+        XCTAssertNotNil(diagnostics)
+
+        let configuration = M1ConfigurationSnapshot(
+            effectsEnabled: true,
+            nodes: [M1PreampNode(id: UUID(), isEnabled: true, gainDB: -3, channels: .all)]
+        )
+        let preparation = try await coordinator.prepare(configuration: configuration)
+        let publication = try await coordinator.publish(
+            preparation: preparation,
+            configurationGeneration: 2
+        )
+        XCTAssertNotNil(publication)
+        let runtime = try XCTUnwrap(audioOperations.runtime)
+        XCTAssertEqual(processRuntime(runtime.pointer), EAUM1Status(EAUM1StatusOK))
+        XCTAssertEqual(processRuntime(runtime.pointer), EAUM1Status(EAUM1StatusOK))
+        let published = await coordinator.waitForPublication(configurationGeneration: 2)
+        let processingDiagnostics = await coordinator.processingDiagnostics()
+        XCTAssertTrue(published)
+        XCTAssertNil(processingDiagnostics)
+        await coordinator.discardPendingPublication()
+        try await coordinator.stop()
+    }
+
     private func makeWorkingRouteCoordinator(
         hal: TestHALRouteOperations,
         eventLog: RouteEventLog? = nil,
@@ -1598,6 +2030,9 @@ private final class TestHALRouteOperations: M1HALRouteOperations, @unchecked Sen
     var defaultOutputs: [M1HALOutputDeviceData] = []
     var tapUIDReadback: String?
     var aggregateUIDReadback: String?
+    var aggregateDataOverride: M1HALAggregateData?
+    var aggregateDestroyFailuresRemaining = 0
+    var aggregateDestroyAttempts: [UInt32] = []
     var tapUIDReadFailure = false
     var tapDataReadFailure = false
     var tapObjectIDs: [UInt32] = []
@@ -1692,7 +2127,8 @@ private final class TestHALRouteOperations: M1HALRouteOperations, @unchecked Sen
     }
 
     func readAggregateDevice(_ objectID: UInt32) throws -> M1HALAggregateData {
-        M1HALAggregateData(
+        if let aggregateDataOverride { return aggregateDataOverride }
+        return M1HALAggregateData(
             uid: aggregateRequests.last!.uid,
             tapUIDs: [aggregateRequests.last!.tapUID],
             format: supportedFormat,
@@ -1706,6 +2142,11 @@ private final class TestHALRouteOperations: M1HALRouteOperations, @unchecked Sen
     }
 
     func destroyAggregateDevice(_ objectID: UInt32) throws {
+        aggregateDestroyAttempts.append(objectID)
+        if aggregateDestroyFailuresRemaining > 0 {
+            aggregateDestroyFailuresRemaining -= 1
+            throw TestFailure.injected
+        }
         destroyOrder.append("aggregate:\(objectID)")
     }
 }
@@ -1818,6 +2259,7 @@ private final class TestAudioIOOperations: M1AudioIOOperations, @unchecked Senda
     private(set) var runtime: M1RuntimeHandleLease?
     private var outputs: [UUID: OutputDescription] = [:]
     private var runningOutputs: Set<UUID> = []
+    var stopOutputFailuresRemaining = 0
     private let eventLog: RouteEventLog?
     private var fadeCompletionResponses: [Bool]
 
@@ -1891,6 +2333,10 @@ private final class TestAudioIOOperations: M1AudioIOOperations, @unchecked Senda
     }
 
     func stopOutput(_ output: M1OutputHandle) throws {
+        if stopOutputFailuresRemaining > 0 {
+            stopOutputFailuresRemaining -= 1
+            throw TestFailure.injected
+        }
         runningOutputs.remove(output.identity)
     }
 

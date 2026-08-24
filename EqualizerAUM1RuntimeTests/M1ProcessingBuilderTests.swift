@@ -938,6 +938,21 @@ final class M1ProcessingBuilderTests: XCTestCase {
         }
     }
 
+    func testGraphicEQPreviewWithoutPointsReportsFlatZeroCurve() throws {
+        let preview = try M1ProcessingBuilder.graphicEQPreview(
+            points: [],
+            sampleRate: 48_000,
+            sampleCount: 33
+        )
+        XCTAssertEqual(preview.frequenciesHz.count, 33)
+        XCTAssertEqual(preview.frequenciesHz.first!, 20, accuracy: 1e-9)
+        XCTAssertEqual(preview.frequenciesHz.last!, 20_000, accuracy: 1e-6)
+        XCTAssertTrue(preview.targetGainDB.allSatisfy { $0 == 0 })
+        XCTAssertTrue(preview.compiledGainDB.allSatisfy { $0 == 0 })
+        XCTAssertEqual(preview.maximumErrorDB, 0)
+        XCTAssertEqual(preview.percentile99ErrorDB, 0)
+    }
+
     func testGraphicEQPreviewCoversNyquistOrTwentyKilohertz() throws {
         let points = [
             M1GraphicEQPoint(frequencyHz: 20, gainDB: 0),

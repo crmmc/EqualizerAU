@@ -30,6 +30,118 @@ final class M1AudioIOControllerTests: XCTestCase {
         XCTAssertEqual(operations.calls.last, "hostDiagnostics")
     }
 
+    func testCreateRejectsGenerationAndFormatMismatches() async throws {
+        let controller = M1AudioIOController(operations: TestAudioIOOperations(), timing: testTiming())
+        let inputs = makeCreateInputs()
+
+        let mismatchedFormat = M1AggregateResource(
+            descriptor: inputs.aggregate.descriptor,
+            outputDeviceUID: inputs.aggregate.outputDeviceUID,
+            tapUID: inputs.aggregate.tapUID,
+            format: M1HALPCMFormat(
+                sampleRate: 96_000,
+                channelCount: 2,
+                isNativeFloat32: true,
+                isPacked: true,
+                isNonInterleaved: false,
+                framesPerPacket: 1,
+                bytesPerFrame: 8,
+                bytesPerPacket: 8
+            ),
+            maximumFrameCount: inputs.aggregate.maximumFrameCount,
+            bufferChannelCounts: inputs.aggregate.bufferChannelCounts
+        )
+        do {
+            _ = try await controller.create(
+                generation: inputs.generation,
+                bridgeGeneration: inputs.runtime.bridgeGeneration,
+                aggregate: mismatchedFormat,
+                output: inputs.output,
+                runtime: inputs.runtime
+            )
+            XCTFail("expected format mismatch to be rejected")
+        } catch {
+            XCTAssertEqual(
+                error as? M1AudioIOError,
+                .invalidConfiguration("aggregate and output formats do not match")
+            )
+        }
+
+        do {
+            _ = try await controller.create(
+                generation: M1AudioRouteGeneration(rawValue: inputs.generation.rawValue + 1),
+                bridgeGeneration: inputs.runtime.bridgeGeneration,
+                aggregate: inputs.aggregate,
+                output: inputs.output,
+                runtime: inputs.runtime
+            )
+            XCTFail("expected generation mismatch to be rejected")
+        } catch {
+            XCTAssertEqual(error as? M1AudioIOError, .generationMismatch)
+        }
+    }
+
+    func testDiagnosticsAndStartCaptureRejectForgedOwnershipToken() async throws {
+        let operations = TestAudioIOOperations()
+        let controller = M1AudioIOController(operations: operations, timing: testTiming())
+        let fixture = try await makeIOResource(controller: controller)
+        let forged = M1AudioIOResource(
+            ownershipToken: UUID(),
+            generation: fixture.resource.generation,
+            bridgeGeneration: fixture.resource.bridgeGeneration,
+            host: fixture.resource.host,
+            capture: fixture.resource.capture,
+            runtime: fixture.resource.runtime
+        )
+
+        do {
+            _ = try await controller.diagnostics(forged)
+            XCTFail("expected stale resource to be rejected")
+        } catch {
+            XCTAssertEqual(error as? M1AudioIOError, .staleResource)
+        }
+        do {
+            try await controller.startCapture(forged)
+            XCTFail("expected stale resource to be rejected")
+        } catch {
+            XCTAssertEqual(error as? M1AudioIOError, .staleResource)
+        }
+        XCTAssertEqual(operations.calls, ["createHost", "createCapture"])
+    }
+
+    func testCaptureCreationFailureDestroysPreallocatedHost() async throws {
+        let operations = TestAudioIOOperations()
+        operations.createCaptureFails = true
+        let controller = M1AudioIOController(operations: operations, timing: testTiming())
+        let inputs = makeCreateInputs()
+
+        do {
+            _ = try await controller.create(
+                generation: inputs.generation,
+                bridgeGeneration: inputs.runtime.bridgeGeneration,
+                aggregate: inputs.aggregate,
+                output: inputs.output,
+                runtime: inputs.runtime
+            )
+            XCTFail("capture creation failure must surface")
+        } catch TestAudioIOFailure.injected {}
+        XCTAssertEqual(operations.calls, ["createHost", "createCapture", "destroyHost"])
+    }
+
+    func testCaptureStartFailureIsRetryableWithoutLosingOwnership() async throws {
+        let operations = TestAudioIOOperations()
+        operations.startCaptureFailuresRemaining = 1
+        let controller = M1AudioIOController(operations: operations, timing: testTiming())
+        let fixture = try await makeIOResource(controller: controller)
+
+        do {
+            try await controller.startCapture(fixture.resource)
+            XCTFail("capture start failure must surface")
+        } catch TestAudioIOFailure.injected {}
+        try await controller.startCapture(fixture.resource)
+        XCTAssertEqual(operations.calls.filter { $0 == "startCapture" }.count, 2)
+    }
+
     func testCaptureMustStartBeforeOutputAndStopOrderIsOutputFirst() async throws {
         let operations = TestAudioIOOperations()
         let controller = M1AudioIOController(operations: operations, timing: testTiming())
@@ -174,10 +286,14 @@ private struct IOFixture {
     let resource: M1AudioIOResource
 }
 
-private func makeIOResource(
-    controller: M1AudioIOController,
-    startupSilentFrames: Int = 0
-) async throws -> IOFixture {
+private struct IOCreateInputs {
+    let generation: M1AudioRouteGeneration
+    let output: M1OutputDeviceSnapshot
+    let aggregate: M1AggregateResource
+    let runtime: M1RuntimeHandleLease
+}
+
+private func makeCreateInputs() -> IOCreateInputs {
     let generation = M1AudioRouteGeneration(rawValue: 1)
     let layout = M1OutputLayoutSnapshot(
         sampleRate: 48_000,
@@ -223,12 +339,25 @@ private func makeIOResource(
         bridgeGeneration: 11,
         pointer: OpaquePointer(bitPattern: 0x1000)!
     )
-    let resource = try await controller.create(
+    return IOCreateInputs(
         generation: generation,
-        bridgeGeneration: 11,
-        aggregate: aggregate,
         output: output,
-        runtime: runtime,
+        aggregate: aggregate,
+        runtime: runtime
+    )
+}
+
+private func makeIOResource(
+    controller: M1AudioIOController,
+    startupSilentFrames: Int = 0
+) async throws -> IOFixture {
+    let inputs = makeCreateInputs()
+    let resource = try await controller.create(
+        generation: inputs.generation,
+        bridgeGeneration: inputs.runtime.bridgeGeneration,
+        aggregate: inputs.aggregate,
+        output: inputs.output,
+        runtime: inputs.runtime,
         startupSilentFrames: startupSilentFrames
     )
     return IOFixture(resource: resource)
@@ -253,6 +382,8 @@ private final class TestAudioIOOperations: M1AudioIOOperations, @unchecked Senda
     var calls: [String] = []
     var hostConfigurations: [M1AudioIOHostConfiguration] = []
     var stopOutputFailuresRemaining = 0
+    var startCaptureFailuresRemaining = 0
+    var createCaptureFails = false
     var destroyOutputFailuresRemaining = 0
     var creationDiagnosticsAreInvalid = false
     var runningDiagnosticsAreInvalid = false
@@ -295,10 +426,17 @@ private final class TestAudioIOOperations: M1AudioIOOperations, @unchecked Senda
         host: M1AudioIOHostHandle
     ) throws -> M1CaptureHandle {
         calls.append("createCapture")
+        if createCaptureFails { throw TestAudioIOFailure.injected }
         return M1CaptureHandle()
     }
 
-    func startCapture(_ capture: M1CaptureHandle) throws { calls.append("startCapture") }
+    func startCapture(_ capture: M1CaptureHandle) throws {
+        calls.append("startCapture")
+        if startCaptureFailuresRemaining > 0 {
+            startCaptureFailuresRemaining -= 1
+            throw TestAudioIOFailure.injected
+        }
+    }
     func stopCapture(_ capture: M1CaptureHandle) throws { calls.append("stopCapture") }
     func destroyCapture(_ capture: M1CaptureHandle) throws { calls.append("destroyCapture") }
 

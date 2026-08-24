@@ -355,6 +355,24 @@ final class M1ConfigurationStoreTests: XCTestCase {
         XCTAssertEqual(fileSystem.files["config.json"], previous.data)
     }
 
+    func testBootstrapDirectoryPreparationFailureUsesEditableSafeRecovery() async {
+        let fileSystem = FakeM1ConfigurationFileSystem()
+        fileSystem.failures = ["prepare"]
+        let nodeID = UUID(uuidString: "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA")!
+
+        let result = await M1ConfigurationStore(fileSystem: fileSystem)
+            .bootstrap(initialNodeID: nodeID)
+
+        XCTAssertEqual(
+            result,
+            .recovery(
+                editable: .initial(nodeID: nodeID),
+                runtime: .transparentRecovery,
+                reason: .initialConfigurationWriteFailed
+            )
+        )
+    }
+
     func testInitialWriteFailureUsesEditableDefaultButTransparentRuntime() async {
         let fileSystem = FakeM1ConfigurationFileSystem()
         fileSystem.failures = ["write:1"]
@@ -372,6 +390,10 @@ final class M1ConfigurationStoreTests: XCTestCase {
             )
         )
         XCTAssertNil(fileSystem.files["config.json"])
+    }
+
+    func testApplicationSupportStoreCanBeConstructedWithoutIO() {
+        _ = M1ConfigurationStore.applicationSupportStore()
     }
 
     func testPOSIXStoreCreatesDurableCanonicalFiles() async throws {
@@ -409,6 +431,61 @@ final class M1ConfigurationStoreTests: XCTestCase {
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: abandoned.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: unrelated.path))
+    }
+
+    func testPOSIXFileSystemMapsMissingDirectoryAndInvalidFileOperations() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("M1POSIXConfigurationFailureTests-\(UUID().uuidString)")
+        let fileSystem = M1POSIXConfigurationFileSystem(directoryURL: directory)
+
+        XCTAssertThrowsError(try fileSystem.cleanupTemporaryFiles()) {
+            XCTAssertEqual($0 as? M1ConfigurationStoreIOError, .cleanupTemporaryFiles)
+        }
+        XCTAssertThrowsError(try fileSystem.writeTemporaryFile(Data("x".utf8))) {
+            XCTAssertEqual($0 as? M1ConfigurationStoreIOError, .writeTemporaryFile)
+        }
+        XCTAssertThrowsError(
+            try fileSystem.replaceFile(named: "config.json", withTemporaryFileNamed: "missing.tmp")
+        ) {
+            XCTAssertEqual($0 as? M1ConfigurationStoreIOError, .replaceFile)
+        }
+        XCTAssertThrowsError(try fileSystem.synchronizeDirectory()) {
+            XCTAssertEqual($0 as? M1ConfigurationStoreIOError, .synchronizeDirectory)
+        }
+
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(
+            at: directory.appendingPathComponent("directory.json"),
+            withIntermediateDirectories: false
+        )
+        XCTAssertThrowsError(
+            try fileSystem.readFile(named: "directory.json", maximumSize: 8)
+        ) {
+            XCTAssertEqual($0 as? M1ConfigurationStoreIOError, .readFile)
+        }
+    }
+
+    func testPOSIXFileSystemReadsBoundsReplacesSynchronizesAndRemovesFiles() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("M1POSIXConfigurationFileSystemTests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fileSystem = M1POSIXConfigurationFileSystem(directoryURL: directory)
+        try fileSystem.prepareDirectory()
+
+        XCTAssertNil(try fileSystem.readFile(named: "missing.json", maximumSize: 8))
+        let temporaryName = try fileSystem.writeTemporaryFile(Data("payload".utf8))
+        try fileSystem.replaceFile(named: "config.json", withTemporaryFileNamed: temporaryName)
+        try fileSystem.synchronizeDirectory()
+        XCTAssertEqual(
+            try fileSystem.readFile(named: "config.json", maximumSize: 7),
+            Data("payload".utf8)
+        )
+        XCTAssertThrowsError(try fileSystem.readFile(named: "config.json", maximumSize: 6)) {
+            XCTAssertEqual($0 as? M1ConfigurationStoreIOError, .fileTooLarge)
+        }
+        fileSystem.removeFileIfPresent(named: "config.json")
+        XCTAssertNil(try fileSystem.readFile(named: "config.json", maximumSize: 7))
     }
 
     private func encoded(gainDB: Double) throws -> M1EncodedConfiguration {

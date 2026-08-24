@@ -506,6 +506,96 @@ final class M1ConfigurationCodecTests: XCTestCase {
         }
     }
 
+    func testGraphicEQSchemaSixRejectsInvalidPointsAndLegacyBandsRejectOutOfRangeGain() {
+        let id = UUID()
+        func schemaSix(_ pointsJSON: String) -> Data {
+            Data(
+                "{\"schemaVersion\":6,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"graphicEQ\",\"isEnabled\":true,\"points\":[\(pointsJSON)]}]}".utf8
+            )
+        }
+        let tooHighFrequency = schemaSix("{\"frequencyHz\":30000.1,\"gainDB\":0}")
+        let nonAscending = schemaSix(
+            "{\"frequencyHz\":1000,\"gainDB\":0},{\"frequencyHz\":20,\"gainDB\":0}"
+        )
+        let outOfRangeGain = schemaSix("{\"frequencyHz\":1000,\"gainDB\":24.1}")
+        let tooManyPoints = schemaSix(
+            makeGraphicEQPoints(count: M1GraphicEQContract.maximumPointCount + 1)
+                .map { "{\"frequencyHz\":\($0.frequencyHz),\"gainDB\":\($0.gainDB)}" }
+                .joined(separator: ",")
+        )
+        for payload in [tooHighFrequency, nonAscending, outOfRangeGain, tooManyPoints] {
+            XCTAssertThrowsError(try M1ConfigurationCodec.decode(payload))
+        }
+
+        let clampedLegacyBands = M1GraphicEQContract.legacyFlatPoints.map {
+            "{\"frequencyHz\":\($0.frequencyHz),\"gainDB\":\($0.gainDB)}"
+        }
+        let excessiveGainBands = (["{\"frequencyHz\":25,\"gainDB\":24.5}"]
+            + clampedLegacyBands.dropFirst()).joined(separator: ",")
+        let legacyExcessiveGain = Data(
+            "{\"schemaVersion\":5,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"graphicEQ\",\"isEnabled\":true,\"bands\":[\(excessiveGainBands)]}]}".utf8
+        )
+        XCTAssertThrowsError(try M1ConfigurationCodec.decode(legacyExcessiveGain))
+    }
+
+    func testJSONParserAcceptsEscapedStringsAndRejectsInvalidEscapes() {
+        let id = UUID()
+        let escapedType = Data(
+            "{\"schemaVersion\":8,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"pre\\u0061mp\",\"isEnabled\":true,\"gainDB\":0}]}".utf8
+        )
+        XCTAssertNoThrow(try M1ConfigurationCodec.decode(escapedType))
+
+        let invalidEscape = Data(
+            "{\"schemaVersion\":8,\"effectsEnabled\":true,\"nodes\":[{\"id\":\"\(id)\",\"type\":\"pre\\qmp\",\"isEnabled\":true,\"gainDB\":0}]}".utf8
+        )
+        XCTAssertThrowsError(try M1ConfigurationCodec.decode(invalidEscape))
+    }
+
+    func testCurrentNormalizationMigratesLegacyScopesForEveryEffectKind() throws {
+        let left = M1ChannelSelection.identifiers([try XCTUnwrap(M1ChannelIdentifier("L"))])
+        let right = M1ChannelSelection.identifiers([try XCTUnwrap(M1ChannelIdentifier("R"))])
+        var graphicEQ = M1ProcessingNode.graphicEQ(points: [
+            M1GraphicEQPoint(frequencyHz: 1_000, gainDB: 1),
+        ])
+        graphicEQ.channels = left
+        var convolution = M1ProcessingNode.convolution(
+            ir: M1ConvolutionIRReference(sourcePath: "/tmp/test.wav")
+        )
+        convolution.channels = right
+        let disabledScope = M1ProcessingNode.channels(
+            isEnabled: false,
+            selection: left
+        )
+
+        let normalized = M1ConfigurationMigration.normalizedCurrentNodes([
+            disabledScope,
+            graphicEQ,
+            convolution,
+        ])
+
+        XCTAssertEqual(normalized.map(\.kind), [
+            .channels, .channels, .graphicEQ, .channels, .convolution,
+        ])
+        XCTAssertEqual(normalized[2].channels, .all)
+        XCTAssertEqual(normalized[4].channels, .all)
+    }
+
+    func testPreampV1WireRoundTripsNodeFields() throws {
+        let node = M1PreampNode(
+            id: UUID(),
+            isEnabled: false,
+            gainDB: -4.5,
+            channels: .identifiers([M1ChannelIdentifier("L")!])
+        )
+        let wire = M1PreampNodeWire(node)
+        XCTAssertEqual(wire.type, "preamp")
+        XCTAssertFalse(wire.isEnabled)
+        let decoded = try wire.node()
+        XCTAssertEqual(decoded.id, node.id)
+        XCTAssertEqual(decoded.gainDB, node.gainDB)
+        XCTAssertEqual(decoded.channels, node.channels)
+    }
+
     private func configuration(id: UUID, channel: String) -> M1ConfigurationSnapshot {
         M1ConfigurationSnapshot(
             effectsEnabled: true,

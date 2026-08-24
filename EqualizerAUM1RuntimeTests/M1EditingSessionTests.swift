@@ -495,6 +495,113 @@ final class M1EditingSessionTests: XCTestCase {
         XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(data))
     }
 
+    func testReplaceSelectionFiltersUnknownIDsAndPinsFocusToFirstSelected() {
+        var session = M1EditingSession(nodes: nodes(4))
+        session.select(ids[2], mode: .replacing)
+
+        session.replaceSelection([UUID(), ids[1], ids[3]])
+
+        XCTAssertEqual(session.orderedSelection, [ids[1], ids[3]])
+        XCTAssertEqual(session.focusedNodeID, ids[1])
+        XCTAssertEqual(session.selectionAnchorNodeID, ids[1])
+
+        session.replaceSelection([UUID()])
+
+        XCTAssertTrue(session.selectedNodeIDs.isEmpty)
+        XCTAssertEqual(session.focusedNodeID, ids[1])
+    }
+
+    func testSelectNilClearsSelectionAndUnknownIDIsNoOp() {
+        var session = M1EditingSession(nodes: nodes(3))
+        session.select(ids[1], mode: .replacing)
+
+        session.select(nil, mode: .replacing)
+        XCTAssertTrue(session.selectedNodeIDs.isEmpty)
+        XCTAssertEqual(session.focusedNodeID, ids[1])
+
+        session.select(UUID(), mode: .replacing)
+        XCTAssertTrue(session.selectedNodeIDs.isEmpty)
+        XCTAssertEqual(session.focusedNodeID, ids[1])
+    }
+
+    func testClearedFocusRestoresViaSelectAllAndExtensionUsesFocusAsAnchor() throws {
+        var selectingAll = M1EditingSession(nodes: nodes(3))
+        selectingAll.selectAll()
+        try selectingAll.deleteSelection(effectsEnabled: true)
+        XCTAssertNil(selectingAll.focusedNodeID)
+        try selectingAll.addPreamp(before: nil, nodeID: ids[0], effectsEnabled: true)
+        try selectingAll.addPreamp(before: nil, nodeID: ids[1], effectsEnabled: true)
+        XCTAssertNil(selectingAll.focusedNodeID)
+
+        selectingAll.selectAll()
+
+        XCTAssertEqual(selectingAll.orderedSelection, [ids[0], ids[1]])
+        XCTAssertEqual(selectingAll.focusedNodeID, ids[0])
+        XCTAssertEqual(selectingAll.selectionAnchorNodeID, ids[0])
+
+        var extending = M1EditingSession(nodes: nodes(3))
+        extending.selectAll()
+        try extending.deleteSelection(effectsEnabled: true)
+        try extending.addPreamp(before: nil, nodeID: ids[0], effectsEnabled: true)
+        try extending.addPreamp(before: nil, nodeID: ids[1], effectsEnabled: true)
+
+        extending.select(ids[1], mode: .extending)
+
+        XCTAssertEqual(extending.orderedSelection, [ids[1]])
+        XCTAssertEqual(extending.focusedNodeID, ids[1])
+    }
+
+    func testMoveFocusClampsToNodeRangeAndIgnoresEmptySessions() throws {
+        var session = M1EditingSession(nodes: nodes(3))
+        session.moveFocus(by: 99, extending: false)
+        XCTAssertEqual(session.focusedNodeID, ids[2])
+        session.moveFocus(by: -99, extending: false)
+        XCTAssertEqual(session.focusedNodeID, ids[0])
+
+        var cleared = M1EditingSession(nodes: nodes(3))
+        cleared.selectAll()
+        try cleared.deleteSelection(effectsEnabled: true)
+        try cleared.addPreamp(before: nil, nodeID: ids[0], effectsEnabled: true)
+        cleared.moveFocus(by: -99, extending: false)
+        XCTAssertEqual(cleared.focusedNodeID, ids[0])
+
+        var empty = M1EditingSession(nodes: [])
+        empty.moveFocus(by: 1, extending: true)
+        XCTAssertTrue(empty.nodes.isEmpty)
+    }
+
+    func testDeleteNodeRejectsUnknownID() throws {
+        var session = M1EditingSession(nodes: nodes(2))
+        XCTAssertThrowsError(try session.deleteNode(id: UUID(), effectsEnabled: true)) {
+            XCTAssertEqual($0 as? M1EditingSessionError, .nodeNotFound)
+        }
+        XCTAssertEqual(session.nodes.count, 2)
+    }
+
+    func testAddGraphicEQInsertsBeforeAnchorAndAppendsWithoutAnchor() throws {
+        var session = M1EditingSession(nodes: nodes(2))
+        try session.addGraphicEQ(before: ids[1], nodeID: ids[2], effectsEnabled: true)
+        XCTAssertEqual(session.nodes.map(\.kind), [.preamp, .graphicEQ, .preamp])
+        try session.addGraphicEQ(before: nil, nodeID: ids[3], effectsEnabled: true)
+        XCTAssertEqual(session.nodes.map(\.kind), [.preamp, .graphicEQ, .preamp, .graphicEQ])
+    }
+
+    func testClipboardEncodeRejectsOversizedNodeList() {
+        let many = (0..<35_000).map { index in
+            M1PreampNode(
+                id: UUID(uuidString: String(format: "20000000-0000-0000-0000-%012d", index))!,
+                isEnabled: true,
+                gainDB: 0,
+                channels: .all
+            )
+        }
+        XCTAssertThrowsError(try M1NodeEnvelopeCodec.encode(many)) {
+            if case .clipboardTooLarge = $0 as? M1EditingSessionError {} else {
+                XCTFail("expected clipboardTooLarge, got \($0)")
+            }
+        }
+    }
+
     private func convolutionIR(
         storageID: UUID,
         fileName: String = "Room IR.wav"

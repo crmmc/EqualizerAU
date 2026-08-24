@@ -3,6 +3,26 @@ import XCTest
 
 final class M1ProductControllerTests: XCTestCase {
     @MainActor
+    func testBootstrapUncertainStateFreezesCommandsAtReportedGeneration() async {
+        let nodeID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
+        let snapshot = M1ConfigurationSnapshot.initial(nodeID: nodeID)
+        let store = ProductStoreFake(bootstrapResult: .uncertain(
+            generation: 7,
+            snapshot: snapshot,
+            origin: .initialConfiguration
+        ))
+        let controller = M1ProductController(store: store, audio: ProductAudioFake())
+
+        await controller.bootstrap(initialNodeID: nodeID)
+
+        let product = await controller.snapshot()
+        XCTAssertEqual(product.persistence, .uncertain(generation: 7))
+        XCTAssertEqual(product.draft, snapshot)
+        XCTAssertFalse(product.canEdit)
+        XCTAssertFalse(product.canStart)
+    }
+
+    @MainActor
     func testPendingEditorCommitCoordinatorCommitsRegisteredEditorBeforeUnregister() {
         let coordinator = M1PendingEditorCommitCoordinator()
         var commitCount = 0
@@ -1350,7 +1370,7 @@ final class M1ProductControllerTests: XCTestCase {
         let recovery = Task {
             await fixture.controller.handleAudioLifecycleEvent(.outputFormatChanged(output))
         }
-        await waitUntil { await fixture.audio.startedConfigurations.count == 2 }
+        await fixture.audio.waitUntilStartCount(2)
 
         try await fixture.controller.stop()
         await sleepGate.open()
@@ -1378,7 +1398,7 @@ final class M1ProductControllerTests: XCTestCase {
         let recovery = Task {
             await fixture.controller.handleAudioLifecycleEvent(.outputFormatChanged(output))
         }
-        await waitUntil { await fixture.audio.startedConfigurations.count == 2 }
+        await fixture.audio.waitUntilStartCount(2)
 
         await fixture.controller.handleAudioLifecycleEvent(.willSleep)
         await sleepGate.open()
@@ -1406,7 +1426,7 @@ final class M1ProductControllerTests: XCTestCase {
         let recovery = Task {
             await fixture.controller.handleAudioLifecycleEvent(.outputFormatChanged(output))
         }
-        await waitUntil { await fixture.audio.startedConfigurations.count == 2 }
+        await fixture.audio.waitUntilStartCount(2)
 
         await fixture.controller.handleRecoverableStop(
             bridgeGeneration: 1,
@@ -1439,6 +1459,49 @@ final class M1ProductControllerTests: XCTestCase {
         XCTAssertNil(tracker.finish(currentOutput: nil))
     }
 
+    func testStopAndLifecycleCleanupFailuresRemainVisibleAndOwned() async throws {
+        let explicit = makeFixture(recoveryTiming: immediateRecoveryTiming())
+        await explicit.controller.bootstrap(initialNodeID: explicit.nodeID)
+        try await explicit.controller.start()
+        await explicit.audio.setStopFailuresRemaining(1)
+        await XCTAssertThrowsErrorAsync { try await explicit.controller.stop() }
+        let explicitSnapshot = await explicit.controller.snapshot()
+        XCTAssertEqual(explicitSnapshot.audio, .cleanupRequired)
+        XCTAssertNotNil(explicitSnapshot.visibleError)
+
+        let permission = makeFixture(recoveryTiming: immediateRecoveryTiming())
+        await permission.controller.bootstrap(initialNodeID: permission.nodeID)
+        try await permission.controller.start()
+        await permission.audio.setPermissionVerificationError(
+            M1AudioRouteError.audioCapturePermissionDenied
+        )
+        await permission.audio.setStopFailuresRemaining(1)
+        await permission.controller.handleApplicationActivation()
+        let permissionSnapshot = await permission.controller.snapshot()
+        XCTAssertEqual(permissionSnapshot.audioRecovery, .waitingForRetry(reason: .systemAudioServicesChanged))
+        guard case .capturePermissionCleanupFailed = permissionSnapshot.visibleError else {
+            return XCTFail("permission cleanup failure must remain visible")
+        }
+
+        let sleeping = makeFixture(recoveryTiming: immediateRecoveryTiming())
+        await sleeping.controller.bootstrap(initialNodeID: sleeping.nodeID)
+        try await sleeping.controller.start()
+        await sleeping.audio.setStopFailuresRemaining(1)
+        await sleeping.controller.handleAudioLifecycleEvent(.willSleep)
+        let sleepingSnapshot = await sleeping.controller.snapshot()
+        XCTAssertEqual(sleepingSnapshot.audioRecovery, .suspendedForSleep)
+        XCTAssertNotNil(sleepingSnapshot.visibleError)
+
+        let recovering = makeFixture(recoveryTiming: immediateRecoveryTiming())
+        await recovering.controller.bootstrap(initialNodeID: recovering.nodeID)
+        try await recovering.controller.start()
+        await recovering.audio.setStopFailuresRemaining(1)
+        await recovering.controller.handleAudioLifecycleEvent(.routeChanged)
+        let recoverySnapshot = await recovering.controller.snapshot()
+        XCTAssertEqual(recoverySnapshot.audioRecovery, .waitingForRetry(reason: .routeChanged))
+        XCTAssertNotNil(recoverySnapshot.visibleError)
+    }
+
     func testSleepStopsWithoutRestartingUntilWake() async throws {
         let fixture = makeFixture(recoveryTiming: immediateRecoveryTiming())
         await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
@@ -1453,6 +1516,9 @@ final class M1ProductControllerTests: XCTestCase {
         XCTAssertEqual(sleepingStarts.count, 1)
 
         await fixture.controller.handleAudioLifecycleEvent(.routeChanged)
+        await fixture.controller.handleAudioLifecycleEvent(.outputFormatChanged(
+            .init(objectID: 42, persistentUID: "output-a")
+        ))
         await fixture.controller.handleAudioLifecycleEvent(.systemAudioServicesChanged)
         let stillSleeping = await fixture.controller.snapshot()
         let startsBeforeWake = await fixture.audio.startedConfigurations
@@ -1465,6 +1531,67 @@ final class M1ProductControllerTests: XCTestCase {
         XCTAssertEqual(awake.audio, .running)
         XCTAssertEqual(awake.audioRecovery, .inactive)
         XCTAssertEqual(awakeStarts.count, 2)
+        await fixture.controller.handleAudioLifecycleEvent(.didWake)
+        let startsAfterDuplicateWake = await fixture.audio.startedConfigurations
+        XCTAssertEqual(startsAfterDuplicateWake.count, 2)
+    }
+
+    func testRecoveryCancellationAndCleanupRequiredStateStopAutomaticRetry() async throws {
+        let cancelled = makeFixture(recoveryTiming: immediateRecoveryTiming())
+        await cancelled.controller.bootstrap(initialNodeID: cancelled.nodeID)
+        try await cancelled.controller.start()
+        await cancelled.audio.setStartThrowsCancellation(true)
+        await cancelled.controller.handleAudioLifecycleEvent(.routeChanged)
+        let cancelledSnapshot = await cancelled.controller.snapshot()
+        XCTAssertEqual(cancelledSnapshot.audioRecovery, .waitingForRetry(reason: .routeChanged))
+        XCTAssertNotNil(cancelledSnapshot.visibleError)
+
+        let cleanup = makeFixture(recoveryTiming: immediateRecoveryTiming())
+        await cleanup.controller.bootstrap(initialNodeID: cleanup.nodeID)
+        try await cleanup.controller.start()
+        await cleanup.audio.setStartFailure(state: .cleanupRequired(
+            generation: M1AudioRouteGeneration(rawValue: 1)
+        ))
+        await cleanup.controller.handleAudioLifecycleEvent(.systemAudioServicesChanged)
+        let cleanupSnapshot = await cleanup.controller.snapshot()
+        XCTAssertEqual(
+            cleanupSnapshot.audioRecovery,
+            .waitingForRetry(reason: .systemAudioServicesChanged)
+        )
+        XCTAssertNotNil(cleanupSnapshot.visibleError)
+
+        let deniedCleanup = makeFixture(recoveryTiming: immediateRecoveryTiming())
+        await deniedCleanup.controller.bootstrap(initialNodeID: deniedCleanup.nodeID)
+        try await deniedCleanup.controller.start()
+        await deniedCleanup.audio.setPermissionFailure(true)
+        await deniedCleanup.audio.setPermissionFailureArmsStopFailure(true)
+        await deniedCleanup.controller.handleAudioLifecycleEvent(.routeChanged)
+        let deniedCleanupSnapshot = await deniedCleanup.controller.snapshot()
+        XCTAssertEqual(
+            deniedCleanupSnapshot.audioRecovery,
+            .waitingForRetry(reason: .routeChanged)
+        )
+        XCTAssertNotNil(deniedCleanupSnapshot.visibleError)
+    }
+
+    func testRecoveryBackoffFailureStopsAutomaticRecovery() async throws {
+        let timing = M1AudioRecoveryTiming(
+            maximumAttempts: 3,
+            delayNanoseconds: { _ in 1 },
+            sleep: { _ in throw ProductAudioFakeError.recoverySleepFailed }
+        )
+        let fixture = makeFixture(recoveryTiming: timing)
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        await fixture.audio.setStartFailuresRemaining(1)
+
+        await fixture.controller.handleAudioLifecycleEvent(.routeChanged)
+
+        let snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(snapshot.audioRecovery, .waitingForRetry(reason: .routeChanged))
+        XCTAssertNotNil(snapshot.visibleError)
+        let starts = await fixture.audio.startedConfigurations
+        XCTAssertEqual(starts.count, 2)
     }
 
     func testAutomaticRecoveryStopsAfterBoundedAttempts() async throws {
@@ -1622,7 +1749,7 @@ final class M1ProductControllerTests: XCTestCase {
         let recovery = Task {
             await fixture.controller.handleAudioLifecycleEvent(.routeChanged)
         }
-        await waitUntil { await fixture.audio.startedConfigurations.count == 2 }
+        await fixture.audio.waitUntilStartCount(2)
 
         try await fixture.controller.stop()
         await sleepGate.open()
@@ -1644,12 +1771,12 @@ final class M1ProductControllerTests: XCTestCase {
         let firstRecovery = Task {
             await fixture.controller.handleAudioLifecycleEvent(.routeChanged)
         }
-        await waitUntil { await fixture.audio.startedConfigurations.count == 2 }
+        await fixture.audio.waitUntilStartCount(2)
 
         await fixture.controller.handleAudioLifecycleEvent(.systemAudioServicesChanged)
         await startGate.open()
         await firstRecovery.value
-        await waitUntil { await fixture.audio.startedConfigurations.count == 3 }
+        await fixture.audio.waitUntilStartCount(3)
 
         let snapshot = await fixture.controller.snapshot()
         XCTAssertEqual(snapshot.audio, .running)
@@ -1662,7 +1789,7 @@ final class M1ProductControllerTests: XCTestCase {
         let startGate = ProductTestGate()
         await fixture.audio.setStartGate(startGate)
         let start = Task { try await fixture.controller.start() }
-        await waitUntil { await fixture.audio.startedConfigurations.count == 1 }
+        await fixture.audio.waitUntilStartCount(1)
 
         await fixture.controller.handleAudioLifecycleEvent(.willSleep)
         await XCTAssertThrowsErrorAsync { try await start.value }
@@ -1679,7 +1806,7 @@ final class M1ProductControllerTests: XCTestCase {
         let startGate = ProductTestGate()
         await fixture.audio.setStartGate(startGate)
         let start = Task { try await fixture.controller.start() }
-        await waitUntil { await fixture.audio.startedConfigurations.count == 1 }
+        await fixture.audio.waitUntilStartCount(1)
 
         await fixture.controller.handleAudioLifecycleEvent(.routeChanged)
         await startGate.open()
@@ -1793,6 +1920,141 @@ final class M1ProductControllerTests: XCTestCase {
         XCTAssertEqual(afterUndo.draft.nodes.map(\.id), [fixture.nodeID])
     }
 
+    func testSelectionFocusDeleteAndSnapshotProcessingProjections() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.addPreamp(before: nil, nodeID: fixture.secondNodeID)
+
+        await fixture.controller.replaceSelection(Set([fixture.nodeID, fixture.secondNodeID]))
+        await fixture.controller.moveSelectionFocus(by: -1, extending: false)
+        await fixture.controller.selectFocusedNode(toggling: true)
+        try await fixture.controller.deletePreamp(id: fixture.secondNodeID)
+
+        let stopped = await fixture.controller.snapshot()
+        _ = stopped.processingRequested
+        _ = stopped.canSetProcessing
+        XCTAssertEqual(stopped.draft.nodes.map(\.id), [fixture.nodeID])
+        try await fixture.controller.start()
+        let running = await fixture.controller.snapshot()
+        XCTAssertTrue(running.processingRequested)
+        XCTAssertTrue(running.canSetProcessing)
+    }
+
+    func testDiscardAndExitAndUncertainExitResolveEveryTerminationBranch() async throws {
+        let combined = makeFixture()
+        await combined.controller.bootstrap(initialNodeID: combined.nodeID)
+        try await combined.controller.setGainDB(id: combined.nodeID, gainDB: 3)
+        await combined.store.setNextResult(.failed(generation: 1, reason: .replaceMain))
+        try await combined.controller.setEffectsEnabled(false)
+        let combinedPrompt = await combined.controller.requestTermination()
+        XCTAssertEqual(combinedPrompt, .prompt(.unsavedNodesAndEffects))
+        let combinedExit = await combined.controller.resolveTermination(.discardAndExit)
+        XCTAssertEqual(combinedExit, .terminate)
+
+        let uncertain = makeFixture()
+        await uncertain.controller.bootstrap(initialNodeID: uncertain.nodeID)
+        try await uncertain.controller.setGainDB(id: uncertain.nodeID, gainDB: 4)
+        let candidate = await uncertain.controller.snapshot().draft
+        await uncertain.store.setNextResult(.uncertain(
+            generation: 1,
+            snapshot: candidate,
+            bootstrapOrigin: nil
+        ))
+        try await uncertain.controller.save()
+        let uncertainExit = await uncertain.controller.resolveTermination(.exit)
+        XCTAssertEqual(uncertainExit, .terminate)
+    }
+
+    func testProductAudioProtocolDefaultsAndProductionRecoveryTiming() async throws {
+        let audio = ProductAudioDefaultsFake()
+        let snapshot = M1ConfigurationSnapshot.transparentRecovery
+        try await audio.start(configuration: snapshot, mode: .normal)
+        try await audio.stopForOutputFormatRecovery(
+            expectedOutput: .init(objectID: 42, persistentUID: "output")
+        )
+        let permissionVerified = try await audio.verifyCapturePermission()
+        let discoveredLayout = await audio.discoverOutputLayout()
+        XCTAssertFalse(permissionVerified)
+        XCTAssertNotNil(discoveredLayout)
+        XCTAssertEqual(audio.startCount, 1)
+        XCTAssertEqual(audio.stopCount, 1)
+
+        XCTAssertEqual(M1AudioRecoveryTiming.production.maximumAttempts, 3)
+        XCTAssertEqual(M1AudioRecoveryTiming.production.delayNanoseconds(1), 250_000_000)
+        XCTAssertEqual(M1AudioRecoveryTiming.production.delayNanoseconds(2), 1_000_000_000)
+        try await M1AudioRecoveryTiming.production.sleep(0)
+        XCTAssertNil(M1AudioDevicePropertyEventClassifier.event(for: [], output: nil))
+    }
+
+    func testTerminationRetryPersistsUnsavedEffectsAndExits() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        await fixture.store.setNextResult(.failed(generation: 1, reason: .replaceMain))
+        try await fixture.controller.setEffectsEnabled(false)
+        await fixture.store.setNextResult(.succeeded(
+            generation: 2,
+            snapshot: M1ConfigurationSnapshot(
+                effectsEnabled: false,
+                nodes: M1ConfigurationSnapshot.initial(nodeID: fixture.nodeID).nodes
+            )
+        ))
+
+        let decision = await fixture.controller.resolveTermination(.retry)
+
+        XCTAssertEqual(decision, .terminate)
+    }
+
+    func testTerminationRetryConfirmsUncertainPersistenceAndExits() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.setGainDB(id: fixture.nodeID, gainDB: 4)
+        let candidate = await fixture.controller.snapshot().draft
+        await fixture.store.setNextResult(.uncertain(
+            generation: 1,
+            snapshot: candidate,
+            bootstrapOrigin: nil
+        ))
+        try await fixture.controller.save()
+        await fixture.store.setRetryResult(.succeeded(generation: 1, snapshot: candidate))
+
+        let decision = await fixture.controller.resolveTermination(.retry)
+
+        XCTAssertEqual(decision, .terminate)
+        let retries = await fixture.store.retryGenerations
+        XCTAssertEqual(retries, [1])
+    }
+
+    func testTerminationSaveAndShutdownFailuresStayOpen() async throws {
+        let saveFailure = makeFixture()
+        await saveFailure.controller.bootstrap(initialNodeID: saveFailure.nodeID)
+        try await saveFailure.controller.setGainDB(id: saveFailure.nodeID, gainDB: 3)
+        await saveFailure.store.setNextResult(.failed(generation: 1, reason: .replaceMain))
+        let saveDecision = await saveFailure.controller.resolveTermination(.saveAndExit)
+        guard case .stayOpen = saveDecision else {
+            return XCTFail("failed Save and Exit must keep the app open")
+        }
+
+        let shutdownFailure = makeFixture()
+        await shutdownFailure.controller.bootstrap(initialNodeID: shutdownFailure.nodeID)
+        try await shutdownFailure.controller.start()
+        await shutdownFailure.audio.setStopFailuresRemaining(1)
+        let shutdownDecision = await shutdownFailure.controller.resolveTermination(.discardAndExit)
+        guard case .stayOpen = shutdownDecision else {
+            return XCTFail("failed shutdown must keep the app open")
+        }
+        let snapshot = await shutdownFailure.controller.snapshot()
+        XCTAssertNotNil(snapshot.visibleError)
+
+        let cleanShutdownFailure = makeFixture()
+        await cleanShutdownFailure.controller.bootstrap(initialNodeID: cleanShutdownFailure.nodeID)
+        try await cleanShutdownFailure.controller.start()
+        await cleanShutdownFailure.audio.setStopFailuresRemaining(1)
+        let cleanDecision = await cleanShutdownFailure.controller.requestTermination()
+        guard case .stayOpen = cleanDecision else {
+            return XCTFail("failed clean shutdown must keep the app open")
+        }
+    }
+
     func testTerminationClassifiesNodeEffectsCombinedAndUncertainStates() async throws {
         let nodeFixture = makeFixture()
         await nodeFixture.controller.bootstrap(initialNodeID: nodeFixture.nodeID)
@@ -1897,6 +2159,38 @@ final class M1ProductControllerTests: XCTestCase {
     }
 }
 
+private final class ProductAudioDefaultsFake: M1ProductAudioControlling, @unchecked Sendable {
+    private(set) var startCount = 0
+    private(set) var stopCount = 0
+    private let layout = M1OutputLayoutSnapshot(
+        sampleRate: 48_000,
+        maximumFrameCount: 256,
+        bufferChannelCounts: [2],
+        semanticPositionsByChannelIndex: [.left, .right]
+    )!
+
+    func state() -> M1NativeAudioRouteState { .stopped }
+    func start(configuration: M1ConfigurationSnapshot) { startCount += 1 }
+    func stop() { stopCount += 1 }
+    func stop(bridgeGeneration: UInt64) -> Bool { false }
+    func outputLayout() -> M1OutputLayoutSnapshot? { layout }
+    func prepare(configuration: M1ConfigurationSnapshot) -> M1AudioConfigurationPreparation {
+        .waitingForOutput
+    }
+    func publish(
+        preparation: M1AudioConfigurationPreparation,
+        configurationGeneration: UInt64
+    ) -> M1PreparedPublication? { nil }
+    func waitForPublication(configurationGeneration: UInt64) -> Bool { false }
+    func discardPendingPublication() {}
+    func setEffectsEnabled(_ enabled: Bool) {}
+    func activateEffects(
+        preparation: M1AudioConfigurationPreparation,
+        activationToken: M1EffectsActivationToken
+    ) -> M1ProcessingBuildDiagnostics? { nil }
+    func diagnostics() -> M1RealtimeDiagnostics? { nil }
+}
+
 private func productConvolutionIR(storageID: UUID, fileName: String) -> M1ConvolutionIRReference {
     M1ConvolutionIRReference(sourcePath: "/tmp/\(storageID.uuidString)-\(fileName)")
 }
@@ -1992,6 +2286,7 @@ private actor ProductAudioFake: M1ProductAudioControlling {
     var formatRecoveryStops: [M1MonitoredOutputIdentity] = []
     var publishedGenerations: [UInt64] = []
     var publishedStagesByChannel: [[[M1CompiledProcessingStage]]] = []
+    private var startCountWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
     private var running = false
     private var startCancellationRequested = false
     private var startGate: ProductTestGate?
@@ -2007,10 +2302,13 @@ private actor ProductAudioFake: M1ProductAudioControlling {
     private var preparationGate: ProductTestGate?
     private var publishFails = false
     private var startFailuresRemaining = 0
+    private var startThrowsCancellation = false
     private var permissionFailure = false
+    private var permissionFailureArmsStopFailure = false
     private var permissionVerificationError: (any Error)?
     private var permissionVerificationGate: ProductTestGate?
     private var stopGates: [ProductTestGate] = []
+    private var stopFailuresRemaining = 0
     var permissionVerificationCount = 0
     private var layoutGate: ProductTestGate?
     private var discardedPublicationGenerations: Set<UInt64> = []
@@ -2035,11 +2333,18 @@ private actor ProductAudioFake: M1ProductAudioControlling {
     func start(configuration: M1ConfigurationSnapshot, mode: M1AudioRouteStartMode) async throws {
         calls.append("start")
         startedConfigurations.append(configuration)
+        let readyWaiters = startCountWaiters.filter { startedConfigurations.count >= $0.count }
+        startCountWaiters.removeAll { startedConfigurations.count >= $0.count }
+        readyWaiters.forEach { $0.continuation.resume() }
         startModes.append(mode)
         startCancellationRequested = false
         if let startGate { await startGate.wait() }
         if startCancellationRequested { throw CancellationError() }
-        if permissionFailure { throw M1AudioRouteError.audioCapturePermissionDenied }
+        if startThrowsCancellation { throw CancellationError() }
+        if permissionFailure {
+            if permissionFailureArmsStopFailure { stopFailuresRemaining = 1 }
+            throw M1AudioRouteError.audioCapturePermissionDenied
+        }
         if startFailuresRemaining > 0 {
             startFailuresRemaining -= 1
             throw ProductAudioFakeError.startFailed
@@ -2048,10 +2353,14 @@ private actor ProductAudioFake: M1ProductAudioControlling {
         running = true
     }
 
-    func stop() async {
+    func stop() async throws {
         calls.append("stop")
         let stopGate = stopGates.isEmpty ? nil : stopGates.removeFirst()
         await stopGate?.wait()
+        if stopFailuresRemaining > 0 {
+            stopFailuresRemaining -= 1
+            throw ProductAudioFakeError.stopFailed
+        }
         startCancellationRequested = true
         await startGate?.open()
         running = false
@@ -2065,9 +2374,9 @@ private actor ProductAudioFake: M1ProductAudioControlling {
         running = false
     }
 
-    func stop(bridgeGeneration: UInt64) async -> Bool {
+    func stop(bridgeGeneration: UInt64) async throws -> Bool {
         guard bridgeGeneration == 1 else { return false }
-        await stop()
+        try await stop()
         return true
     }
 
@@ -2169,6 +2478,13 @@ private actor ProductAudioFake: M1ProductAudioControlling {
         }
     }
 
+    func waitUntilStartCount(_ count: Int) async {
+        if startedConfigurations.count >= count { return }
+        await withCheckedContinuation { continuation in
+            startCountWaiters.append((count, continuation))
+        }
+    }
+
     func setStartGate(_ gate: ProductTestGate?) { startGate = gate }
     func setStartFailure(state: M1NativeAudioRouteState) { startFailureState = state }
     func setOutputAvailable(_ available: Bool) { outputAvailable = available }
@@ -2184,7 +2500,11 @@ private actor ProductAudioFake: M1ProductAudioControlling {
     func setActivationGate(_ gate: ProductTestGate?) { activationGate = gate }
     func setEffectsFailure(_ fails: Bool) { effectsFailure = fails }
     func setStartFailuresRemaining(_ count: Int) { startFailuresRemaining = count }
+    func setStartThrowsCancellation(_ value: Bool) { startThrowsCancellation = value }
     func setPermissionFailure(_ fails: Bool) { permissionFailure = fails }
+    func setPermissionFailureArmsStopFailure(_ value: Bool) {
+        permissionFailureArmsStopFailure = value
+    }
     func setPermissionVerificationError(_ error: (any Error)?) {
         permissionVerificationError = error
     }
@@ -2192,15 +2512,18 @@ private actor ProductAudioFake: M1ProductAudioControlling {
         permissionVerificationGate = gate
     }
     func setStopGates(_ gates: [ProductTestGate]) { stopGates = gates }
+    func setStopFailuresRemaining(_ count: Int) { stopFailuresRemaining = count }
     func setLayoutGate(_ gate: ProductTestGate?) { layoutGate = gate }
 }
 
 private enum ProductAudioFakeError: Error {
     case startFailed
+    case stopFailed
     case preparationFailed
     case publishFailed
     case effectsFailed
     case permissionProbeFailed
+    case recoverySleepFailed
 }
 
 private actor ProductTestGate {

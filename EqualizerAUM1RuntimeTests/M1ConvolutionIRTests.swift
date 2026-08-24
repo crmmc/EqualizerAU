@@ -32,6 +32,16 @@ final class M1ConvolutionIRTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: storeDirectory.path))
     }
 
+    func testRejectsInvalidTargetSampleRatesBeforeOpeningSource() {
+        let store = M1ConvolutionIRStore(directoryURL: temporaryDirectory)
+        let reference = M1ConvolutionIRReference(sourcePath: "/missing.wav")
+        for sampleRate in [Double.nan, 7_999, 768_001] {
+            XCTAssertThrowsError(try store.load(reference: reference, targetSampleRate: sampleRate)) {
+                XCTAssertEqual($0 as? M1ConvolutionIRError, .invalidMetadata)
+            }
+        }
+    }
+
     func testSampleRateMismatchBypassesWithoutResampling() throws {
         let source = temporaryDirectory.appendingPathComponent("delta.wav")
         try wavFloat32(sampleRate: 24_000, channels: [[1, 0, 0, 0]]).write(to: source)
@@ -269,6 +279,54 @@ final class M1ConvolutionIRTests: XCTestCase {
         XCTAssertThrowsError(try store.load(reference: reference, targetSampleRate: 48_000)) {
             XCTAssertEqual($0 as? M1ConvolutionIRError, .missingResource)
         }
+
+        let beneathAFile = M1ConvolutionIRStore.reference(
+            sourceURL: source.appendingPathComponent("nested.wav")
+        )
+        XCTAssertThrowsError(try store.load(reference: beneathAFile, targetSampleRate: 48_000)) {
+            XCTAssertEqual($0 as? M1ConvolutionIRError, .missingResource)
+        }
+    }
+
+    func testPCMSampleWidthsEightTwentyFourAndThirtyTwoBitsDecode() throws {
+        let store = M1ConvolutionIRStore(directoryURL: temporaryDirectory.appendingPathComponent("store"))
+
+        let eightBitPayload = Data([0, 128, 255, 64])
+        let eightBit = temporaryDirectory.appendingPathComponent("pcm8.wav")
+        try wav(format: 1, bits: 8, sampleRate: 48_000, channels: 1, payload: eightBitPayload)
+            .write(to: eightBit)
+        let eightBitLoaded = try store.load(
+            reference: M1ConvolutionIRStore.reference(sourceURL: eightBit),
+            targetSampleRate: 48_000
+        )
+        XCTAssertEqual(eightBitLoaded.channels[0].count, 4)
+        XCTAssertEqual(eightBitLoaded.channels[0][0], -1, accuracy: 0.000_1)
+        XCTAssertEqual(eightBitLoaded.channels[0][1], 0, accuracy: 0.000_1)
+        XCTAssertEqual(eightBitLoaded.channels[0][2], 127.0 / 128, accuracy: 0.000_1)
+
+        let twentyFourBitPayload = Data([0x00, 0x00, 0x80, 0xFF, 0xFF, 0x7F])
+        let twentyFourBit = temporaryDirectory.appendingPathComponent("pcm24.wav")
+        try wav(format: 1, bits: 24, sampleRate: 48_000, channels: 1, payload: twentyFourBitPayload)
+            .write(to: twentyFourBit)
+        let twentyFourBitLoaded = try store.load(
+            reference: M1ConvolutionIRStore.reference(sourceURL: twentyFourBit),
+            targetSampleRate: 48_000
+        )
+        XCTAssertEqual(twentyFourBitLoaded.channels[0][0], -1, accuracy: 0.000_1)
+        XCTAssertEqual(twentyFourBitLoaded.channels[0][1], 1, accuracy: 0.000_1)
+
+        var thirtyTwoBitPayload = Data()
+        thirtyTwoBitPayload.appendLittleEndian(UInt32(bitPattern: Int32.min))
+        thirtyTwoBitPayload.appendLittleEndian(UInt32(bitPattern: Int32.max))
+        let thirtyTwoBit = temporaryDirectory.appendingPathComponent("pcm32.wav")
+        try wav(format: 1, bits: 32, sampleRate: 48_000, channels: 1, payload: thirtyTwoBitPayload)
+            .write(to: thirtyTwoBit)
+        let thirtyTwoBitLoaded = try store.load(
+            reference: M1ConvolutionIRStore.reference(sourceURL: thirtyTwoBit),
+            targetSampleRate: 48_000
+        )
+        XCTAssertEqual(thirtyTwoBitLoaded.channels[0][0], -1, accuracy: 0.000_1)
+        XCTAssertEqual(thirtyTwoBitLoaded.channels[0][1], 1, accuracy: 0.000_1)
     }
 
     func testBuilderBypassesMissingSourceAndRestoresItOnNextBuild() throws {

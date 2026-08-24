@@ -1817,4 +1817,302 @@ static EAUM1Runtime *createRuntimeWithPrepared(
     XCTAssertEqual(EAUM1TestHooks::livePreparedCount(), liveBefore);
 }
 
+- (void)testPublicAPIValidationBranchesAcrossEntryPoints {
+    // EAUM1PreparedStateCreate
+    const float gain = 1.0f;
+    EAUM1PreparedState *prepared = nullptr;
+    XCTAssertEqual(EAUM1PreparedStateCreate(&gain, 1, nullptr), EAUM1StatusInvalidArgument);
+    XCTAssertEqual(EAUM1PreparedStateCreate(&gain, 0, &prepared), EAUM1StatusInvalidArgument);
+    XCTAssertEqual(prepared, nullptr);
+    std::vector<float> tooManyChannels(EAUM1_MAX_PREPARED_STAGE_COUNT + 1, 1.0f);
+    XCTAssertEqual(
+        EAUM1PreparedStateCreate(tooManyChannels.data(), (uint32_t)tooManyChannels.size(), &prepared),
+        EAUM1StatusCapacityExceeded
+    );
+    XCTAssertEqual(prepared, nullptr);
+
+    // EAUM1PreparedStateCreateV2
+    XCTAssertEqual(EAUM1PreparedStateCreateV2(nullptr, &prepared), EAUM1StatusInvalidArgument);
+    const EAUM1PreparedStage gainStage = {
+        .kind = EAUM1PreparedStageGain, .channelIndex = 0, .b0 = 1.0,
+    };
+    EAUM1PreparedDescription v2 = {.channelCount = 1, .stageCount = 1, .stages = nullptr};
+    XCTAssertEqual(EAUM1PreparedStateCreateV2(&v2, &prepared), EAUM1StatusInvalidArgument);
+    v2.stages = &gainStage;
+    v2.stageCount = EAUM1_MAX_PREPARED_STAGE_COUNT + 1;
+    XCTAssertEqual(EAUM1PreparedStateCreateV2(&v2, &prepared), EAUM1StatusInvalidArgument);
+    v2.stageCount = 1;
+    const EAUM1PreparedStage outOfRangeStage = {
+        .kind = EAUM1PreparedStageGain, .channelIndex = 1, .b0 = 1.0,
+    };
+    v2.stages = &outOfRangeStage;
+    XCTAssertEqual(EAUM1PreparedStateCreateV2(&v2, &prepared), EAUM1StatusInvalidArgument);
+
+    // EAUM1PreparedStateCreateV3
+    float tap = 1.0f;
+    const EAUM1PreparedConvolution convolution = {.tapCount = 1, .taps = &tap};
+    EAUM1PreparedDescriptionV3 v3 = {
+        .channelCount = 1,
+        .stageCount = 1,
+        .stages = &gainStage,
+        .convolutionCount = 1,
+        .convolutions = nullptr,
+    };
+    XCTAssertEqual(EAUM1PreparedStateCreateV3(nullptr, &prepared), EAUM1StatusInvalidArgument);
+    XCTAssertEqual(EAUM1PreparedStateCreateV3(&v3, &prepared), EAUM1StatusInvalidArgument);
+    v3.convolutions = &convolution;
+    v3.stageCount = EAUM1_MAX_PREPARED_STAGE_COUNT + 1;
+    XCTAssertEqual(EAUM1PreparedStateCreateV3(&v3, &prepared), EAUM1StatusInvalidArgument);
+    v3.stageCount = 1;
+    v3.stages = &outOfRangeStage;
+    XCTAssertEqual(EAUM1PreparedStateCreateV3(&v3, &prepared), EAUM1StatusInvalidArgument);
+    const EAUM1PreparedStage unsorted[] = {outOfRangeStage, gainStage};
+    v3.stages = unsorted;
+    v3.stageCount = 2;
+    v3.channelCount = 2;
+    XCTAssertEqual(EAUM1PreparedStateCreateV3(&v3, &prepared), EAUM1StatusInvalidArgument);
+
+    // EAUM1RuntimeCreate argument validation
+    XCTAssertEqual(EAUM1PreparedStateCreate(&gain, 1, &prepared), EAUM1StatusOK);
+    const uint32_t channelCount = 1;
+    EAUM1RuntimeDescription description = {
+        .sampleRate = 48000.0,
+        .maximumFrameCount = 8,
+        .bufferCount = 1,
+        .channelCounts = &channelCount,
+        .effectsEnabled = 1,
+    };
+    EAUM1Runtime *runtime = reinterpret_cast<EAUM1Runtime *>(0x1);
+    XCTAssertEqual(EAUM1RuntimeCreate(nullptr, &prepared, &runtime), EAUM1StatusInvalidArgument);
+    XCTAssertEqual(EAUM1RuntimeCreate(&description, nullptr, &runtime), EAUM1StatusInvalidArgument);
+    EAUM1PreparedState *nullPrepared = nullptr;
+    XCTAssertEqual(EAUM1RuntimeCreate(&description, &nullPrepared, &runtime), EAUM1StatusInvalidArgument);
+    XCTAssertEqual(runtime, nullptr);
+    XCTAssertNotEqual(prepared, nullptr);
+
+    const uint32_t zeroChannelCount = 0;
+    description.channelCounts = &zeroChannelCount;
+    XCTAssertEqual(EAUM1RuntimeCreate(&description, &prepared, &runtime), EAUM1StatusInvalidArgument);
+    description.channelCounts = &channelCount;
+    description.sampleRate = 0.0;
+    XCTAssertEqual(EAUM1RuntimeCreate(&description, &prepared, &runtime), EAUM1StatusInvalidArgument);
+    description.sampleRate = 1.0e12;
+    XCTAssertEqual(EAUM1RuntimeCreate(&description, &prepared, &runtime), EAUM1StatusInvalidArgument);
+    description.sampleRate = 48000.0;
+    description.maximumFrameCount = 0;
+    XCTAssertEqual(EAUM1RuntimeCreate(&description, &prepared, &runtime), EAUM1StatusInvalidArgument);
+    description.maximumFrameCount = 8;
+    description.bufferCount = 0;
+    XCTAssertEqual(EAUM1RuntimeCreate(&description, &prepared, &runtime), EAUM1StatusInvalidArgument);
+    description.bufferCount = 1;
+    description.channelCounts = nullptr;
+    XCTAssertEqual(EAUM1RuntimeCreate(&description, &prepared, &runtime), EAUM1StatusInvalidArgument);
+    description.channelCounts = &channelCount;
+    description.effectsEnabled = 2;
+    XCTAssertEqual(EAUM1RuntimeCreate(&description, &prepared, &runtime), EAUM1StatusInvalidArgument);
+    description.effectsEnabled = 1;
+    XCTAssertNotEqual(prepared, nullptr);
+
+    // Publication entry points reject null arguments and topology mismatch
+    EAUM1PublicationOutcome outcome = {};
+    XCTAssertEqual(EAUM1RuntimePublishPrepared(runtime, &prepared, &outcome), EAUM1StatusInvalidArgument);
+    XCTAssertEqual(EAUM1RuntimePublishPrepared(nullptr, &prepared, &outcome), EAUM1StatusInvalidArgument);
+    EAUM1PreparedState *candidate = nullptr;
+    XCTAssertEqual(EAUM1RuntimePublishPrepared(runtime, &candidate, &outcome), EAUM1StatusInvalidArgument);
+    XCTAssertEqual(EAUM1RuntimePublishPrepared(runtime, &prepared, nullptr), EAUM1StatusInvalidArgument);
+    XCTAssertEqual(
+        EAUM1RuntimeReplacePreparedWhileBypassed(runtime, &prepared, &outcome),
+        EAUM1StatusInvalidArgument
+    );
+    XCTAssertEqual(EAUM1RuntimeReplacePreparedWhileBypassed(nullptr, &prepared, &outcome), EAUM1StatusInvalidArgument);
+    XCTAssertEqual(EAUM1RuntimeReplacePreparedWhileBypassed(runtime, &candidate, &outcome), EAUM1StatusInvalidArgument);
+    XCTAssertEqual(EAUM1RuntimeReplacePreparedWhileBypassed(runtime, &prepared, nullptr), EAUM1StatusInvalidArgument);
+    XCTAssertEqual(EAUM1RuntimeCanReplacePreparedWhileBypassed(nullptr), EAUM1StatusInvalidArgument);
+    XCTAssertEqual(EAUM1RuntimePerformMaintenance(nullptr, 0, &outcome), EAUM1StatusInvalidArgument);
+    XCTAssertEqual(EAUM1RuntimePerformMaintenance(runtime, 0, nullptr), EAUM1StatusInvalidArgument);
+    XCTAssertEqual(EAUM1RuntimeDiscardPendingPrepared(nullptr), EAUM1StatusInvalidArgument);
+    XCTAssertEqual(EAUM1RuntimeSetEffectsEnabled(nullptr, 1), EAUM1StatusInvalidArgument);
+    XCTAssertEqual(EAUM1RuntimeSetEffectsEnabled(runtime, 2), EAUM1StatusInvalidArgument);
+    EAUM1EffectsState effectsState = EAUM1EffectsStateActive;
+    XCTAssertEqual(EAUM1RuntimeCopyEffectsState(nullptr, &effectsState), EAUM1StatusInvalidArgument);
+    XCTAssertEqual(EAUM1RuntimeCopyEffectsState(runtime, nullptr), EAUM1StatusInvalidArgument);
+    EAUM1RuntimeDiagnostics diagnostics = {};
+    XCTAssertEqual(EAUM1RuntimeCopyDiagnostics(nullptr, &diagnostics), EAUM1StatusInvalidArgument);
+    XCTAssertEqual(EAUM1RuntimeCopyDiagnostics(runtime, nullptr), EAUM1StatusInvalidArgument);
+    EAUM1ConcurrencyDiagnostics concurrency = {};
+    XCTAssertEqual(EAUM1RuntimeCopyConcurrencyDiagnostics(nullptr, &concurrency), EAUM1StatusInvalidArgument);
+    XCTAssertEqual(EAUM1RuntimeCopyConcurrencyDiagnostics(runtime, nullptr), EAUM1StatusInvalidArgument);
+    XCTAssertFalse(EAUM1TestHooks::acquireCallback(nullptr));
+
+    // Valid creation, then topology mismatch on publication
+    XCTAssertEqual(EAUM1RuntimeCreate(&description, &prepared, &runtime), EAUM1StatusOK);
+    XCTAssertEqual(prepared, nullptr);
+    const float stereoTargets[] = {1.0f, 1.0f};
+    EAUM1PreparedState *stereo = nullptr;
+    XCTAssertEqual(EAUM1PreparedStateCreate(stereoTargets, 2, &stereo), EAUM1StatusOK);
+    XCTAssertEqual(
+        EAUM1RuntimePublishPrepared(runtime, &stereo, &outcome),
+        EAUM1StatusTopologyMismatch
+    );
+    XCTAssertNotEqual(stereo, nullptr);
+    XCTAssertEqual(
+        EAUM1RuntimeReplacePreparedWhileBypassed(runtime, &stereo, &outcome),
+        EAUM1StatusTopologyMismatch
+    );
+    EAUM1PreparedStateDestroy(stereo);
+
+    // Publishing while structurally bypassed takes the bypassed replacement path
+    const float target = 2.0f;
+    EAUM1PreparedState *bypassedPrepared = nullptr;
+    XCTAssertEqual(EAUM1PreparedStateCreate(&target, 1, &bypassedPrepared), EAUM1StatusOK);
+    const EAUM1RuntimeDescription bypassedDescription = {
+        .sampleRate = 1000.0,
+        .maximumFrameCount = 8,
+        .bufferCount = 1,
+        .channelCounts = &channelCount,
+        .effectsEnabled = 0,
+    };
+    EAUM1Runtime *bypassedRuntime = nullptr;
+    XCTAssertEqual(
+        EAUM1RuntimeCreate(&bypassedDescription, &bypassedPrepared, &bypassedRuntime),
+        EAUM1StatusOK
+    );
+    XCTAssertEqual(EAUM1RuntimeCanReplacePreparedWhileBypassed(bypassedRuntime), EAUM1StatusOK);
+    EAUM1PreparedState *replacement = nullptr;
+    XCTAssertEqual(EAUM1PreparedStateCreate(&target, 1, &replacement), EAUM1StatusOK);
+    XCTAssertEqual(
+        EAUM1RuntimePublishPrepared(bypassedRuntime, &replacement, &outcome),
+        EAUM1StatusOK
+    );
+    XCTAssertEqual(replacement, nullptr);
+    XCTAssertEqual(outcome.flags, EAUM1PublicationCandidatePublished);
+    EAUM1RuntimeDestroy(bypassedRuntime);
+    EAUM1RuntimeDestroy(runtime);
+}
+
+- (void)testPreparedDescriptionCapacityAndStageValidationBranches {
+    EAUM1PreparedState *prepared = nullptr;
+    const EAUM1PreparedStage unitGain = {
+        .kind = EAUM1PreparedStageGain, .channelIndex = 0, .b0 = 1.0,
+    };
+    EAUM1PreparedDescription v2 = {
+        .channelCount = 0,
+        .stageCount = 1,
+        .stages = &unitGain,
+    };
+    XCTAssertEqual(EAUM1PreparedStateCreateV2(&v2, &prepared), EAUM1StatusInvalidArgument);
+    XCTAssertEqual(prepared, nullptr);
+
+    const float tap = 1.0f;
+    const EAUM1PreparedConvolution convolution = {.tapCount = 1, .taps = &tap};
+    EAUM1PreparedDescriptionV3 v3 = {
+        .channelCount = 1,
+        .stageCount = 1,
+        .stages = &unitGain,
+        .convolutionCount = 1,
+        .convolutions = &convolution,
+    };
+    std::vector<EAUM1PreparedStage> excessive(EAUM1_MAX_STAGES_PER_CHANNEL + 1, unitGain);
+    v3.stageCount = static_cast<uint32_t>(excessive.size());
+    v3.stages = excessive.data();
+    v3.convolutionCount = 0;
+    v3.convolutions = nullptr;
+    XCTAssertEqual(EAUM1PreparedStateCreateV3(&v3, &prepared), EAUM1StatusCapacityExceeded);
+    XCTAssertEqual(prepared, nullptr);
+
+    const EAUM1PreparedStage malformedGain = {
+        .kind = EAUM1PreparedStageGain, .channelIndex = 0, .b0 = 1.0, .b1 = 1.0,
+    };
+    v3.stageCount = 1;
+    v3.stages = &malformedGain;
+    XCTAssertEqual(EAUM1PreparedStateCreateV3(&v3, &prepared), EAUM1StatusInvalidArgument);
+    XCTAssertEqual(prepared, nullptr);
+
+    // V2/V3 reject a null prepared-state output pointer
+    XCTAssertEqual(EAUM1PreparedStateCreateV2(&v2, nullptr), EAUM1StatusInvalidArgument);
+    XCTAssertEqual(EAUM1PreparedStateCreateV3(&v3, nullptr), EAUM1StatusInvalidArgument);
+
+    // Runtime creation rejects a total channel count that overflows uint32
+    const uint32_t saturatingChannelCounts[] = {
+        std::numeric_limits<uint32_t>::max(),
+        1,
+    };
+    const float unitTarget = 1.0f;
+    EAUM1PreparedState *overflowPrepared = nullptr;
+    XCTAssertEqual(EAUM1PreparedStateCreate(&unitTarget, 1, &overflowPrepared), EAUM1StatusOK);
+    const EAUM1RuntimeDescription overflowDescription = {
+        .sampleRate = 48000.0,
+        .maximumFrameCount = 8,
+        .bufferCount = 2,
+        .channelCounts = saturatingChannelCounts,
+        .effectsEnabled = 1,
+    };
+    EAUM1Runtime *overflowRuntime = reinterpret_cast<EAUM1Runtime *>(0x1);
+    XCTAssertEqual(
+        EAUM1RuntimeCreate(&overflowDescription, &overflowPrepared, &overflowRuntime),
+        EAUM1StatusInvalidArgument
+    );
+    XCTAssertEqual(overflowRuntime, nullptr);
+    EAUM1PreparedStateDestroy(overflowPrepared);
+}
+
+- (void)testMaintenancePromotesEquivalentPendingWithoutCrossfade {
+    const uint64_t liveBefore = EAUM1TestHooks::livePreparedCount();
+    const float tap = 0.5f;
+    const EAUM1PreparedConvolution convolution = {.tapCount = 1, .taps = &tap};
+    const EAUM1PreparedStage stages[] = {
+        {.kind = EAUM1PreparedStageConvolution, .channelIndex = 0, .b0 = 0.0},
+        {.kind = EAUM1PreparedStageConvolution, .channelIndex = 0, .b0 = 0.0},
+    };
+    EAUM1PreparedState *prepared = createPreparedV3(1, stages, 2, &convolution, 1);
+    EAUM1Runtime *runtime = createRuntimeWithPrepared(&prepared, 1, 512, 1000.0);
+
+    EAUM1PreparedState *equivalent = createPreparedV3(1, stages, 2, &convolution, 1);
+    EAUM1PublicationOutcome outcome = {};
+    XCTAssertEqual(
+        EAUM1RuntimePublishPrepared(runtime, &equivalent, &outcome),
+        EAUM1StatusOK
+    );
+    XCTAssertEqual(outcome.flags, EAUM1PublicationCandidatePublished);
+    XCTAssertEqual(outcome.retirementTicket, 0u);
+
+    const EAUM1PreparedStage singleStage[] = {
+        {.kind = EAUM1PreparedStageConvolution, .channelIndex = 0, .b0 = 0.0},
+    };
+    XCTAssertTrue(EAUM1TestHooks::acquireCallback(runtime));
+    EAUM1PreparedState *crossfade = createPreparedV3(1, singleStage, 1, &convolution, 1);
+    const uintptr_t crossfadeAddress = reinterpret_cast<uintptr_t>(crossfade);
+    XCTAssertEqual(EAUM1RuntimePublishPrepared(runtime, &crossfade, &outcome), EAUM1StatusOK);
+    const uint64_t ticket = outcome.retirementTicket;
+
+    EAUM1PreparedState *pending = createPreparedV3(1, singleStage, 1, &convolution, 1);
+    const uintptr_t pendingAddress = reinterpret_cast<uintptr_t>(pending);
+    XCTAssertEqual(EAUM1RuntimePublishPrepared(runtime, &pending, &outcome), EAUM1StatusOK);
+    XCTAssertEqual(pending, nullptr);
+    XCTAssertEqual(
+        outcome.flags,
+        EAUM1PublicationCandidateCoalesced | EAUM1PublicationMaintenanceRequired
+    );
+
+    EAUM1TestHooks::completeCallback(runtime);
+    float transition[10];
+    std::fill(std::begin(transition), std::end(transition), 1.0f);
+    EAUM1AudioBuffer buffer = {.samples = transition, .channelCount = 1};
+    XCTAssertEqual(EAUM1RuntimeProcess(runtime, &buffer, 1, 10), EAUM1StatusOK);
+
+    EAUM1PublicationOutcome promoted = {};
+    XCTAssertEqual(EAUM1RuntimePerformMaintenance(runtime, ticket, &promoted), EAUM1StatusOK);
+    XCTAssertEqual(
+        promoted.flags,
+        EAUM1PublicationRetiredReclaimed | EAUM1PublicationCandidatePublished
+    );
+    XCTAssertEqual(EAUM1TestHooks::activePrepared(runtime), pendingAddress);
+    XCTAssertEqual(EAUM1TestHooks::retiredPrepared(runtime), 0u);
+    XCTAssertEqual(EAUM1TestHooks::pendingPrepared(runtime), 0u);
+    XCTAssertNotEqual(EAUM1TestHooks::activePrepared(runtime), crossfadeAddress);
+
+    EAUM1RuntimeDestroy(runtime);
+    XCTAssertEqual(EAUM1TestHooks::livePreparedCount(), liveBefore);
+}
+
 @end

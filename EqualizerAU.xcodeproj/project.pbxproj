@@ -48,6 +48,9 @@
 		D10000000000000000000001 /* EAUM1Runtime.cpp in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000002 /* EAUM1Runtime.cpp */; };
 		D10000000000000000000002 /* libEqualizerAUM1Runtime.a in Frameworks */ = {isa = PBXBuildFile; fileRef = D20000000000000000000009 /* libEqualizerAUM1Runtime.a */; };
 		D10000000000000000000003 /* EqualizerAUM1App.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000003 /* EqualizerAUM1App.swift */; };
+		D1000000000000000000003B /* M1AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002F /* M1AppModel.swift */; };
+		D1000000000000000000003C /* M1AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002F /* M1AppModel.swift */; };
+		D1000000000000000000003D /* M1AppModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000030 /* M1AppModelTests.swift */; };
 		D10000000000000000000004 /* EAUM1RuntimeSmokeTests.mm in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000006 /* EAUM1RuntimeSmokeTests.mm */; };
 		D10000000000000000000005 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 200000000000000000000008 /* XCTest.framework */; };
 		D10000000000000000000006 /* libEqualizerAUM1Runtime.a in Frameworks */ = {isa = PBXBuildFile; fileRef = D20000000000000000000009 /* libEqualizerAUM1Runtime.a */; };
@@ -102,6 +105,10 @@
 		D10000000000000000000036 /* M1ConvolutionIR.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002A /* M1ConvolutionIR.swift */; };
 		D10000000000000000000037 /* M1ConvolutionIRTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002B /* M1ConvolutionIRTests.swift */; };
 		D10000000000000000000038 /* M1SystemAudioLifecycleMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002C /* M1SystemAudioLifecycleMonitor.swift */; };
+		D1000000000000000000003E /* M1SystemAudioLifecycleMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002C /* M1SystemAudioLifecycleMonitor.swift */; };
+		D1000000000000000000003F /* M1SystemAudioLifecycleMonitorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000031 /* M1SystemAudioLifecycleMonitorTests.swift */; };
+		D10000000000000000000040 /* M1SystemAudioLifecycleOperations.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000032 /* M1SystemAudioLifecycleOperations.swift */; };
+		D10000000000000000000041 /* M1SystemAppAdapters.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000033 /* M1SystemAppAdapters.swift */; };
 		D10000000000000000000039 /* Accelerate.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002D /* Accelerate.framework */; };
 		D1000000000000000000003A /* Accelerate.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002D /* Accelerate.framework */; };
 		F10000000000000000000001 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000001 /* Localizable.xcstrings */; };
@@ -200,6 +207,11 @@
 		D20000000000000000000001 /* EAUM1Runtime.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = EAUM1Runtime.h; sourceTree = "<group>"; };
 		D20000000000000000000002 /* EAUM1Runtime.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = EAUM1Runtime.cpp; sourceTree = "<group>"; };
 		D20000000000000000000003 /* EqualizerAUM1App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EqualizerAUM1App.swift; sourceTree = "<group>"; };
+		D2000000000000000000002F /* M1AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1AppModel.swift; sourceTree = "<group>"; };
+		D20000000000000000000030 /* M1AppModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1AppModelTests.swift; sourceTree = "<group>"; };
+		D20000000000000000000031 /* M1SystemAudioLifecycleMonitorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1SystemAudioLifecycleMonitorTests.swift; sourceTree = "<group>"; };
+		D20000000000000000000032 /* M1SystemAudioLifecycleOperations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1SystemAudioLifecycleOperations.swift; sourceTree = "<group>"; };
+		D20000000000000000000033 /* M1SystemAppAdapters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1SystemAppAdapters.swift; sourceTree = "<group>"; };
 		D20000000000000000000004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		D20000000000000000000005 /* EqualizerAUM1-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "EqualizerAUM1-Bridging-Header.h"; sourceTree = "<group>"; };
 		D20000000000000000000006 /* EAUM1RuntimeSmokeTests.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = EAUM1RuntimeSmokeTests.mm; sourceTree = "<group>"; };
@@ -464,6 +476,8 @@
 			isa = PBXGroup;
 			children = (
 				D20000000000000000000003 /* EqualizerAUM1App.swift */,
+				D2000000000000000000002F /* M1AppModel.swift */,
+				D20000000000000000000033 /* M1SystemAppAdapters.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -512,6 +526,7 @@
 				D20000000000000000000019 /* M1SystemAudioIO.swift */,
 				D2000000000000000000001B /* M1NativeAudioRouteCoordinator.swift */,
 				D2000000000000000000002C /* M1SystemAudioLifecycleMonitor.swift */,
+				D20000000000000000000032 /* M1SystemAudioLifecycleOperations.swift */,
 			);
 			path = Audio;
 			sourceTree = "<group>";
@@ -558,6 +573,8 @@
 				D20000000000000000000025 /* M1ConfigurationStoreTests.swift */,
 				D20000000000000000000027 /* M1ProductControllerTests.swift */,
 				D20000000000000000000029 /* M1EditingSessionTests.swift */,
+				D20000000000000000000030 /* M1AppModelTests.swift */,
+				D20000000000000000000031 /* M1SystemAudioLifecycleMonitorTests.swift */,
 				E20000000000000000000001 /* M1EditingPerformanceTests.swift */,
 			);
 			path = EqualizerAUM1RuntimeTests;
@@ -914,6 +931,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				D10000000000000000000003 /* EqualizerAUM1App.swift in Sources */,
+				D1000000000000000000003B /* M1AppModel.swift in Sources */,
+				D10000000000000000000041 /* M1SystemAppAdapters.swift in Sources */,
 				D1000000000000000000000B /* M1ProcessingModel.swift in Sources */,
 				D10000000000000000000035 /* M1ConvolutionIR.swift in Sources */,
 				D1000000000000000000000E /* M1ProcessingBuilder.swift in Sources */,
@@ -929,6 +948,7 @@
 				D1000000000000000000001E /* M1NativeAudioRouteCoordinator.swift in Sources */,
 				D1000000000000000000002F /* M1ProductController.swift in Sources */,
 				D10000000000000000000038 /* M1SystemAudioLifecycleMonitor.swift in Sources */,
+				D10000000000000000000040 /* M1SystemAudioLifecycleOperations.swift in Sources */,
 				D10000000000000000000032 /* M1EditingSession.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -963,6 +983,10 @@
 				D10000000000000000000026 /* M1AudioIOControllerTests.swift in Sources */,
 				D10000000000000000000027 /* M1CoreAudioDataParserTests.swift in Sources */,
 				D10000000000000000000031 /* M1ProductControllerTests.swift in Sources */,
+				D1000000000000000000003C /* M1AppModel.swift in Sources */,
+				D1000000000000000000003D /* M1AppModelTests.swift in Sources */,
+				D1000000000000000000003E /* M1SystemAudioLifecycleMonitor.swift in Sources */,
+				D1000000000000000000003F /* M1SystemAudioLifecycleMonitorTests.swift in Sources */,
 				D10000000000000000000034 /* M1EditingSessionTests.swift in Sources */,
 				E10000000000000000000001 /* M1EditingPerformanceTests.swift in Sources */,
 			);
