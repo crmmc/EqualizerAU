@@ -81,4 +81,4 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/CodeQLDerivedData" \
             CODE_SIGNING_ALLOWED=NO build
 
-      - uses: github/codeql-action/analyze@fbcef3fba75224ed6476919775448de80b23cb15 # v3.32.0
+      - uses: github/codeql-action/analyze@439137e1b50c27ba9e2f9befc93e43091b449c34 # v3.32.0
