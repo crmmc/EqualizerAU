@@ -73,9 +73,11 @@ jobs:
           languages: swift,cpp
 
       - name: Build for analysis
+        # Generic destination: the CodeQL tracer may run xcodebuild under
+        # Rosetta on arm64 runners, so arch=arm64 would match no device.
         run: |
           xcodebuild -project EqualizerAU.xcodeproj -scheme EqualizerAU \
-            -configuration Debug -destination 'platform=macOS,arch=arm64' \
+            -configuration Debug -destination 'platform=macOS' \
             -derivedDataPath "$RUNNER_TEMP/CodeQLDerivedData" \
             CODE_SIGNING_ALLOWED=NO build
 
