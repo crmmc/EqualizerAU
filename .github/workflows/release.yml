@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
 
@@ -15,8 +19,9 @@ jobs:
   test:
     name: Build & Test (macOS arm64)
     runs-on: macos-15
+    timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Select latest stable Xcode
         run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
@@ -36,8 +41,9 @@ jobs:
     name: Package & draft release
     runs-on: macos-15
     needs: test
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Select latest stable Xcode
         run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
@@ -66,7 +72,7 @@ jobs:
           cp .build/release/EqualizerAU-*-arm64-preview.zip.sha256 dist/
 
       - name: Publish draft GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@f3cad8bcbf209fe591aa1823e372c5d96b7fc800 # v2.3.1
         with:
           draft: true
           body_path: dist/release-notes.md
