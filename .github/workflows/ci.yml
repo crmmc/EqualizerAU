@@ -5,15 +5,23 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
 
 jobs:
-  test:
-    name: Build & Test (macOS arm64)
+  checks:
+    name: Static checks
     runs-on: macos-15
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Select latest stable Xcode
         run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
@@ -26,5 +34,51 @@ jobs:
           for script in scripts/*.sh; do bash -n "$script"; done
           for script in scripts/*.zsh; do zsh -n "$script"; done
 
+      - name: M1 isolation audit
+        run: zsh scripts/verify-m1-isolation.sh
+
+      - name: Realtime safety audit
+        run: zsh scripts/verify-m1-realtime.sh
+
+      - name: Localization consistency
+        run: zsh scripts/verify-localization.zsh
+
+  coverage:
+    name: Coverage gate (95% core logic)
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Select latest stable Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
       - name: Run M1 coverage gate
         run: make coverage DD="$RUNNER_TEMP/DerivedData"
+
+  analyze:
+    name: CodeQL (swift-cpp)
+    runs-on: macos-15
+    timeout-minutes: 45
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+
+      - name: Select latest stable Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - uses: github/codeql-action/init@fbcef3fba75224ed6476919775448de80b23cb15 # v3.32.0
+        with:
+          languages: swift-cpp
+
+      - name: Build for analysis
+        run: |
+          xcodebuild -project EqualizerAU.xcodeproj -scheme EqualizerAU \
+            -configuration Debug -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath "$RUNNER_TEMP/CodeQLDerivedData" \
+            CODE_SIGNING_ALLOWED=NO build
+
+      - uses: github/codeql-action/analyze@fbcef3fba75224ed6476919775448de80b23cb15 # v3.32.0
+        with:
+          category: "/language:swift-cpp"

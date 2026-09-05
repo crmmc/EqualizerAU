@@ -11,7 +11,7 @@ APP_NAME  := EqualizerAU.app
 APP_PATH   := Build/Products/$(CONFIG)/M1/$(APP_NAME)
 BUILT_APP  := $(DD)/$(APP_PATH)
 
-.PHONY: all build release test coverage clean
+.PHONY: all build release test coverage check clean
 
 all: build
 
@@ -46,6 +46,15 @@ coverage:
 		-skip-testing:EqualizerAUM1RuntimeTests/EAUM1RuntimeSmokeTests/testTenThousandPublicationsRaceARealCallbackThreadWithoutLeaks \
 		test
 	@ruby scripts/check-m1-coverage.rb $(COVERAGE_RESULT)
+
+check:
+	plutil -lint EqualizerAU.xcodeproj/project.pbxproj EqualizerAU/Resources/Info.plist EqualizerAUM1/Resources/Info.plist
+	@for script in scripts/*.sh; do bash -n "$$script"; done
+	@for script in scripts/*.zsh; do zsh -n "$$script"; done
+	zsh scripts/verify-m1-isolation.sh
+	zsh scripts/verify-m1-realtime.sh
+	zsh scripts/verify-localization.zsh
+	@echo "Static checks passed"
 
 clean:
 	xcodebuild -project $(PROJECT) -scheme $(SCHEME) -derivedDataPath $(DD) clean
