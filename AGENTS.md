@@ -149,7 +149,8 @@ flowchart LR
 - `.github/workflows/ci.yml`：push 到 `main` 或 PR 触发，三个并行 job 组成质量门禁：
   "Static checks"（project/Plist lint、shell 语法检查、M1 隔离审计、实时安全审计、本地化一致性，与
   `make check` 同命令）、"Coverage gate (95% core logic)"（`EqualizerAUM1RuntimeTests` 全量 +
-  覆盖率门禁，`CODE_SIGNING_ALLOWED=NO`）和 "CodeQL (swift-cpp)"（Swift/C++ 静态安全分析）。
+  覆盖率门禁，`CODE_SIGNING_ALLOWED=NO`）和 "CodeQL (swift)"（Swift 静态安全分析；C++ 运行时的
+  把关由覆盖率门禁与实时安全审计承担，CodeQL 的 C++ 提取器在 arm64 macOS runner 上不稳定）。
   CI 只跑 hostless 套件，与 M7 自动化门禁口径一致；hosted 套件需启动 GUI 宿主，属于本地签名验收，
   runner 上启动不稳定，不纳入 CI。实时竞态压力测试
   `testTenThousandPublicationsRaceARealCallbackThreadWithoutLeaks` 依赖独占调度，共享 runner 上偶发
