@@ -72,7 +72,7 @@ jobs:
           cp .build/release/EqualizerAU-*-arm64-preview.zip.sha256 dist/
 
       - name: Publish draft GitHub Release
-        uses: softprops/action-gh-release@f3cad8bcbf209fe591aa1823e372c5d96b7fc800 # v2.3.1
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           draft: true
           body_path: dist/release-notes.md
