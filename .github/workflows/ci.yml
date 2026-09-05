@@ -57,7 +57,7 @@ jobs:
         run: make coverage DD="$RUNNER_TEMP/DerivedData"
 
   analyze:
-    name: CodeQL (swift-cpp)
+    name: CodeQL (swift)
     runs-on: macos-15
     timeout-minutes: 45
     permissions:
@@ -70,7 +70,11 @@ jobs:
 
       - uses: github/codeql-action/init@fbcef3fba75224ed6476919775448de80b23cb15 # v3.32.0
         with:
-          languages: swift,cpp
+          # Swift only: the C++ extractor on arm64 macOS runners relies on
+          # DYLD-injecting an x86_64 libtrace into xcodebuild, which drops
+          # compilations intermittently and makes the job flaky. EAUM1Runtime.cpp
+          # stays gated by the coverage suite and the realtime source audit.
+          languages: swift
 
       - name: Build for analysis
         # Generic destination: the CodeQL tracer may run xcodebuild under
