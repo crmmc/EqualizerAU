@@ -70,7 +70,7 @@ jobs:
 
       - uses: github/codeql-action/init@fbcef3fba75224ed6476919775448de80b23cb15 # v3.32.0
         with:
-          languages: swift-cpp
+          languages: swift,cpp
 
       - name: Build for analysis
         run: |
@@ -80,5 +80,3 @@ jobs:
             CODE_SIGNING_ALLOWED=NO build
 
       - uses: github/codeql-action/analyze@fbcef3fba75224ed6476919775448de80b23cb15 # v3.32.0
-        with:
-          category: "/language:swift-cpp"

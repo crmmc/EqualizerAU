@@ -130,7 +130,9 @@ private extension M1AudioLifecycleTiming {
 }
 
 private final class LifecycleOperationsFake: M1AudioLifecycleSystemOperations, @unchecked Sendable {
-    struct Registration {
+    // Core Audio invokes listener blocks on the queue supplied at registration time;
+    // the fake mirrors that contract, so Registration may cross queues unchecked.
+    struct Registration: @unchecked Sendable {
         let objectID: AudioObjectID
         let selector: AudioObjectPropertySelector
         let scope: AudioObjectPropertyScope
