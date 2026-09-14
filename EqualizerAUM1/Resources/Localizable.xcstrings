@@ -1789,6 +1789,16 @@
         }
       }
     },
+    "The pasted GraphicEQ line has %lld points, above the %lld-point limit; nothing was inserted.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "粘贴的 GraphicEQ 行包含 %lld 个点，超过 %lld 点上限；未插入任何节点。"
+          }
+        }
+      }
+    },
     "Toggle Focused Processor Selection": {
       "localizations": {
         "zh-Hans": {

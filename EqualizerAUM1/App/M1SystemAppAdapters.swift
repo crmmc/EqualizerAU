@@ -58,6 +58,10 @@ final class M1SystemPasteboard: M1PasteboardAccess, @unchecked Sendable {
         await MainActor.run { NSPasteboard.general.data(forType: type) }
     }
 
+    func readText() async -> String? {
+        await MainActor.run { NSPasteboard.general.string(forType: .string) }
+    }
+
     func writeNodes(_ data: Data) async -> Bool {
         await MainActor.run {
             let pasteboard = NSPasteboard.general

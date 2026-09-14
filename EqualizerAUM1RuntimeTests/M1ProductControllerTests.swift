@@ -1901,6 +1901,108 @@ final class M1ProductControllerTests: XCTestCase {
         XCTAssertNil(after.visibleError)
     }
 
+    func testPasteGraphicEQTextCreatesEnabledSelectedGraphicEQNodeAndUndoRestores() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        let pasteboard = ProductPasteboardFake(
+            text: "GraphicEQ: 20 -0.2; 21 -0.5; 22 -0.7; 23 -0.9;"
+        )
+
+        try await fixture.controller.paste(from: pasteboard)
+
+        let snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(snapshot.draft.nodes.count, 2)
+        let pasted = try XCTUnwrap(snapshot.draft.nodes.last)
+        XCTAssertEqual(pasted.kind, .graphicEQ)
+        XCTAssertTrue(pasted.isEnabled)
+        XCTAssertEqual(pasted.graphicEQPoints, [
+            M1GraphicEQPoint(frequencyHz: 20, gainDB: -0.2),
+            M1GraphicEQPoint(frequencyHz: 21, gainDB: -0.5),
+            M1GraphicEQPoint(frequencyHz: 22, gainDB: -0.7),
+            M1GraphicEQPoint(frequencyHz: 23, gainDB: -0.9),
+        ])
+        XCTAssertEqual(snapshot.selectedNodeIDs, Set([pasted.id]))
+        XCTAssertEqual(snapshot.focusedNodeID, pasted.id)
+        XCTAssertTrue(snapshot.canUndo)
+
+        try await fixture.controller.undo()
+
+        let afterUndo = await fixture.controller.snapshot()
+        XCTAssertEqual(afterUndo.draft.nodes.map(\.id), [fixture.nodeID])
+    }
+
+    func testPastePrefersPrivateNodeDataOverGraphicEQText() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        let encoded = try M1NodeEnvelopeCodec.encode([
+            M1PreampNode(id: UUID(), isEnabled: true, gainDB: -6, channels: .all)
+        ])
+        let pasteboard = ProductPasteboardFake(data: encoded.data, text: "GraphicEQ: 100 1")
+
+        try await fixture.controller.paste(from: pasteboard)
+
+        let snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(snapshot.draft.nodes.count, 2)
+        XCTAssertEqual(snapshot.draft.nodes.last?.kind, .preamp)
+        XCTAssertEqual(snapshot.draft.nodes.last?.gainDB, -6)
+    }
+
+    func testPasteGraphicEQTextWithPreampLineCreatesOneNodePerGraphicEQLine() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        let pasteboard = ProductPasteboardFake(
+            text: "Preamp: -3\nGraphicEQ: 100 1\nGraphicEQ: 200 2"
+        )
+
+        try await fixture.controller.paste(from: pasteboard)
+
+        let snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(snapshot.draft.nodes.count, 3)
+        XCTAssertEqual(snapshot.draft.nodes.map(\.kind), [.preamp, .graphicEQ, .graphicEQ])
+        XCTAssertEqual(snapshot.draft.nodes[1].graphicEQPoints, [
+            M1GraphicEQPoint(frequencyHz: 100, gainDB: 1)
+        ])
+        XCTAssertEqual(snapshot.draft.nodes[2].graphicEQPoints, [
+            M1GraphicEQPoint(frequencyHz: 200, gainDB: 2)
+        ])
+        XCTAssertEqual(snapshot.selectedNodeIDs, Set(snapshot.draft.nodes.suffix(2).map(\.id)))
+    }
+
+    func testPasteGraphicEQTextOverPointLimitShowsVisibleErrorWithoutInserting() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        let points = (20..<533).map { "\($0) -1" }.joined(separator: "; ")
+        let pasteboard = ProductPasteboardFake(text: "GraphicEQ: \(points)")
+        let before = await fixture.controller.snapshot()
+
+        try await fixture.controller.paste(from: pasteboard)
+
+        let after = await fixture.controller.snapshot()
+        XCTAssertEqual(
+            after.visibleError,
+            .pastedGraphicEQPointLimitExceeded(
+                count: 513,
+                maximum: M1GraphicEQContract.maximumPointCount
+            )
+        )
+        XCTAssertEqual(after.draft.nodes, before.draft.nodes)
+        XCTAssertFalse(after.canUndo)
+    }
+
+    func testPastePlainTextWithoutGraphicEQContentIsNoOp() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        let pasteboard = ProductPasteboardFake(text: "hello")
+        let before = await fixture.controller.snapshot()
+
+        try await fixture.controller.paste(from: pasteboard)
+
+        let after = await fixture.controller.snapshot()
+        XCTAssertEqual(after.draft.nodes, before.draft.nodes)
+        XCTAssertFalse(after.canUndo)
+        XCTAssertNil(after.visibleError)
+    }
+
     func testSuccessfulCutWritesBeforeDeletingAndIsOneUndoStep() async throws {
         let fixture = makeFixture()
         await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
@@ -2545,14 +2647,18 @@ private actor ProductTestGate {
 
 private actor ProductPasteboardFake: M1PasteboardAccess {
     var data: Data?
+    var text: String?
     private var writeSucceeds: Bool
 
-    init(data: Data? = nil, writeSucceeds: Bool = true) {
+    init(data: Data? = nil, text: String? = nil, writeSucceeds: Bool = true) {
         self.data = data
+        self.text = text
         self.writeSucceeds = writeSucceeds
     }
 
     func readNodes() -> Data? { data }
+
+    func readText() -> String? { text }
 
     func writeNodes(_ data: Data) -> Bool {
         guard writeSucceeds else { return false }
