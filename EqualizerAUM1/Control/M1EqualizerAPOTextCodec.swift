@@ -71,15 +71,12 @@ enum M1EqualizerAPOTextCodec {
             }
             if isFilterLine(line) {
                 switch try parseFilterLine(line) {
-                case .node(let specification):
+                case .node(let specification, let ignoredParameterCount):
                     nodes.append(.filter(specification: specification))
                     report.filterLineCount += 1
+                    report.ignoredParameterCount += ignoredParameterCount
                 case .ignored:
                     report.ignoredLineCount += 1
-                case .nodeWithIgnoredParameters(let specification, let ignoredParameters):
-                    nodes.append(.filter(specification: specification))
-                    report.filterLineCount += 1
-                    report.ignoredParameterCount += ignoredParameters
                 }
                 if report.filterLineCount > maximumFilterLines {
                     throw M1EqualizerAPOTextCodecError.filterLineLimitExceeded(
@@ -107,8 +104,7 @@ enum M1EqualizerAPOTextCodec {
     }
 
     private enum FilterLineParseOutcome {
-        case node(M1FilterSpecification)
-        case nodeWithIgnoredParameters(M1FilterSpecification, Int)
+        case node(M1FilterSpecification, ignoredParameterCount: Int)
         case ignored
     }
 
@@ -173,12 +169,7 @@ enum M1EqualizerAPOTextCodec {
             // Reference ignores bandwidth for shelves; the slope position wins.
             ignoredParameters += 1
         }
-        let bandwidthOctaves: Double?
-        if let raw = bandwidthMatch.flatMap({ Double($0.value) }), raw.isFinite {
-            bandwidthOctaves = raw
-        } else {
-            bandwidthOctaves = nil
-        }
+        let bandwidthOctaves = bandwidthMatch.flatMap { Double($0.value) }
 
         func validQ(_ value: Double) -> Bool {
             value.isFinite
@@ -228,9 +219,7 @@ enum M1EqualizerAPOTextCodec {
             width: width,
             cornerFrequency: cornerFrequency
         )
-        return ignoredParameters > 0
-            ? .nodeWithIgnoredParameters(specification, ignoredParameters)
-            : .node(specification)
+        return .node(specification, ignoredParameterCount: ignoredParameters)
     }
 
     /// Paste-layer alias normalization; matching is case-insensitive, unlike

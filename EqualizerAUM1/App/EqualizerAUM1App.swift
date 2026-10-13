@@ -1329,60 +1329,39 @@ private struct M1EditorView: View {
         }
     }
 
+    @ViewBuilder
     private func filterEditor(_ node: M1ProcessingNode) -> some View {
-        guard let specification = node.filterSpecification else {
-            return AnyView(EmptyView())
-        }
-        return AnyView(HStack(spacing: 8) {
-            if filterBypassSummary(node.id) != nil {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .help(filterBypassSummary(node.id) ?? "")
-            }
-            Menu {
-                ForEach(M1FilterType.allCases, id: \.self) { type in
-                    Button(filterTypeTitle(type)) {
-                        model.setFilterSpecification(
-                            specification.withType(type),
-                            id: node.id
-                        )
+        if let specification = node.filterSpecification {
+            HStack(spacing: 8) {
+                if filterBypassSummary(node.id) != nil {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .help(filterBypassSummary(node.id) ?? "")
+                }
+                Menu {
+                    ForEach(M1FilterType.allCases, id: \.self) { type in
+                        Button(filterTypeTitle(type)) {
+                            model.setFilterSpecification(
+                                specification.withType(type),
+                                id: node.id
+                            )
+                        }
                     }
+                } label: {
+                    Text(filterTypeTitle(specification.type))
+                        .frame(minWidth: 72)
                 }
-            } label: {
-                Text(filterTypeTitle(specification.type))
-                    .frame(minWidth: 72)
-            }
-            .fixedSize()
+                .fixedSize()
 
-            M1FilterParameterTextField(
-                titleKey: "Center frequency",
-                value: specification.frequencyHz,
-                minimum: M1FilterContract.minimumFrequencyHz,
-                maximum: M1FilterContract.maximumFrequencyHz,
-                onChange: { frequency in
-                    model.setFilterSpecification(
-                        specification.withFrequencyHz(frequency),
-                        id: node.id
-                    )
-                },
-                onEditingChanged: {
-                    if $0 { model.beginGesture(node.id) }
-                    else { model.endGesture(node.id) }
-                }
-            )
-            .frame(width: 72)
-            Text("Hz").foregroundStyle(.secondary)
-
-            if specification.type.supportsGain {
                 M1FilterParameterTextField(
-                    titleKey: "Gain",
-                    value: specification.gainDB,
-                    minimum: M1FilterContract.minimumGainDB,
-                    maximum: M1FilterContract.maximumGainDB,
-                    onChange: { gain in
+                    titleKey: "Center frequency",
+                    value: specification.frequencyHz,
+                    minimum: M1FilterContract.minimumFrequencyHz,
+                    maximum: M1FilterContract.maximumFrequencyHz,
+                    onChange: { frequency in
                         model.setFilterSpecification(
-                            specification.withGainDB(gain),
+                            specification.withFrequencyHz(frequency),
                             id: node.id
                         )
                     },
@@ -1391,12 +1370,33 @@ private struct M1EditorView: View {
                         else { model.endGesture(node.id) }
                     }
                 )
-                .frame(width: 64)
-                Text("dB").foregroundStyle(.secondary)
-            }
+                .frame(width: 72)
+                Text("Hz").foregroundStyle(.secondary)
 
-            filterWidthEditor(node, specification: specification)
-        })
+                if specification.type.supportsGain {
+                    M1FilterParameterTextField(
+                        titleKey: "Gain",
+                        value: specification.gainDB,
+                        minimum: M1FilterContract.minimumGainDB,
+                        maximum: M1FilterContract.maximumGainDB,
+                        onChange: { gain in
+                            model.setFilterSpecification(
+                                specification.withGainDB(gain),
+                                id: node.id
+                            )
+                        },
+                        onEditingChanged: {
+                            if $0 { model.beginGesture(node.id) }
+                            else { model.endGesture(node.id) }
+                        }
+                    )
+                    .frame(width: 64)
+                    Text("dB").foregroundStyle(.secondary)
+                }
+
+                filterWidthEditor(node, specification: specification)
+            }
+        }
     }
 
     @ViewBuilder
@@ -1405,15 +1405,15 @@ private struct M1EditorView: View {
         specification: M1FilterSpecification
     ) -> some View {
         Menu {
+            Button("Q") {
+                model.setFilterSpecification(
+                    specification.withWidth(
+                        .q(specification.widthValue ?? M1FilterContract.defaultQ)
+                    ),
+                    id: node.id
+                )
+            }
             if specification.type.isShelf {
-                Button("Q") {
-                    model.setFilterSpecification(
-                        specification.withWidth(
-                            .q(specification.widthValue ?? M1FilterContract.defaultQ)
-                        ),
-                        id: node.id
-                    )
-                }
                 Button("Slope dB/oct") {
                     model.setFilterSpecification(
                         specification.withWidth(
@@ -1426,14 +1426,6 @@ private struct M1EditorView: View {
                     )
                 }
             } else {
-                Button("Q") {
-                    model.setFilterSpecification(
-                        specification.withWidth(
-                            .q(specification.widthValue ?? M1FilterContract.defaultQ)
-                        ),
-                        id: node.id
-                    )
-                }
                 Button("Bandwidth oct") {
                     model.setFilterSpecification(
                         specification.withWidth(
@@ -1456,7 +1448,7 @@ private struct M1EditorView: View {
             titleKey: "Width",
             value: specification.widthValue ?? M1FilterContract.defaultQ,
             minimum: filterWidthMinimum(specification.width),
-            maximum: filterWidthMaximum(specification),
+            maximum: filterWidthMaximum(specification.width),
             onChange: { value in
                 model.setFilterSpecification(
                     specification.withWidthValue(value),
@@ -1535,8 +1527,8 @@ private struct M1EditorView: View {
         }
     }
 
-    private func filterWidthMaximum(_ specification: M1FilterSpecification) -> Double {
-        switch specification.width {
+    private func filterWidthMaximum(_ width: M1FilterWidth) -> Double {
+        switch width {
         case .q:
             return M1FilterContract.maximumQ
         case .bandwidthOctaves:

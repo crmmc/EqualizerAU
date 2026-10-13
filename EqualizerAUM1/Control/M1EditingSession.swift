@@ -346,14 +346,11 @@ struct M1EditingSession: Sendable {
         nodeID: UUID,
         effectsEnabled: Bool
     ) throws {
-        var candidate = nodes
-        let node = M1PreampNode(id: nodeID, isEnabled: true, gainDB: 0, channels: .all)
-        if let id, let index = candidate.firstIndex(where: { $0.id == id }) {
-            candidate.insert(node, at: index)
-        } else {
-            candidate.append(node)
-        }
-        try replaceNodes(candidate, effectsEnabled: effectsEnabled)
+        try insertNode(
+            M1PreampNode(id: nodeID, isEnabled: true, gainDB: 0, channels: .all),
+            before: id,
+            effectsEnabled: effectsEnabled
+        )
     }
 
     mutating func addChannels(
@@ -362,14 +359,11 @@ struct M1EditingSession: Sendable {
         selection: M1ChannelSelection,
         effectsEnabled: Bool
     ) throws {
-        var candidate = nodes
-        let node = M1ProcessingNode.channels(id: nodeID, selection: selection)
-        if let id, let index = candidate.firstIndex(where: { $0.id == id }) {
-            candidate.insert(node, at: index)
-        } else {
-            candidate.append(node)
-        }
-        try replaceNodes(candidate, effectsEnabled: effectsEnabled)
+        try insertNode(
+            .channels(id: nodeID, selection: selection),
+            before: id,
+            effectsEnabled: effectsEnabled
+        )
     }
 
     mutating func addGraphicEQ(
@@ -377,14 +371,11 @@ struct M1EditingSession: Sendable {
         nodeID: UUID,
         effectsEnabled: Bool
     ) throws {
-        var candidate = nodes
-        let node = M1ProcessingNode.graphicEQ(id: nodeID)
-        if let id, let index = candidate.firstIndex(where: { $0.id == id }) {
-            candidate.insert(node, at: index)
-        } else {
-            candidate.append(node)
-        }
-        try replaceNodes(candidate, effectsEnabled: effectsEnabled)
+        try insertNode(
+            .graphicEQ(id: nodeID),
+            before: id,
+            effectsEnabled: effectsEnabled
+        )
     }
 
     mutating func addFilter(
@@ -392,14 +383,11 @@ struct M1EditingSession: Sendable {
         nodeID: UUID,
         effectsEnabled: Bool
     ) throws {
-        var candidate = nodes
-        let node = M1ProcessingNode.filter(id: nodeID)
-        if let id, let index = candidate.firstIndex(where: { $0.id == id }) {
-            candidate.insert(node, at: index)
-        } else {
-            candidate.append(node)
-        }
-        try replaceNodes(candidate, effectsEnabled: effectsEnabled)
+        try insertNode(
+            .filter(id: nodeID),
+            before: id,
+            effectsEnabled: effectsEnabled
+        )
     }
 
     mutating func addConvolution(
@@ -408,8 +396,20 @@ struct M1EditingSession: Sendable {
         ir: M1ConvolutionIRReference,
         effectsEnabled: Bool
     ) throws {
+        try insertNode(
+            .convolution(id: nodeID, ir: ir),
+            before: id,
+            effectsEnabled: effectsEnabled
+        )
+    }
+
+    /// Shared insert-or-append step behind the per-kind add operations.
+    private mutating func insertNode(
+        _ node: M1ProcessingNode,
+        before id: UUID?,
+        effectsEnabled: Bool
+    ) throws {
         var candidate = nodes
-        let node = M1ProcessingNode.convolution(id: nodeID, ir: ir)
         if let id, let index = candidate.firstIndex(where: { $0.id == id }) {
             candidate.insert(node, at: index)
         } else {

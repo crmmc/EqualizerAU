@@ -747,16 +747,11 @@ actor M1ProductController {
                 visibleError = .pastedFilterLineLimitExceeded(count: count, maximum: maximum)
                 return
             }
-            guard !parsed.nodes.isEmpty else {
-                if parsed.report.hasIgnoredContent {
-                    visibleError = .pastedTextPartialImport(parsed.report)
-                }
-                return
-            }
-            pastedNodes = parsed.nodes
             if parsed.report.hasIgnoredContent {
                 visibleError = .pastedTextPartialImport(parsed.report)
             }
+            guard !parsed.nodes.isEmpty else { return }
+            pastedNodes = parsed.nodes
         } else {
             return
         }
