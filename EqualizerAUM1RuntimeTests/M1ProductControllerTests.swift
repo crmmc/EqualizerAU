@@ -2003,6 +2003,153 @@ final class M1ProductControllerTests: XCTestCase {
         XCTAssertNil(after.visibleError)
     }
 
+    func testPasteFilterTextCreatesFilterNodesInSourceOrder() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        let pasteboard = ProductPasteboardFake(
+            text: """
+            Filter: ON PK Fc 1000 Hz Gain 6 dB Q 2
+            GraphicEQ: 100 1
+            Filter: ON HP Fc 30 Hz
+            """
+        )
+
+        try await fixture.controller.paste(from: pasteboard)
+
+        let snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(snapshot.draft.nodes.count, 4)
+        XCTAssertEqual(snapshot.draft.nodes.suffix(3).map(\.kind), [.filter, .graphicEQ, .filter])
+        let firstFilter = try XCTUnwrap(snapshot.draft.nodes[1].filterSpecification)
+        XCTAssertEqual(firstFilter.type, .peaking)
+        XCTAssertEqual(firstFilter.gainDB, 6)
+        XCTAssertEqual(firstFilter.width, .q(2))
+        let highPass = try XCTUnwrap(snapshot.draft.nodes[3].filterSpecification)
+        XCTAssertEqual(highPass.type, .highPass)
+        XCTAssertEqual(highPass.width, .q(1.0 / 2.0.squareRoot()))
+        XCTAssertEqual(
+            snapshot.selectedNodeIDs,
+            Set(snapshot.draft.nodes.suffix(3).map(\.id))
+        )
+        XCTAssertNil(snapshot.visibleError)
+    }
+
+    func testPasteTextWithInvalidFilterLinesImportsRestAndReportsIgnores() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        let pasteboard = ProductPasteboardFake(
+            text: """
+            Filter: ON PK Fc 1000 Hz Gain 6 dB
+            Filter: ON XX Fc 100 Hz Gain 1 dB Q 1
+            Filter: ON LP Fc 8000 Hz Gain 3 dB
+            """
+        )
+
+        try await fixture.controller.paste(from: pasteboard)
+
+        let snapshot = await fixture.controller.snapshot()
+        // The peaking line misses Q, so it is dropped; the unknown type is
+        // dropped; the low-pass keeps its reference default Q.
+        XCTAssertEqual(snapshot.draft.nodes.count, 2)
+        XCTAssertEqual(snapshot.draft.nodes.last?.kind, .filter)
+        XCTAssertEqual(
+            snapshot.visibleError,
+            .pastedTextPartialImport(
+                M1APOTextPasteReport(
+                    graphicEQLineCount: 0,
+                    filterLineCount: 1,
+                    ignoredLineCount: 2,
+                    ignoredParameterCount: 1
+                )
+            )
+        )
+        XCTAssertTrue(snapshot.canUndo)
+    }
+
+    func testPasteFilterTextOverLineLimitShowsVisibleErrorWithoutInserting() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        let lines = (0...(M1EqualizerAPOTextCodec.maximumFilterLines)).map { index in
+            "Filter: ON PK Fc \(100 + index) Hz Gain 1 dB Q 1"
+        }
+        let pasteboard = ProductPasteboardFake(text: lines.joined(separator: "\n"))
+        let before = await fixture.controller.snapshot()
+
+        try await fixture.controller.paste(from: pasteboard)
+
+        let after = await fixture.controller.snapshot()
+        XCTAssertEqual(
+            after.visibleError,
+            .pastedFilterLineLimitExceeded(
+                count: M1EqualizerAPOTextCodec.maximumFilterLines + 1,
+                maximum: M1EqualizerAPOTextCodec.maximumFilterLines
+            )
+        )
+        XCTAssertEqual(after.draft.nodes, before.draft.nodes)
+        XCTAssertFalse(after.canUndo)
+    }
+
+    func testPasteTextWithOnlyInvalidFilterLinesShowsErrorWithoutInserting() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        let pasteboard = ProductPasteboardFake(text: "Filter: ON XX Fc 100 Hz Gain 1 dB Q 1")
+        let before = await fixture.controller.snapshot()
+
+        try await fixture.controller.paste(from: pasteboard)
+
+        let after = await fixture.controller.snapshot()
+        XCTAssertEqual(after.draft.nodes, before.draft.nodes)
+        XCTAssertFalse(after.canUndo)
+        XCTAssertEqual(
+            after.visibleError,
+            .pastedTextPartialImport(
+                M1APOTextPasteReport(
+                    graphicEQLineCount: 0,
+                    filterLineCount: 0,
+                    ignoredLineCount: 1,
+                    ignoredParameterCount: 0
+                )
+            )
+        )
+    }
+
+    func testAddFilterCreatesDefaultSelectedFilterNode() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        let filterID = UUID(uuidString: "30000000-0000-0000-0000-000000000001")!
+
+        try await fixture.controller.addFilter(before: nil, nodeID: filterID)
+
+        let snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(snapshot.draft.nodes.last?.kind, .filter)
+        XCTAssertEqual(snapshot.draft.nodes.last?.id, filterID)
+        XCTAssertEqual(
+            snapshot.draft.nodes.last?.filterSpecification,
+            M1FilterSpecification.defaultSpecification()
+        )
+        XCTAssertTrue(snapshot.canUndo)
+
+        let specification = M1FilterSpecification(
+            type: .lowShelf,
+            frequencyHz: 120,
+            gainDB: 6,
+            width: .slopeDBPerOctave(12),
+            cornerFrequency: true
+        )
+        try await fixture.controller.setFilterSpecification(
+            id: filterID,
+            specification: specification
+        )
+        let updated = await fixture.controller.snapshot()
+        XCTAssertEqual(updated.draft.nodes.last?.filterSpecification, specification)
+
+        await XCTAssertThrowsErrorAsync {
+            try await fixture.controller.setFilterSpecification(
+                id: fixture.nodeID,
+                specification: specification
+            )
+        }
+    }
+
     func testSuccessfulCutWritesBeforeDeletingAndIsOneUndoStep() async throws {
         let fixture = makeFixture()
         await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)

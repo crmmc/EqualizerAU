@@ -222,6 +222,8 @@ enum M1PresentationMessage: Equatable, Sendable {
     case editorChangeCouldNotApply
     case configurationRepairFailed
     case pastedGraphicEQPointLimitExceeded(count: Int, maximum: Int)
+    case pastedFilterLineLimitExceeded(count: Int, maximum: Int)
+    case pastedTextPartialImport(M1APOTextPasteReport)
     case terminationCancelled
     case technical(String)
 }
@@ -566,6 +568,12 @@ actor M1ProductController {
         }
     }
 
+    func addFilter(before id: UUID? = nil, nodeID: UUID = UUID()) async throws {
+        try await updateEditingSession { session, effectsEnabled in
+            try session.addFilter(before: id, nodeID: nodeID, effectsEnabled: effectsEnabled)
+        }
+    }
+
     func addConvolution(
         before id: UUID? = nil,
         nodeID: UUID = UUID(),
@@ -666,6 +674,16 @@ actor M1ProductController {
         }
     }
 
+    func setFilterSpecification(id: UUID, specification: M1FilterSpecification) async throws {
+        try await updateEditingSession { session, effectsEnabled in
+            try session.setFilterSpecification(
+                id: id,
+                specification: specification,
+                effectsEnabled: effectsEnabled
+            )
+        }
+    }
+
     func undo() async throws {
         try await updateEditingSession { session, effectsEnabled in
             try session.undo(effectsEnabled: effectsEnabled)
@@ -717,16 +735,28 @@ actor M1ProductController {
             }
             pastedNodes = decoded.nodes
         } else if let text = await pasteboard.readText() {
-            let pointLines: [[M1GraphicEQPoint]]
+            let parsed: M1APOTextPaste
             do {
-                pointLines = try await Task.detached {
-                    try M1GraphicEQTextCodec.parseLines(text)
+                parsed = try await Task.detached {
+                    try M1EqualizerAPOTextCodec.parse(text)
                 }.value
             } catch M1GraphicEQTextCodecError.pointLimitExceeded(let count, let maximum) {
                 visibleError = .pastedGraphicEQPointLimitExceeded(count: count, maximum: maximum)
                 return
+            } catch M1EqualizerAPOTextCodecError.filterLineLimitExceeded(let count, let maximum) {
+                visibleError = .pastedFilterLineLimitExceeded(count: count, maximum: maximum)
+                return
             }
-            pastedNodes = pointLines.map { M1ProcessingNode.graphicEQ(points: $0) }
+            guard !parsed.nodes.isEmpty else {
+                if parsed.report.hasIgnoredContent {
+                    visibleError = .pastedTextPartialImport(parsed.report)
+                }
+                return
+            }
+            pastedNodes = parsed.nodes
+            if parsed.report.hasIgnoredContent {
+                visibleError = .pastedTextPartialImport(parsed.report)
+            }
         } else {
             return
         }

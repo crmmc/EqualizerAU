@@ -38,6 +38,10 @@ extension M1PresentationMessage {
             "Configuration repair failed"
         case let .pastedGraphicEQPointLimitExceeded(count, maximum):
             "The pasted GraphicEQ line has \(count) points, above the \(maximum)-point limit; nothing was inserted."
+        case let .pastedFilterLineLimitExceeded(count, maximum):
+            "The pasted text has \(count) Filter lines, above the \(maximum)-line limit; nothing was inserted."
+        case let .pastedTextPartialImport(report):
+            "Pasted text imported \(report.graphicEQLineCount + report.filterLineCount) node(s); ignored \(report.ignoredLineCount) line(s) and \(report.ignoredParameterCount) parameter(s)."
         case .terminationCancelled:
             "Termination cancelled"
         case let .technical(reason):
@@ -71,6 +75,16 @@ extension M1PresentationMessage {
         case let .pastedGraphicEQPointLimitExceeded(count, maximum):
             String(
                 localized: "The pasted GraphicEQ line has \(count) points, above the \(maximum)-point limit; nothing was inserted.",
+                locale: locale
+            )
+        case let .pastedFilterLineLimitExceeded(count, maximum):
+            String(
+                localized: "The pasted text has \(count) Filter lines, above the \(maximum)-line limit; nothing was inserted.",
+                locale: locale
+            )
+        case let .pastedTextPartialImport(report):
+            String(
+                localized: "Pasted text imported \(report.graphicEQLineCount + report.filterLineCount) node(s); ignored \(report.ignoredLineCount) line(s) and \(report.ignoredParameterCount) parameter(s).",
                 locale: locale
             )
         case .terminationCancelled:
@@ -208,6 +222,10 @@ final class M1AppModel: ObservableObject {
         performEdit { try await self.controller.addGraphicEQ(before: id) }
     }
 
+    func addFilter(before id: UUID?) {
+        performEdit { try await self.controller.addFilter(before: id) }
+    }
+
     func importConvolution(before id: UUID?) {
         guard let url = selectWAV() else { return }
         let ir = M1ConvolutionIRStore.reference(sourceURL: url)
@@ -239,6 +257,15 @@ final class M1AppModel: ObservableObject {
     func setGraphicEQPoints(_ points: [M1GraphicEQPoint], id: UUID) {
         performEdit {
             try await self.controller.setGraphicEQPoints(id: id, points: points)
+        }
+    }
+
+    func setFilterSpecification(_ specification: M1FilterSpecification, id: UUID) {
+        performEdit {
+            try await self.controller.setFilterSpecification(
+                id: id,
+                specification: specification
+            )
         }
     }
 

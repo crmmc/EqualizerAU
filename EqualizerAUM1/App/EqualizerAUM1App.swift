@@ -731,6 +731,7 @@ private struct M1EditorView: View {
                 Button("Channels") { model.addChannels(before: nil) }
                 Button("Preamp") { model.add(before: nil) }
                 Button("Graphic EQ") { model.addGraphicEQ(before: nil) }
+                Button("Filter") { model.addFilter(before: nil) }
                 Button("Convolution…") { model.importConvolution(before: nil) }
             } label: {
                 Label("Add", systemImage: "plus")
@@ -976,6 +977,12 @@ private struct M1EditorView: View {
                 locale: locale
             ))
         }
+        if !diagnostics.filterBypasses.isEmpty {
+            details.append(String(
+                localized: "Filter bypassed: \(diagnostics.filterBypasses.count)",
+                locale: locale
+            ))
+        }
         return details
     }
 
@@ -1061,6 +1068,8 @@ private struct M1EditorView: View {
             graphicEQSummaryControl(node)
         case .convolution:
             convolutionEditor(node)
+        case .filter:
+            filterEditor(node)
         }
     }
 
@@ -1077,7 +1086,7 @@ private struct M1EditorView: View {
         case .channels:
             return scopeDiagnosticSummary(node.id)
                 ?? String(localized: "Scope for following processors", locale: locale)
-        case .preamp, .graphicEQ, .convolution:
+        case .preamp, .graphicEQ, .convolution, .filter:
             let channels = channelSummary(effectiveSelections[node.id] ?? .all)
             return String(localized: "\(channels) channels", locale: locale)
         }
@@ -1295,6 +1304,248 @@ private struct M1EditorView: View {
         }
     }
 
+    private func filterBypassDiagnostic(_ nodeID: UUID) -> M1FilterBypassDiagnostic? {
+        let diagnostics = model.snapshot.expectedDiagnostics ?? model.snapshot.activeDiagnostics
+        return diagnostics?.filterBypasses.first { $0.nodeID == nodeID }
+    }
+
+    private func filterBypassSummary(_ nodeID: UUID) -> String? {
+        guard let bypass = filterBypassDiagnostic(nodeID) else { return nil }
+        return String(
+            localized: "Filter bypassed · \(filterBypassText(bypass.reason))",
+            locale: locale
+        )
+    }
+
+    private func filterBypassText(_ reason: M1FilterBypassReason) -> String {
+        switch reason {
+        case .frequencyAtOrAboveNyquist:
+            return String(
+                localized: "frequency at or above Nyquist",
+                locale: locale
+            )
+        case .coefficientsRejected:
+            return String(localized: "coefficients rejected", locale: locale)
+        }
+    }
+
+    private func filterEditor(_ node: M1ProcessingNode) -> some View {
+        guard let specification = node.filterSpecification else {
+            return AnyView(EmptyView())
+        }
+        return AnyView(HStack(spacing: 8) {
+            if filterBypassSummary(node.id) != nil {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .help(filterBypassSummary(node.id) ?? "")
+            }
+            Menu {
+                ForEach(M1FilterType.allCases, id: \.self) { type in
+                    Button(filterTypeTitle(type)) {
+                        model.setFilterSpecification(
+                            specification.withType(type),
+                            id: node.id
+                        )
+                    }
+                }
+            } label: {
+                Text(filterTypeTitle(specification.type))
+                    .frame(minWidth: 72)
+            }
+            .fixedSize()
+
+            M1FilterParameterTextField(
+                titleKey: "Center frequency",
+                value: specification.frequencyHz,
+                minimum: M1FilterContract.minimumFrequencyHz,
+                maximum: M1FilterContract.maximumFrequencyHz,
+                onChange: { frequency in
+                    model.setFilterSpecification(
+                        specification.withFrequencyHz(frequency),
+                        id: node.id
+                    )
+                },
+                onEditingChanged: {
+                    if $0 { model.beginGesture(node.id) }
+                    else { model.endGesture(node.id) }
+                }
+            )
+            .frame(width: 72)
+            Text("Hz").foregroundStyle(.secondary)
+
+            if specification.type.supportsGain {
+                M1FilterParameterTextField(
+                    titleKey: "Gain",
+                    value: specification.gainDB,
+                    minimum: M1FilterContract.minimumGainDB,
+                    maximum: M1FilterContract.maximumGainDB,
+                    onChange: { gain in
+                        model.setFilterSpecification(
+                            specification.withGainDB(gain),
+                            id: node.id
+                        )
+                    },
+                    onEditingChanged: {
+                        if $0 { model.beginGesture(node.id) }
+                        else { model.endGesture(node.id) }
+                    }
+                )
+                .frame(width: 64)
+                Text("dB").foregroundStyle(.secondary)
+            }
+
+            filterWidthEditor(node, specification: specification)
+        })
+    }
+
+    @ViewBuilder
+    private func filterWidthEditor(
+        _ node: M1ProcessingNode,
+        specification: M1FilterSpecification
+    ) -> some View {
+        Menu {
+            if specification.type.isShelf {
+                Button("Q") {
+                    model.setFilterSpecification(
+                        specification.withWidth(
+                            .q(specification.widthValue ?? M1FilterContract.defaultQ)
+                        ),
+                        id: node.id
+                    )
+                }
+                Button("Slope dB/oct") {
+                    model.setFilterSpecification(
+                        specification.withWidth(
+                            .slopeDBPerOctave(
+                                specification.widthValue
+                                    ?? M1FilterContract.defaultShelfSlopeDBPerOctave
+                            )
+                        ),
+                        id: node.id
+                    )
+                }
+            } else {
+                Button("Q") {
+                    model.setFilterSpecification(
+                        specification.withWidth(
+                            .q(specification.widthValue ?? M1FilterContract.defaultQ)
+                        ),
+                        id: node.id
+                    )
+                }
+                Button("Bandwidth oct") {
+                    model.setFilterSpecification(
+                        specification.withWidth(
+                            .bandwidthOctaves(
+                                specification.widthValue
+                                    ?? M1FilterContract.maximumBandwidthOctaves / 12
+                            )
+                        ),
+                        id: node.id
+                    )
+                }
+            }
+        } label: {
+            Text(filterWidthUnit(specification.width))
+                .frame(minWidth: 56)
+        }
+        .fixedSize()
+
+        M1FilterParameterTextField(
+            titleKey: "Width",
+            value: specification.widthValue ?? M1FilterContract.defaultQ,
+            minimum: filterWidthMinimum(specification.width),
+            maximum: filterWidthMaximum(specification),
+            onChange: { value in
+                model.setFilterSpecification(
+                    specification.withWidthValue(value),
+                    id: node.id
+                )
+            },
+            onEditingChanged: {
+                if $0 { model.beginGesture(node.id) }
+                else { model.endGesture(node.id) }
+            }
+        )
+        .frame(width: 64)
+
+        if specification.type.isShelf {
+            Picker(
+                "Shelf frequency meaning",
+                selection: Binding(
+                    get: { specification.cornerFrequency },
+                    set: { corner in
+                        model.setFilterSpecification(
+                            specification.withCornerFrequency(corner),
+                            id: node.id
+                        )
+                    }
+                )
+            ) {
+                Text("Corner").tag(true)
+                Text("Center").tag(false)
+            }
+            .pickerStyle(.segmented)
+            .fixedSize()
+            .help("Shelf frequency meaning")
+        }
+    }
+
+    private func filterTypeTitle(_ type: M1FilterType) -> String {
+        switch type {
+        case .peaking:
+            return String(localized: "Peaking", locale: locale)
+        case .lowPass:
+            return String(localized: "Low-pass", locale: locale)
+        case .highPass:
+            return String(localized: "High-pass", locale: locale)
+        case .bandPass:
+            return String(localized: "Band-pass", locale: locale)
+        case .lowShelf:
+            return String(localized: "Low shelf", locale: locale)
+        case .highShelf:
+            return String(localized: "High shelf", locale: locale)
+        case .notch:
+            return String(localized: "Notch", locale: locale)
+        case .allPass:
+            return String(localized: "All-pass", locale: locale)
+        }
+    }
+
+    private func filterWidthUnit(_ width: M1FilterWidth) -> String {
+        switch width {
+        case .q:
+            return "Q"
+        case .bandwidthOctaves:
+            return String(localized: "oct", locale: locale)
+        case .slopeDBPerOctave:
+            return String(localized: "dB/oct", locale: locale)
+        }
+    }
+
+    private func filterWidthMinimum(_ width: M1FilterWidth) -> Double {
+        switch width {
+        case .q:
+            return M1FilterContract.minimumQ
+        case .bandwidthOctaves:
+            return M1FilterContract.minimumBandwidthOctaves
+        case .slopeDBPerOctave:
+            return 0.1
+        }
+    }
+
+    private func filterWidthMaximum(_ specification: M1FilterSpecification) -> Double {
+        switch specification.width {
+        case .q:
+            return M1FilterContract.maximumQ
+        case .bandwidthOctaves:
+            return M1FilterContract.maximumBandwidthOctaves
+        case .slopeDBPerOctave:
+            return M1FilterContract.maximumSlopeDBPerOctave
+        }
+    }
+
     private func channelEditor(_ node: M1ProcessingNode) -> some View {
         let available = availableChannelIdentifiers
         let unavailable = selectedIdentifiers(node.channels).filter { !available.contains($0) }
@@ -1394,6 +1645,7 @@ private struct M1EditorView: View {
         case .preamp: return "dial.medium"
         case .graphicEQ: return "slider.vertical.3"
         case .convolution: return "waveform.path"
+        case .filter: return "tuningfork"
         }
     }
 
@@ -1403,6 +1655,7 @@ private struct M1EditorView: View {
         case .preamp: return String(localized: "Preamp", locale: locale)
         case .graphicEQ: return String(localized: "Graphic EQ", locale: locale)
         case .convolution: return String(localized: "Convolution", locale: locale)
+        case .filter: return String(localized: "Filter", locale: locale)
         }
     }
 
@@ -1435,6 +1688,60 @@ private struct M1EditorView: View {
             identifiers.removeAll { $0 == identifier }
         }
         return identifiers.isEmpty ? .all : .identifiers(identifiers)
+    }
+}
+
+private struct M1FilterParameterTextField: View {
+    let titleKey: String
+    let value: Double
+    let minimum: Double
+    let maximum: Double
+    let onChange: (Double) -> Void
+    let onEditingChanged: (Bool) -> Void
+
+    @State private var text = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        TextField(titleKey, text: $text)
+            .accessibilityLabel(Text(titleKey))
+            .onAppear { text = formatted(value) }
+            .onChange(of: value) { _, newValue in
+                if !isFocused { text = formatted(newValue) }
+            }
+            .onChange(of: text) { _, newValue in
+                guard isFocused, let parsed = parsed(newValue) else { return }
+                onChange(min(max(parsed, minimum), maximum))
+            }
+            .onChange(of: isFocused) { wasFocused, focused in
+                if focused {
+                    text = formatted(value)
+                    onEditingChanged(true)
+                } else if wasFocused {
+                    normalizeText()
+                    onEditingChanged(false)
+                }
+            }
+            .onSubmit { isFocused = false }
+    }
+
+    private func normalizeText() {
+        let value = parsed(text).map { min(max($0, minimum), maximum) } ?? value
+        onChange(value)
+        text = formatted(value)
+    }
+
+    private func parsed(_ value: String) -> Double? {
+        let decimalSeparator = Locale.current.decimalSeparator ?? "."
+        return Double(
+            value
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: decimalSeparator, with: ".")
+        )
+    }
+
+    private func formatted(_ value: Double) -> String {
+        value.formatted(.number.grouping(.never).precision(.fractionLength(0...2)))
     }
 }
 

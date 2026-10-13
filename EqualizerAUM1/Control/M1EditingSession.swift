@@ -32,7 +32,7 @@ struct M1EncodedNodeEnvelope: Equatable, Sendable {
 }
 
 enum M1NodeEnvelopeCodec {
-    static let schemaVersion = 8
+    static let schemaVersion = 9
     static let maximumDataSize = M1ConfigurationCodec.maximumDataSize
 
     static func encode(_ nodes: [M1ProcessingNode]) throws -> M1EncodedNodeEnvelope {
@@ -98,6 +98,10 @@ enum M1NodeEnvelopeCodec {
                 try M1JSONShapeValidator.validateNodeEnvelope(data, schemaVersion: 7)
                 let wire = try JSONDecoder().decode(M1NodeEnvelopeWire.self, from: data)
                 return try encode(try wire.nodes.map { try $0.node(schemaVersion: 7) })
+            case 8:
+                try M1JSONShapeValidator.validateNodeEnvelope(data, schemaVersion: 8)
+                let wire = try JSONDecoder().decode(M1NodeEnvelopeWire.self, from: data)
+                return try encode(try wire.nodes.map { try $0.node(schemaVersion: 8) })
             case schemaVersion:
                 try M1JSONShapeValidator.validateNodeEnvelope(data, schemaVersion: schemaVersion)
                 let wire = try JSONDecoder().decode(M1NodeEnvelopeWire.self, from: data)
@@ -121,57 +125,66 @@ enum M1GraphicEQTextCodecError: Error, Equatable, Sendable {
 
 enum M1GraphicEQTextCodec {
     static func parseLines(_ text: String) throws -> [[M1GraphicEQPoint]] {
-        let numberExpression = try NSRegularExpression(pattern: "[-+0-9.eE]+")
         var pointLines: [[M1GraphicEQPoint]] = []
         for line in text.components(separatedBy: .newlines) {
-            guard let separator = line.firstIndex(of: ":"),
-                  line[..<separator]
-                      .trimmingCharacters(in: .whitespaces)
-                      .caseInsensitiveCompare("GraphicEQ") == .orderedSame
-            else { continue }
-            let parameters = String(line[line.index(after: separator)...])
-            let decimalText = parameters.contains(".")
-                ? parameters
-                : parameters.replacingOccurrences(of: ",", with: ".")
-            let range = NSRange(decimalText.startIndex..., in: decimalText)
-            let tokens = numberExpression
-                .matches(in: decimalText, range: range)
-                .compactMap { Range($0.range, in: decimalText).map { String(decimalText[$0]) } }
-            var points: [M1GraphicEQPoint] = []
-            var index = 0
-            while index + 1 < tokens.count {
-                if let frequencyHz = Double(tokens[index]),
-                   let gainDB = Double(tokens[index + 1]),
-                   frequencyHz.isFinite,
-                   gainDB.isFinite,
-                   frequencyHz >= M1GraphicEQContract.minimumFrequencyHz,
-                   frequencyHz <= M1GraphicEQContract.maximumFrequencyHz
-                {
-                    points.append(M1GraphicEQPoint(
-                        frequencyHz: frequencyHz,
-                        gainDB: min(
-                            max(gainDB, M1GraphicEQContract.minimumGainDB),
-                            M1GraphicEQContract.maximumGainDB
-                        )
-                    ))
-                }
-                index += 2
+            if let points = try parseGraphicEQLine(line), !points.isEmpty {
+                pointLines.append(points)
             }
-            var seenFrequencies: Set<Double> = []
-            var uniquePoints: [M1GraphicEQPoint] = []
-            for point in points where seenFrequencies.insert(point.frequencyHz).inserted {
-                uniquePoints.append(point)
-            }
-            uniquePoints.sort { $0.frequencyHz < $1.frequencyHz }
-            guard uniquePoints.count <= M1GraphicEQContract.maximumPointCount else {
-                throw M1GraphicEQTextCodecError.pointLimitExceeded(
-                    count: uniquePoints.count,
-                    maximum: M1GraphicEQContract.maximumPointCount
-                )
-            }
-            if !uniquePoints.isEmpty { pointLines.append(uniquePoints) }
         }
         return pointLines
+    }
+
+    /// Returns the normalized points when the line is a `GraphicEQ:` command
+    /// (empty when all points were normalized away), or `nil` when the line is
+    /// not a GraphicEQ command.
+    static func parseGraphicEQLine(_ line: String) throws -> [M1GraphicEQPoint]? {
+        guard let separator = line.firstIndex(of: ":"),
+              line[..<separator]
+                  .trimmingCharacters(in: .whitespaces)
+                  .caseInsensitiveCompare("GraphicEQ") == .orderedSame
+        else { return nil }
+        let parameters = String(line[line.index(after: separator)...])
+        let numberExpression = try NSRegularExpression(pattern: "[-+0-9.eE]+")
+        let decimalText = parameters.contains(".")
+            ? parameters
+            : parameters.replacingOccurrences(of: ",", with: ".")
+        let range = NSRange(decimalText.startIndex..., in: decimalText)
+        let tokens = numberExpression
+            .matches(in: decimalText, range: range)
+            .compactMap { Range($0.range, in: decimalText).map { String(decimalText[$0]) } }
+        var points: [M1GraphicEQPoint] = []
+        var index = 0
+        while index + 1 < tokens.count {
+            if let frequencyHz = Double(tokens[index]),
+               let gainDB = Double(tokens[index + 1]),
+               frequencyHz.isFinite,
+               gainDB.isFinite,
+               frequencyHz >= M1GraphicEQContract.minimumFrequencyHz,
+               frequencyHz <= M1GraphicEQContract.maximumFrequencyHz
+            {
+                points.append(M1GraphicEQPoint(
+                    frequencyHz: frequencyHz,
+                    gainDB: min(
+                        max(gainDB, M1GraphicEQContract.minimumGainDB),
+                        M1GraphicEQContract.maximumGainDB
+                    )
+                ))
+            }
+            index += 2
+        }
+        var seenFrequencies: Set<Double> = []
+        var uniquePoints: [M1GraphicEQPoint] = []
+        for point in points where seenFrequencies.insert(point.frequencyHz).inserted {
+            uniquePoints.append(point)
+        }
+        uniquePoints.sort { $0.frequencyHz < $1.frequencyHz }
+        guard uniquePoints.count <= M1GraphicEQContract.maximumPointCount else {
+            throw M1GraphicEQTextCodecError.pointLimitExceeded(
+                count: uniquePoints.count,
+                maximum: M1GraphicEQContract.maximumPointCount
+            )
+        }
+        return uniquePoints
     }
 }
 
@@ -374,6 +387,21 @@ struct M1EditingSession: Sendable {
         try replaceNodes(candidate, effectsEnabled: effectsEnabled)
     }
 
+    mutating func addFilter(
+        before id: UUID?,
+        nodeID: UUID,
+        effectsEnabled: Bool
+    ) throws {
+        var candidate = nodes
+        let node = M1ProcessingNode.filter(id: nodeID)
+        if let id, let index = candidate.firstIndex(where: { $0.id == id }) {
+            candidate.insert(node, at: index)
+        } else {
+            candidate.append(node)
+        }
+        try replaceNodes(candidate, effectsEnabled: effectsEnabled)
+    }
+
     mutating func addConvolution(
         before id: UUID?,
         nodeID: UUID,
@@ -435,6 +463,21 @@ struct M1EditingSession: Sendable {
             throw M1EditingSessionError.invalidNodeKind
         }
         try updateNode(id: id, effectsEnabled: effectsEnabled) { $0.graphicEQPoints = points }
+    }
+
+    mutating func setFilterSpecification(
+        id: UUID,
+        specification: M1FilterSpecification,
+        effectsEnabled: Bool
+    ) throws {
+        guard nodes.first(where: { $0.id == id })?.kind == .filter else {
+            throw M1EditingSessionError.invalidNodeKind
+        }
+        try updateNode(
+            id: id,
+            effectsEnabled: effectsEnabled,
+            coalescingGestureID: id
+        ) { $0.filterSpecification = specification }
     }
 
     mutating func setChannels(

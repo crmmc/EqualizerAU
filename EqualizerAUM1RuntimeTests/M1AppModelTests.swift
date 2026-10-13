@@ -31,14 +31,16 @@ final class M1AppModelTests: XCTestCase {
         fixture.model.add(before: nil)
         fixture.model.addChannels(before: nil)
         fixture.model.addGraphicEQ(before: nil)
+        fixture.model.addFilter(before: nil)
         fixture.model.importConvolution(before: nil)
         await fixture.model.waitUntilIdle()
 
         let nodes = fixture.model.snapshot.draft.nodes
-        XCTAssertEqual(nodes.count, 5)
+        XCTAssertEqual(nodes.count, 6)
         let preamp = try XCTUnwrap(nodes.first { $0.kind == .preamp })
         let channels = try XCTUnwrap(nodes.first { $0.kind == .channels })
         let graphicEQ = try XCTUnwrap(nodes.first { $0.kind == .graphicEQ })
+        let filter = try XCTUnwrap(nodes.first { $0.kind == .filter })
         let convolution = try XCTUnwrap(nodes.first { $0.kind == .convolution })
 
         fixture.model.setGain(-6, id: preamp.id)
@@ -47,6 +49,16 @@ final class M1AppModelTests: XCTestCase {
         fixture.model.setGraphicEQPoints([
             M1GraphicEQPoint(frequencyHz: 1_000, gainDB: 2),
         ], id: graphicEQ.id)
+        fixture.model.setFilterSpecification(
+            M1FilterSpecification(
+                type: .lowShelf,
+                frequencyHz: 120,
+                gainDB: 6,
+                width: .slopeDBPerOctave(12),
+                cornerFrequency: true
+            ),
+            id: filter.id
+        )
         fixture.model.replaceConvolutionIR(id: convolution.id)
         fixture.model.beginGesture(preamp.id)
         fixture.model.endGesture(preamp.id)
@@ -54,6 +66,17 @@ final class M1AppModelTests: XCTestCase {
 
         XCTAssertTrue(fixture.model.snapshot.hasUnsavedNodes)
         XCTAssertTrue(fixture.model.snapshot.canUndo)
+        XCTAssertEqual(
+            try XCTUnwrap(fixture.model.snapshot.draft.nodes.first { $0.id == filter.id })
+                .filterSpecification,
+            M1FilterSpecification(
+                type: .lowShelf,
+                frequencyHz: 120,
+                gainDB: 6,
+                width: .slopeDBPerOctave(12),
+                cornerFrequency: true
+            )
+        )
         fixture.model.undo()
         await fixture.model.waitUntilIdle()
         fixture.model.redo()

@@ -275,6 +275,16 @@
         }
       }
     },
+    "All-pass": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全通"
+          }
+        }
+      }
+    },
     "An editor change could not be applied": {
       "localizations": {
         "zh-Hans": {
@@ -375,6 +385,26 @@
         }
       }
     },
+    "Band-pass": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "带通"
+          }
+        }
+      }
+    },
+    "Bandwidth oct": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "倍频程"
+          }
+        }
+      }
+    },
     "Bypassed · %@": {
       "localizations": {
         "zh-Hans": {
@@ -411,6 +441,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "捕获帧数：%llu"
+          }
+        }
+      }
+    },
+    "Center": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "中心"
+          }
+        }
+      }
+    },
+    "Center frequency": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "中心频率"
           }
         }
       }
@@ -541,6 +591,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "复制"
+          }
+        }
+      }
+    },
+    "Corner": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "转角"
+          }
+        }
+      }
+    },
+    "Corner frequency": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "转角频率"
           }
         }
       }
@@ -745,16 +815,6 @@
         }
       }
     },
-    "Expected activation": {
-      "localizations": {
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "预期启用结果"
-          }
-        }
-      }
-    },
     "Expected FIR error: %@ max, %@ p99": {
       "localizations": {
         "en": {
@@ -777,6 +837,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "预期 G%llu"
+          }
+        }
+      }
+    },
+    "Expected activation": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "预期启用结果"
           }
         }
       }
@@ -843,6 +913,36 @@
           "stringUnit": {
             "state": "translated",
             "value": "FIR 解析误差：%@ 最大，%@ p99"
+          }
+        }
+      }
+    },
+    "Filter": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "滤波器"
+          }
+        }
+      }
+    },
+    "Filter bypassed · %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "滤波器已旁路 · %@"
+          }
+        }
+      }
+    },
+    "Filter bypassed: %lld": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "滤波器旁路：%lld"
           }
         }
       }
@@ -997,6 +1097,36 @@
         }
       }
     },
+    "High shelf": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "高搁架"
+          }
+        }
+      }
+    },
+    "High-pass": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "高通"
+          }
+        }
+      }
+    },
+    "Hz": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hz"
+          }
+        }
+      }
+    },
     "Import": {
       "localizations": {
         "zh-Hans": {
@@ -1073,6 +1203,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "语言"
+          }
+        }
+      }
+    },
+    "Low shelf": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "低搁架"
+          }
+        }
+      }
+    },
+    "Low-pass": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "低通"
           }
         }
       }
@@ -1217,6 +1367,16 @@
         }
       }
     },
+    "Notch": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "陷波"
+          }
+        }
+      }
+    },
     "OK": {
       "localizations": {
         "zh-Hans": {
@@ -1283,6 +1443,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "粘贴"
+          }
+        }
+      }
+    },
+    "Pasted text imported %lld node(s); ignored %lld line(s) and %lld parameter(s).": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "粘贴文本已导入 %lld 个节点；忽略 %lld 行和 %lld 个参数。"
+          }
+        }
+      }
+    },
+    "Peaking": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "峰值"
           }
         }
       }
@@ -1379,6 +1559,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "处理器选择"
+          }
+        }
+      }
+    },
+    "Q": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Q"
           }
         }
       }
@@ -1699,12 +1889,32 @@
         }
       }
     },
+    "Shelf frequency meaning": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搁架频点含义"
+          }
+        }
+      }
+    },
     "Show All": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "全部显示"
+          }
+        }
+      }
+    },
+    "Slope dB/oct": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "dB/倍频程"
           }
         }
       }
@@ -1799,6 +2009,16 @@
         }
       }
     },
+    "The pasted text has %lld Filter lines, above the %lld-line limit; nothing was inserted.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "粘贴文本包含 %lld 行 Filter，超过 %lld 行上限；未插入任何内容。"
+          }
+        }
+      }
+    },
     "Toggle Focused Processor Selection": {
       "localizations": {
         "zh-Hans": {
@@ -1859,6 +2079,16 @@
         }
       }
     },
+    "Width": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "宽度"
+          }
+        }
+      }
+    },
     "Your Preamp edits have not been saved.": {
       "localizations": {
         "zh-Hans": {
@@ -1879,12 +2109,32 @@
         }
       }
     },
+    "coefficients rejected": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "系数被拒绝"
+          }
+        }
+      }
+    },
     "dB": {
       "localizations": {
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
             "value": "dB"
+          }
+        }
+      }
+    },
+    "dB/oct": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "dB/倍频程"
           }
         }
       }
@@ -1915,6 +2165,16 @@
         }
       }
     },
+    "frequency at or above Nyquist": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "频率不低于奈奎斯特频率"
+          }
+        }
+      }
+    },
     "invalid WAV": {
       "localizations": {
         "zh-Hans": {
@@ -1941,6 +2201,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "无效音频采样"
+          }
+        }
+      }
+    },
+    "oct": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "倍频程"
           }
         }
       }

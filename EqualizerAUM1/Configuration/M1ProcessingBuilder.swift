@@ -15,6 +15,11 @@ enum M1ProcessingBuildError: Error, Equatable, Sendable {
     case invalidGraphicEQTaps(nodeID: UUID)
     case invalidConvolutionIRReference(nodeID: UUID)
     case convolutionStageCapacityExceeded
+    case invalidFilterSpecification(nodeID: UUID)
+    case invalidFilterFrequency(nodeID: UUID)
+    case invalidFilterGain(nodeID: UUID)
+    case filterGainNotApplicable(nodeID: UUID)
+    case invalidFilterWidth(nodeID: UUID)
     case stageCapacityExceeded(channel: M1ChannelIdentifier)
     case totalStageCapacityExceeded
 }
@@ -55,6 +60,7 @@ struct M1ProcessingBuildDiagnostics: Equatable, Sendable {
     let graphicEQResolution: [M1GraphicEQResolutionDiagnostic]
     let convolutionSources: [M1ConvolutionSourceDiagnostic]
     let convolutionBypasses: [M1ConvolutionBypassDiagnostic]
+    let filterBypasses: [M1FilterBypassDiagnostic]
 
     init(
         unresolvedChannels: [M1UnresolvedChannelDiagnostic],
@@ -62,7 +68,8 @@ struct M1ProcessingBuildDiagnostics: Equatable, Sendable {
         gainBoundaries: [M1GainBoundaryDiagnostic],
         graphicEQResolution: [M1GraphicEQResolutionDiagnostic] = [],
         convolutionSources: [M1ConvolutionSourceDiagnostic] = [],
-        convolutionBypasses: [M1ConvolutionBypassDiagnostic] = []
+        convolutionBypasses: [M1ConvolutionBypassDiagnostic] = [],
+        filterBypasses: [M1FilterBypassDiagnostic] = []
     ) {
         self.unresolvedChannels = unresolvedChannels
         self.clippingRiskChannels = clippingRiskChannels
@@ -70,6 +77,7 @@ struct M1ProcessingBuildDiagnostics: Equatable, Sendable {
         self.graphicEQResolution = graphicEQResolution
         self.convolutionSources = convolutionSources
         self.convolutionBypasses = convolutionBypasses
+        self.filterBypasses = filterBypasses
     }
 }
 
@@ -93,6 +101,13 @@ struct M1ConvolutionBypassDiagnostic: Equatable, Sendable {
     let nodeID: UUID
     let source: M1ConvolutionIRReference
     let reason: M1ConvolutionBypassReason
+}
+
+struct M1FilterBypassDiagnostic: Equatable, Sendable {
+    let nodeID: UUID
+    let frequencyHz: Double
+    let sampleRate: Double
+    let reason: M1FilterBypassReason
 }
 
 struct M1BiquadCoefficients: Equatable, Sendable {
@@ -176,6 +191,7 @@ enum M1ProcessingBuilder {
         var graphicEQResolutionDiagnostics: [M1GraphicEQResolutionDiagnostic] = []
         var convolutionSources: [M1ConvolutionSourceDiagnostic] = []
         var convolutionBypasses: [M1ConvolutionBypassDiagnostic] = []
+        var filterBypasses: [M1FilterBypassDiagnostic] = []
         var convolutionStageCount = 0
         var latencyByChannel = Array(repeating: 0, count: layout.channels.count)
         var reportedUnresolvedOwners: Set<UUID> = []
@@ -274,6 +290,34 @@ enum M1ProcessingBuilder {
                     }
                     stagesByChannel[index].append(.convolution(nodeID: node.id, taps: taps))
                     latencyByChannel[index] += convolutionLatencyFrames
+                }
+            case .filter:
+                guard !selectedIndexes.isEmpty else { continue }
+                guard let specification = node.filterSpecification else { continue }
+                switch M1BiquadFilterDesign.design(
+                    specification: specification,
+                    sampleRate: layout.sampleRate
+                ) {
+                case .coefficients(let coefficients):
+                    for index in selectedIndexes {
+                        appendPendingGainStage(
+                            channelIndex: index,
+                            pending: &pendingPreampGainsByChannel,
+                            stages: &stagesByChannel
+                        )
+                        stagesByChannel[index].append(
+                            .biquad(nodeID: node.id, bandIndex: 0, coefficients: coefficients)
+                        )
+                    }
+                case .bypass(let reason):
+                    filterBypasses.append(
+                        M1FilterBypassDiagnostic(
+                            nodeID: node.id,
+                            frequencyHz: specification.frequencyHz,
+                            sampleRate: layout.sampleRate,
+                            reason: reason
+                        )
+                    )
                 }
             case .convolution:
                 guard !selectedIndexes.isEmpty else { continue }
@@ -430,7 +474,8 @@ enum M1ProcessingBuilder {
                 gainBoundaries: gainBoundaryDiagnostics,
                 graphicEQResolution: graphicEQResolutionDiagnostics,
                 convolutionSources: convolutionSources,
-                convolutionBypasses: convolutionBypasses
+                convolutionBypasses: convolutionBypasses,
+                filterBypasses: filterBypasses
             ),
             processingLatencyFrames: latencyByChannel.max() ?? 0
         )
@@ -492,6 +537,12 @@ enum M1ProcessingBuilder {
                 else {
                     throw M1ProcessingBuildError.invalidConvolutionIRReference(nodeID: node.id)
                 }
+            }
+            if node.kind == .filter {
+                guard let specification = node.filterSpecification else {
+                    throw M1ProcessingBuildError.invalidFilterSpecification(nodeID: node.id)
+                }
+                try specification.validate(nodeID: node.id)
             }
 
             switch node.channels {

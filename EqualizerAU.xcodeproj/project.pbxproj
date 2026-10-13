@@ -109,6 +109,13 @@
 		D1000000000000000000003F /* M1SystemAudioLifecycleMonitorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000031 /* M1SystemAudioLifecycleMonitorTests.swift */; };
 		D10000000000000000000040 /* M1SystemAudioLifecycleOperations.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000032 /* M1SystemAudioLifecycleOperations.swift */; };
 		D10000000000000000000041 /* M1SystemAppAdapters.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000033 /* M1SystemAppAdapters.swift */; };
+		D10000000000000000000042 /* M1BiquadFilterDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000034 /* M1BiquadFilterDesign.swift */; };
+		D10000000000000000000043 /* M1BiquadFilterDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000034 /* M1BiquadFilterDesign.swift */; };
+		D10000000000000000000044 /* M1EqualizerAPOTextCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000035 /* M1EqualizerAPOTextCodec.swift */; };
+		D10000000000000000000045 /* M1EqualizerAPOTextCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000035 /* M1EqualizerAPOTextCodec.swift */; };
+		D10000000000000000000046 /* M1BiquadFilterDesignTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000036 /* M1BiquadFilterDesignTests.swift */; };
+		D10000000000000000000047 /* M1EqualizerAPOTextCodecTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000037 /* M1EqualizerAPOTextCodecTests.swift */; };
+		D10000000000000000000048 /* M1FilterEditingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000038 /* M1FilterEditingTests.swift */; };
 		D10000000000000000000039 /* Accelerate.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002D /* Accelerate.framework */; };
 		D1000000000000000000003A /* Accelerate.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002D /* Accelerate.framework */; };
 		F10000000000000000000001 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000001 /* Localizable.xcstrings */; };
@@ -212,6 +219,11 @@
 		D20000000000000000000031 /* M1SystemAudioLifecycleMonitorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1SystemAudioLifecycleMonitorTests.swift; sourceTree = "<group>"; };
 		D20000000000000000000032 /* M1SystemAudioLifecycleOperations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1SystemAudioLifecycleOperations.swift; sourceTree = "<group>"; };
 		D20000000000000000000033 /* M1SystemAppAdapters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1SystemAppAdapters.swift; sourceTree = "<group>"; };
+		D20000000000000000000034 /* M1BiquadFilterDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1BiquadFilterDesign.swift; sourceTree = "<group>"; };
+		D20000000000000000000035 /* M1EqualizerAPOTextCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1EqualizerAPOTextCodec.swift; sourceTree = "<group>"; };
+		D20000000000000000000036 /* M1BiquadFilterDesignTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1BiquadFilterDesignTests.swift; sourceTree = "<group>"; };
+		D20000000000000000000037 /* M1EqualizerAPOTextCodecTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1EqualizerAPOTextCodecTests.swift; sourceTree = "<group>"; };
+		D20000000000000000000038 /* M1FilterEditingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1FilterEditingTests.swift; sourceTree = "<group>"; };
 		D20000000000000000000004 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		D20000000000000000000005 /* EqualizerAUM1-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "EqualizerAUM1-Bridging-Header.h"; sourceTree = "<group>"; };
 		D20000000000000000000006 /* EAUM1RuntimeSmokeTests.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = EAUM1RuntimeSmokeTests.mm; sourceTree = "<group>"; };
@@ -500,6 +512,7 @@
 				D20000000000000000000010 /* M1ProcessingBuilder.swift */,
 				D20000000000000000000022 /* M1Configuration.swift */,
 				D20000000000000000000023 /* M1ConfigurationStore.swift */,
+				D20000000000000000000034 /* M1BiquadFilterDesign.swift */,
 			);
 			path = Configuration;
 			sourceTree = "<group>";
@@ -511,6 +524,7 @@
 				D2000000000000000000001A /* M1RuntimeLeaseAccess.swift */,
 				D20000000000000000000026 /* M1ProductController.swift */,
 				D20000000000000000000028 /* M1EditingSession.swift */,
+				D20000000000000000000035 /* M1EqualizerAPOTextCodec.swift */,
 			);
 			path = Control;
 			sourceTree = "<group>";
@@ -575,6 +589,9 @@
 				D20000000000000000000029 /* M1EditingSessionTests.swift */,
 				D20000000000000000000030 /* M1AppModelTests.swift */,
 				D20000000000000000000031 /* M1SystemAudioLifecycleMonitorTests.swift */,
+				D20000000000000000000036 /* M1BiquadFilterDesignTests.swift */,
+				D20000000000000000000037 /* M1EqualizerAPOTextCodecTests.swift */,
+				D20000000000000000000038 /* M1FilterEditingTests.swift */,
 				E20000000000000000000001 /* M1EditingPerformanceTests.swift */,
 			);
 			path = EqualizerAUM1RuntimeTests;
@@ -950,6 +967,8 @@
 				D10000000000000000000038 /* M1SystemAudioLifecycleMonitor.swift in Sources */,
 				D10000000000000000000040 /* M1SystemAudioLifecycleOperations.swift in Sources */,
 				D10000000000000000000032 /* M1EditingSession.swift in Sources */,
+				D10000000000000000000042 /* M1BiquadFilterDesign.swift in Sources */,
+				D10000000000000000000044 /* M1EqualizerAPOTextCodec.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -989,6 +1008,11 @@
 				D1000000000000000000003F /* M1SystemAudioLifecycleMonitorTests.swift in Sources */,
 				D10000000000000000000034 /* M1EditingSessionTests.swift in Sources */,
 				E10000000000000000000001 /* M1EditingPerformanceTests.swift in Sources */,
+				D10000000000000000000043 /* M1BiquadFilterDesign.swift in Sources */,
+				D10000000000000000000045 /* M1EqualizerAPOTextCodec.swift in Sources */,
+				D10000000000000000000046 /* M1BiquadFilterDesignTests.swift in Sources */,
+				D10000000000000000000047 /* M1EqualizerAPOTextCodecTests.swift in Sources */,
+				D10000000000000000000048 /* M1FilterEditingTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

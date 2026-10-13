@@ -32,6 +32,7 @@ enum M1ProcessingNodeKind: String, Sendable {
     case preamp
     case graphicEQ
     case convolution
+    case filter
 }
 
 struct M1ConvolutionIRReference: Equatable, Sendable {
@@ -72,6 +73,205 @@ enum M1GraphicEQContract {
     }
 }
 
+enum M1FilterType: String, CaseIterable, Sendable {
+    case peaking
+    case lowPass
+    case highPass
+    case bandPass
+    case lowShelf
+    case highShelf
+    case notch
+    case allPass
+
+    var supportsGain: Bool {
+        switch self {
+        case .peaking, .lowShelf, .highShelf:
+            return true
+        case .lowPass, .highPass, .bandPass, .notch, .allPass:
+            return false
+        }
+    }
+
+    var isShelf: Bool {
+        self == .lowShelf || self == .highShelf
+    }
+}
+
+enum M1FilterWidth: Hashable, Sendable {
+    case q(Double)
+    case bandwidthOctaves(Double)
+    case slopeDBPerOctave(Double)
+}
+
+enum M1FilterContract {
+    /// Filter nodes use a wider frequency domain than Graphic EQ: subsonic
+    /// protection filters (10–15 Hz high-pass) are a real use case and biquads
+    /// carry no FIR design-grid constraint.
+    static let minimumFrequencyHz = 1.0
+    static let maximumFrequencyHz = 20_000.0
+    static let minimumGainDB = -24.0
+    static let maximumGainDB = 24.0
+    static let gainStepDB = 0.1
+    static let minimumQ = 0.05
+    static let maximumQ = 100.0
+    static let minimumBandwidthOctaves = 0.01
+    static let maximumBandwidthOctaves = 12.0
+    static let maximumSlopeDBPerOctave = 12.0
+    /// EqualizerAPO `BiQuadFilterFactory` default for low/high/band-pass (M_SQRT1_2).
+    static let defaultQ = 1.0 / 2.0.squareRoot()
+    /// EqualizerAPO `BiQuadFilterFactory` default notch Q.
+    static let defaultNotchQ = 30.0
+    /// EqualizerAPO default shelf slope: 0.9 normalized × 12 dB/oct.
+    static let defaultShelfSlopeDBPerOctave = 10.8
+    static let defaultFrequencyHz = 1_000.0
+}
+
+struct M1FilterSpecification: Hashable, Sendable {
+    var type: M1FilterType
+    var frequencyHz: Double
+    var gainDB: Double
+    var width: M1FilterWidth
+    var cornerFrequency: Bool
+
+    static func defaultSpecification(type: M1FilterType = .peaking) -> Self {
+        let width: M1FilterWidth
+        switch type {
+        case .lowShelf, .highShelf:
+            width = .slopeDBPerOctave(M1FilterContract.defaultShelfSlopeDBPerOctave)
+        case .notch:
+            width = .q(M1FilterContract.defaultNotchQ)
+        case .peaking, .lowPass, .highPass, .bandPass, .allPass:
+            width = .q(M1FilterContract.defaultQ)
+        }
+        return Self(
+            type: type,
+            frequencyHz: M1FilterContract.defaultFrequencyHz,
+            gainDB: 0,
+            width: width,
+            cornerFrequency: type.isShelf
+        )
+    }
+
+    func validate(nodeID: UUID) throws {
+        guard frequencyHz.isFinite,
+              frequencyHz >= M1FilterContract.minimumFrequencyHz,
+              frequencyHz <= M1FilterContract.maximumFrequencyHz
+        else {
+            throw M1ProcessingBuildError.invalidFilterFrequency(nodeID: nodeID)
+        }
+        guard gainDB.isFinite else {
+            throw M1ProcessingBuildError.invalidFilterGain(nodeID: nodeID)
+        }
+        if type.supportsGain {
+            guard gainDB >= M1FilterContract.minimumGainDB,
+                  gainDB <= M1FilterContract.maximumGainDB
+            else {
+                throw M1ProcessingBuildError.invalidFilterGain(nodeID: nodeID)
+            }
+        } else {
+            guard gainDB == 0 else {
+                throw M1ProcessingBuildError.filterGainNotApplicable(nodeID: nodeID)
+            }
+        }
+        switch width {
+        case .q(let value):
+            guard value.isFinite,
+                  value >= M1FilterContract.minimumQ,
+                  value <= M1FilterContract.maximumQ
+            else {
+                throw M1ProcessingBuildError.invalidFilterWidth(nodeID: nodeID)
+            }
+        case .bandwidthOctaves(let value):
+            guard !type.isShelf,
+                  value.isFinite,
+                  value >= M1FilterContract.minimumBandwidthOctaves,
+                  value <= M1FilterContract.maximumBandwidthOctaves
+            else {
+                throw M1ProcessingBuildError.invalidFilterWidth(nodeID: nodeID)
+            }
+        case .slopeDBPerOctave(let value):
+            guard type.isShelf,
+                  value.isFinite,
+                  value > 0,
+                  value <= M1FilterContract.maximumSlopeDBPerOctave
+            else {
+                throw M1ProcessingBuildError.invalidFilterWidth(nodeID: nodeID)
+            }
+        }
+        guard type.isShelf || !cornerFrequency else {
+            throw M1ProcessingBuildError.invalidFilterSpecification(nodeID: nodeID)
+        }
+    }
+}
+
+extension M1FilterSpecification {
+    /// Numeric value of the current width, regardless of kind.
+    var widthValue: Double? {
+        switch width {
+        case .q(let value):
+            return value
+        case .bandwidthOctaves(let value):
+            return value
+        case .slopeDBPerOctave(let value):
+            return value
+        }
+    }
+
+    func withType(_ type: M1FilterType) -> Self {
+        var result = self
+        guard type != self.type else { return result }
+        result.type = type
+        result.cornerFrequency = type.isShelf
+        switch result.width {
+        case .slopeDBPerOctave where !type.isShelf:
+            result.width = .q(M1FilterContract.defaultQ)
+        case .bandwidthOctaves where type.isShelf:
+            result.width = .slopeDBPerOctave(M1FilterContract.defaultShelfSlopeDBPerOctave)
+        case .q, .bandwidthOctaves, .slopeDBPerOctave:
+            break
+        }
+        if !type.supportsGain { result.gainDB = 0 }
+        return result
+    }
+
+    func withFrequencyHz(_ value: Double) -> Self {
+        var result = self
+        result.frequencyHz = value
+        return result
+    }
+
+    func withGainDB(_ value: Double) -> Self {
+        var result = self
+        result.gainDB = value
+        return result
+    }
+
+    func withWidth(_ width: M1FilterWidth) -> Self {
+        var result = self
+        result.width = width
+        return result
+    }
+
+    func withWidthValue(_ value: Double) -> Self {
+        var result = self
+        switch result.width {
+        case .q:
+            result.width = .q(value)
+        case .bandwidthOctaves:
+            result.width = .bandwidthOctaves(value)
+        case .slopeDBPerOctave:
+            result.width = .slopeDBPerOctave(value)
+        }
+        return result
+    }
+
+    func withCornerFrequency(_ cornerFrequency: Bool) -> Self {
+        var result = self
+        result.cornerFrequency = cornerFrequency
+        return result
+    }
+}
+
 struct M1ProcessingNode: Identifiable, Equatable, Sendable {
     let id: UUID
     var kind: M1ProcessingNodeKind
@@ -80,6 +280,7 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
     var channels: M1ChannelSelection
     var graphicEQPoints: [M1GraphicEQPoint]
     var convolutionIR: M1ConvolutionIRReference?
+    var filterSpecification: M1FilterSpecification?
 
     init(
         id: UUID,
@@ -94,6 +295,7 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
         self.channels = channels
         graphicEQPoints = []
         convolutionIR = nil
+        filterSpecification = nil
     }
 
     static func channels(
@@ -144,6 +346,23 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
         )
     }
 
+    static func filter(
+        id: UUID = UUID(),
+        isEnabled: Bool = true,
+        specification: M1FilterSpecification = .defaultSpecification()
+    ) -> Self {
+        Self(
+            id: id,
+            kind: .filter,
+            isEnabled: isEnabled,
+            gainDB: 0,
+            channels: .all,
+            graphicEQPoints: [],
+            convolutionIR: nil,
+            filterSpecification: specification
+        )
+    }
+
     private init(
         id: UUID,
         kind: M1ProcessingNodeKind,
@@ -151,7 +370,8 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
         gainDB: Double,
         channels: M1ChannelSelection,
         graphicEQPoints: [M1GraphicEQPoint],
-        convolutionIR: M1ConvolutionIRReference?
+        convolutionIR: M1ConvolutionIRReference?,
+        filterSpecification: M1FilterSpecification? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -160,6 +380,7 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
         self.channels = channels
         self.graphicEQPoints = graphicEQPoints
         self.convolutionIR = convolutionIR
+        self.filterSpecification = filterSpecification
     }
 
     func copied(id: UUID) -> Self {
@@ -177,6 +398,8 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
             return .graphicEQ(id: id, isEnabled: isEnabled, points: graphicEQPoints)
         case .convolution:
             return .convolution(id: id, isEnabled: isEnabled, ir: convolutionIR!)
+        case .filter:
+            return .filter(id: id, isEnabled: isEnabled, specification: filterSpecification!)
         }
     }
 }

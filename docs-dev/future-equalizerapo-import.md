@@ -40,6 +40,15 @@ Convolution、Include factories，确认：
 把合法 Preamp 和 GraphicEQ 转为原生节点；GraphicEQ 域外正频率点按 M6 契约原样保存但不参与
 20 Hz...20 kHz DSP。确认形成一个未保存草稿步骤，Undo 可完整恢复，仍需 Save。依赖 APO-01/02。
 
+> 2026-09 已交付更小的剪贴板切片：⌘V 直接粘贴 EqualizerAPO `GraphicEQ:` 文本创建图形 EQ 节点
+> （无 Preamp、无文件解析、无预览）。该切片的导入归一化丢弃域外频点并夹紧增益，是用户确认
+> 的决策，见 PRD 7.2 与 architecture.md。本卡的文件导入路径仍未排期；域外点"原样保存"的取舍
+> 是否延续到文件导入需在实施前重新确认。
+>
+> 2026-10 起经典 `Filter:` 指令族已有原生节点承载（ADR-0021），⌘V 文本回退同样解析 `Filter:`
+> 行。本卡实施时，Filter 行应映射到原生滤波器节点而非重新引入解析产物；`IIR`、`Delay`、
+> `Copy`、`LoudnessCorrection`、`VSTPlugin` 仍无对应节点，文件导入需为它们定义显式拒绝诊断。
+
 ### APO-04：Channel 作用域导入
 
 把 `Channel: all`、正整数和非空标识转换为 Channels 节点，保留命令顺序和后续作用域；不根据

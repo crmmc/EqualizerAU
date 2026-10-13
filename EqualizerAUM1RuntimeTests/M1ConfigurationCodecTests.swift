@@ -70,10 +70,10 @@ final class M1ConfigurationCodecTests: XCTestCase {
     func testUnsupportedSchemaAndUnknownNodeAreRejected() {
         let id = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
         let unsupported = Data(
-            "{\"schemaVersion\":9,\"effectsEnabled\":true,\"nodes\":[]}".utf8
+            "{\"schemaVersion\":10,\"effectsEnabled\":true,\"nodes\":[]}".utf8
         )
         XCTAssertThrowsError(try M1ConfigurationCodec.decode(unsupported)) { error in
-            XCTAssertEqual(error as? M1ConfigurationCodecError, .unsupportedSchema(9))
+            XCTAssertEqual(error as? M1ConfigurationCodecError, .unsupportedSchema(10))
         }
 
         let unknown = Data(
@@ -97,7 +97,7 @@ final class M1ConfigurationCodecTests: XCTestCase {
         XCTAssertEqual(first.snapshot.nodes.map(\.kind), [.channels, .preamp])
         XCTAssertEqual(first.snapshot.nodes[1].id, id)
         let text = try XCTUnwrap(String(data: first.data, encoding: .utf8))
-        XCTAssertTrue(text.contains("\"schemaVersion\" : 8"))
+        XCTAssertTrue(text.contains("\"schemaVersion\" : 9"))
         XCTAssertTrue(text.contains("\"type\" : \"channels\""))
         XCTAssertFalse(text.contains("\"channels\" : \"all\""))
     }
@@ -110,7 +110,7 @@ final class M1ConfigurationCodecTests: XCTestCase {
 
         let decoded = try M1ConfigurationCodec.decode(source)
         XCTAssertEqual(decoded.snapshot.nodes.map(\.kind), [.preamp])
-        XCTAssertTrue(String(decoding: decoded.data, as: UTF8.self).contains("\"schemaVersion\" : 8"))
+        XCTAssertTrue(String(decoding: decoded.data, as: UTF8.self).contains("\"schemaVersion\" : 9"))
     }
 
     func testVersionThreeDecodesAndCanonicalizesToVersionFive() throws {
@@ -121,7 +121,7 @@ final class M1ConfigurationCodecTests: XCTestCase {
 
         let decoded = try M1ConfigurationCodec.decode(source)
         XCTAssertEqual(decoded.snapshot.nodes.map(\.kind), [.preamp])
-        XCTAssertTrue(String(decoding: decoded.data, as: UTF8.self).contains("\"schemaVersion\" : 8"))
+        XCTAssertTrue(String(decoding: decoded.data, as: UTF8.self).contains("\"schemaVersion\" : 9"))
     }
 
     func testVersionFourChannelsMigrateEnabledAndVersionFiveRequiresExplicitState() throws {
@@ -192,7 +192,7 @@ final class M1ConfigurationCodecTests: XCTestCase {
                 M1ConvolutionIRStore.legacyReference(storageID: storageID)
             )
             let canonical = String(decoding: decoded.data, as: UTF8.self)
-            XCTAssertTrue(canonical.contains("\"schemaVersion\" : 8"))
+            XCTAssertTrue(canonical.contains("\"schemaVersion\" : 9"))
             XCTAssertTrue(canonical.contains("\"sourcePath\""))
             XCTAssertFalse(canonical.contains("\"storageID\""))
         }
@@ -265,7 +265,7 @@ final class M1ConfigurationCodecTests: XCTestCase {
             XCTAssertEqual(node.graphicEQPoints, expected)
             XCTAssertFalse(decoded.snapshot.effectsEnabled)
             let canonical = String(decoding: decoded.data, as: UTF8.self)
-            XCTAssertTrue(canonical.contains("\"schemaVersion\" : 8"))
+            XCTAssertTrue(canonical.contains("\"schemaVersion\" : 9"))
             XCTAssertTrue(canonical.contains("\"points\""))
             XCTAssertFalse(canonical.contains("\"bands\""))
         }
@@ -286,7 +286,7 @@ final class M1ConfigurationCodecTests: XCTestCase {
             oldPoints
         )
         let canonical = String(decoding: decoded.data, as: UTF8.self)
-        XCTAssertTrue(canonical.contains("\"schemaVersion\" : 8"))
+        XCTAssertTrue(canonical.contains("\"schemaVersion\" : 9"))
         XCTAssertTrue(canonical.contains("\"frequencyHz\" : 30000"))
     }
 
@@ -319,7 +319,7 @@ final class M1ConfigurationCodecTests: XCTestCase {
 
         XCTAssertEqual(decoded.snapshot.nodes, [empty, single, maximum, outside])
         XCTAssertEqual(decoded, encoded)
-        XCTAssertTrue(text.contains("\"schemaVersion\" : 8"))
+        XCTAssertTrue(text.contains("\"schemaVersion\" : 9"))
         XCTAssertTrue(text.contains("\"points\""))
         XCTAssertFalse(text.contains("\"bands\""))
     }
