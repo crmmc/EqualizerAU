@@ -586,6 +586,86 @@ final class M1EditingSessionTests: XCTestCase {
         XCTAssertEqual(session.nodes.map(\.kind), [.preamp, .graphicEQ, .preamp, .graphicEQ])
     }
 
+    func testGraphicEQTextCodecParsesPairsAfterFirstColon() throws {
+        let lines = try M1GraphicEQTextCodec.parseLines(
+            "GraphicEQ: 20 -0.2; 21 -0.5; 22 -0.7; 23 -0.9;"
+        )
+        XCTAssertEqual(lines, [[
+            M1GraphicEQPoint(frequencyHz: 20, gainDB: -0.2),
+            M1GraphicEQPoint(frequencyHz: 21, gainDB: -0.5),
+            M1GraphicEQPoint(frequencyHz: 22, gainDB: -0.7),
+            M1GraphicEQPoint(frequencyHz: 23, gainDB: -0.9),
+        ]])
+    }
+
+    func testGraphicEQTextCodecMatchesCommandCaseInsensitivelyAndIgnoresOtherLines() throws {
+        let text = """
+        Preamp: -6 dB
+        # comment
+        hello
+        graphiceq: 100 1
+        GraphicEQ:
+        """
+        XCTAssertEqual(try M1GraphicEQTextCodec.parseLines(text), [[
+            M1GraphicEQPoint(frequencyHz: 100, gainDB: 1),
+        ]])
+        XCTAssertEqual(try M1GraphicEQTextCodec.parseLines("hello"), [])
+    }
+
+    func testGraphicEQTextCodecClampsGainAndDropsOutOfRangeFrequencies() throws {
+        XCTAssertEqual(try M1GraphicEQTextCodec.parseLines("GraphicEQ: 100 30"), [[
+            M1GraphicEQPoint(frequencyHz: 100, gainDB: 24),
+        ]])
+        XCTAssertEqual(try M1GraphicEQTextCodec.parseLines("GraphicEQ: 100 -30"), [[
+            M1GraphicEQPoint(frequencyHz: 100, gainDB: -24),
+        ]])
+        XCTAssertEqual(try M1GraphicEQTextCodec.parseLines("GraphicEQ: 10 -1; 21000 -2; 100 -3"), [[
+            M1GraphicEQPoint(frequencyHz: 100, gainDB: -3),
+        ]])
+    }
+
+    func testGraphicEQTextCodecSortsAscendingAndKeepsFirstDuplicateFrequency() throws {
+        XCTAssertEqual(try M1GraphicEQTextCodec.parseLines(
+            "GraphicEQ: 200 -2; 100 -1; 200 -5; 100 -9"
+        ), [[
+            M1GraphicEQPoint(frequencyHz: 100, gainDB: -1),
+            M1GraphicEQPoint(frequencyHz: 200, gainDB: -2),
+        ]])
+    }
+
+    func testGraphicEQTextCodecParsesCommaDecimalsAndDropsInvalidPairs() throws {
+        XCTAssertEqual(try M1GraphicEQTextCodec.parseLines("GraphicEQ: 100 -3,5"), [[
+            M1GraphicEQPoint(frequencyHz: 100, gainDB: -3.5),
+        ]])
+        XCTAssertEqual(try M1GraphicEQTextCodec.parseLines("GraphicEQ: 100 1e999"), [])
+        XCTAssertEqual(try M1GraphicEQTextCodec.parseLines("GraphicEQ: 100 e 5"), [])
+    }
+
+    func testGraphicEQTextCodecCreatesOneEntryPerGraphicEQLine() throws {
+        let text = """
+        GraphicEQ: 100 1
+        GraphicEQ: 200 2
+        """
+        XCTAssertEqual(try M1GraphicEQTextCodec.parseLines(text), [
+            [M1GraphicEQPoint(frequencyHz: 100, gainDB: 1)],
+            [M1GraphicEQPoint(frequencyHz: 200, gainDB: 2)],
+        ])
+    }
+
+    func testGraphicEQTextCodecThrowsWhenLineExceedsPointLimitAfterNormalization() throws {
+        let inRange = (20..<533).map { " \($0) -1" }.joined()
+        XCTAssertThrowsError(
+            try M1GraphicEQTextCodec.parseLines("GraphicEQ:\(inRange); 10 -2")
+        ) { error in
+            XCTAssertEqual(
+                error as? M1GraphicEQTextCodecError,
+                .pointLimitExceeded(count: 513, maximum: M1GraphicEQContract.maximumPointCount)
+            )
+        }
+        let withinLimit = (20..<532).map { "\($0) -1" }.joined()
+        XCTAssertEqual(try M1GraphicEQTextCodec.parseLines("GraphicEQ:\(withinLimit)").count, 1)
+    }
+
     func testClipboardEncodeRejectsOversizedNodeList() {
         let many = (0..<35_000).map { index in
             M1PreampNode(

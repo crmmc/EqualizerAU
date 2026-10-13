@@ -221,6 +221,7 @@ enum M1PresentationMessage: Equatable, Sendable {
     case configurationDurabilityUncertain
     case editorChangeCouldNotApply
     case configurationRepairFailed
+    case pastedGraphicEQPointLimitExceeded(count: Int, maximum: Int)
     case terminationCancelled
     case technical(String)
 }
@@ -706,16 +707,32 @@ actor M1ProductController {
 
     func paste(from pasteboard: any M1PasteboardAccess) async throws {
         guard snapshot().canEdit else { throw M1ProductControllerError.commandUnavailable }
-        guard let data = await pasteboard.readNodes() else { return }
-        let decoded: M1EncodedNodeEnvelope
-        do {
-            decoded = try await Task.detached { try M1NodeEnvelopeCodec.decode(data) }.value
-        } catch M1EditingSessionError.unsupportedClipboardSchema {
+        let pastedNodes: [M1ProcessingNode]
+        if let data = await pasteboard.readNodes() {
+            let decoded: M1EncodedNodeEnvelope
+            do {
+                decoded = try await Task.detached { try M1NodeEnvelopeCodec.decode(data) }.value
+            } catch M1EditingSessionError.unsupportedClipboardSchema {
+                return
+            }
+            pastedNodes = decoded.nodes
+        } else if let text = await pasteboard.readText() {
+            let pointLines: [[M1GraphicEQPoint]]
+            do {
+                pointLines = try await Task.detached {
+                    try M1GraphicEQTextCodec.parseLines(text)
+                }.value
+            } catch M1GraphicEQTextCodecError.pointLimitExceeded(let count, let maximum) {
+                visibleError = .pastedGraphicEQPointLimitExceeded(count: count, maximum: maximum)
+                return
+            }
+            pastedNodes = pointLines.map { M1ProcessingNode.graphicEQ(points: $0) }
+        } else {
             return
         }
-        let ids = decoded.nodes.map { _ in UUID() }
+        let ids = pastedNodes.map { _ in UUID() }
         try await updateEditingSession { session, effectsEnabled in
-            try session.paste(decoded.nodes, newIDs: ids, effectsEnabled: effectsEnabled)
+            try session.paste(pastedNodes, newIDs: ids, effectsEnabled: effectsEnabled)
         }
     }
 

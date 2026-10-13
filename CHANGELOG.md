@@ -11,6 +11,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- ⌘V 可直接粘贴 EqualizerAPO `GraphicEQ:` 文本（如 AutoEQ 结果）创建图形 EQ 节点；增益自动夹紧到 ±24 dB，20–20 000 Hz 域外频点丢弃，单行超过 512 点时显示错误且不插入。
+
 ## [0.1.0] - 2026-08-04
 
 ### Added

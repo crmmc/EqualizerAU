@@ -92,6 +92,28 @@ final class M1AppModelTests: XCTestCase {
         XCTAssertTrue(fixture.model.snapshot.draft.nodes.isEmpty)
     }
 
+    func testPasteGraphicEQTextCreatesSelectedGraphicEQNode() async throws {
+        let fixture = makeAppModelFixture()
+        fixture.model.bootstrap()
+        await fixture.model.waitUntilIdle()
+        fixture.pasteboard.setText("GraphicEQ: 100 -3,5; 200 -2")
+
+        fixture.model.paste()
+        await fixture.model.waitUntilIdle()
+
+        let snapshot = fixture.model.snapshot
+        XCTAssertEqual(snapshot.draft.nodes.count, 2)
+        let pasted = try XCTUnwrap(snapshot.draft.nodes.last)
+        XCTAssertEqual(pasted.kind, .graphicEQ)
+        XCTAssertTrue(pasted.isEnabled)
+        XCTAssertEqual(pasted.graphicEQPoints, [
+            M1GraphicEQPoint(frequencyHz: 100, gainDB: -3.5),
+            M1GraphicEQPoint(frequencyHz: 200, gainDB: -2),
+        ])
+        XCTAssertEqual(snapshot.selectedNodeIDs, Set([pasted.id]))
+        XCTAssertNil(snapshot.visibleError)
+    }
+
     func testSaveStartProcessingDiagnosticsAndStop() async {
         let fixture = makeAppModelFixture()
         fixture.model.bootstrap()
@@ -193,6 +215,7 @@ final class M1AppModelTests: XCTestCase {
             .configurationDurabilityUncertain,
             .editorChangeCouldNotApply,
             .configurationRepairFailed,
+            .pastedGraphicEQPointLimitExceeded(count: 3, maximum: 1),
             .terminationCancelled,
             .technical("detail"),
         ]
@@ -359,6 +382,7 @@ private actor AppModelAudioFake: M1ProductAudioControlling {
 private final class AppModelPasteboardFake: M1PasteboardAccess, @unchecked Sendable {
     private let lock = NSLock()
     private var data: Data?
+    private var text: String?
 
     func readNodes() -> Data? {
         lock.withLock { data }
@@ -367,6 +391,14 @@ private final class AppModelPasteboardFake: M1PasteboardAccess, @unchecked Senda
     func writeNodes(_ data: Data) -> Bool {
         lock.withLock { self.data = data }
         return true
+    }
+
+    func readText() -> String? {
+        lock.withLock { text }
+    }
+
+    func setText(_ newText: String?) {
+        lock.withLock { text = newText }
     }
 }
 

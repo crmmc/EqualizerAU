@@ -36,6 +36,8 @@ extension M1PresentationMessage {
             "An editor change could not be applied"
         case .configurationRepairFailed:
             "Configuration repair failed"
+        case let .pastedGraphicEQPointLimitExceeded(count, maximum):
+            "The pasted GraphicEQ line has \(count) points, above the \(maximum)-point limit; nothing was inserted."
         case .terminationCancelled:
             "Termination cancelled"
         case let .technical(reason):
@@ -66,6 +68,11 @@ extension M1PresentationMessage {
             String(localized: "An editor change could not be applied", locale: locale)
         case .configurationRepairFailed:
             String(localized: "Configuration repair failed", locale: locale)
+        case let .pastedGraphicEQPointLimitExceeded(count, maximum):
+            String(
+                localized: "The pasted GraphicEQ line has \(count) points, above the \(maximum)-point limit; nothing was inserted.",
+                locale: locale
+            )
         case .terminationCancelled:
             String(localized: "Termination cancelled", locale: locale)
         case let .technical(reason):

@@ -23,6 +23,7 @@ enum M1EditingSessionError: Error, Equatable, Sendable {
 protocol M1PasteboardAccess: Sendable {
     func readNodes() async -> Data?
     func writeNodes(_ data: Data) async -> Bool
+    func readText() async -> String?
 }
 
 struct M1EncodedNodeEnvelope: Equatable, Sendable {
@@ -111,6 +112,66 @@ enum M1NodeEnvelopeCodec {
         } catch {
             throw M1EditingSessionError.invalidClipboard
         }
+    }
+}
+
+enum M1GraphicEQTextCodecError: Error, Equatable, Sendable {
+    case pointLimitExceeded(count: Int, maximum: Int)
+}
+
+enum M1GraphicEQTextCodec {
+    static func parseLines(_ text: String) throws -> [[M1GraphicEQPoint]] {
+        let numberExpression = try NSRegularExpression(pattern: "[-+0-9.eE]+")
+        var pointLines: [[M1GraphicEQPoint]] = []
+        for line in text.components(separatedBy: .newlines) {
+            guard let separator = line.firstIndex(of: ":"),
+                  line[..<separator]
+                      .trimmingCharacters(in: .whitespaces)
+                      .caseInsensitiveCompare("GraphicEQ") == .orderedSame
+            else { continue }
+            let parameters = String(line[line.index(after: separator)...])
+            let decimalText = parameters.contains(".")
+                ? parameters
+                : parameters.replacingOccurrences(of: ",", with: ".")
+            let range = NSRange(decimalText.startIndex..., in: decimalText)
+            let tokens = numberExpression
+                .matches(in: decimalText, range: range)
+                .compactMap { Range($0.range, in: decimalText).map { String(decimalText[$0]) } }
+            var points: [M1GraphicEQPoint] = []
+            var index = 0
+            while index + 1 < tokens.count {
+                if let frequencyHz = Double(tokens[index]),
+                   let gainDB = Double(tokens[index + 1]),
+                   frequencyHz.isFinite,
+                   gainDB.isFinite,
+                   frequencyHz >= M1GraphicEQContract.minimumFrequencyHz,
+                   frequencyHz <= M1GraphicEQContract.maximumFrequencyHz
+                {
+                    points.append(M1GraphicEQPoint(
+                        frequencyHz: frequencyHz,
+                        gainDB: min(
+                            max(gainDB, M1GraphicEQContract.minimumGainDB),
+                            M1GraphicEQContract.maximumGainDB
+                        )
+                    ))
+                }
+                index += 2
+            }
+            var seenFrequencies: Set<Double> = []
+            var uniquePoints: [M1GraphicEQPoint] = []
+            for point in points where seenFrequencies.insert(point.frequencyHz).inserted {
+                uniquePoints.append(point)
+            }
+            uniquePoints.sort { $0.frequencyHz < $1.frequencyHz }
+            guard uniquePoints.count <= M1GraphicEQContract.maximumPointCount else {
+                throw M1GraphicEQTextCodecError.pointLimitExceeded(
+                    count: uniquePoints.count,
+                    maximum: M1GraphicEQContract.maximumPointCount
+                )
+            }
+            if !uniquePoints.isEmpty { pointLines.append(uniquePoints) }
+        }
+        return pointLines
     }
 }
 
