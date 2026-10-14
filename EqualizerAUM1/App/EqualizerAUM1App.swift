@@ -565,7 +565,7 @@ struct EqualizerAUM1App: App {
                 }
         }
         .windowResizability(.contentMinSize)
-        .defaultSize(width: 760, height: 520)
+        .defaultSize(width: 1180, height: 520)
         .environment(\.locale, applicationLanguage.locale)
         .commandsRemoved()
         .commands {
@@ -702,6 +702,72 @@ private struct M1EditorView: View {
 
     private static let nodeRowHeight: CGFloat = 58
 
+    // Width floor that keeps the toolbar readable when the chain is empty.
+    private static let minimumToolbarWidth: CGFloat = 400
+
+    // Mirrors nodeRow: drag 26 + index 32 + power 26 + icon 20 + delete 24 + six 8 pt
+    // gaps, plus horizontal list row insets. The title column adds nodeTitleColumnWidth
+    // on top. Keep in sync with nodeRow and the per-kind editors when layout changes.
+    private static let rowChromeWidth: CGFloat = 192
+
+    // Widest localized node title, so the title column hugs its content instead of a
+    // hardcoded width. Keep the kind list in sync with nodeTitle.
+    private var nodeTitleColumnWidth: CGFloat {
+        let font = NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .medium)
+        let widest = [M1ProcessingNodeKind.channels, .preamp, .graphicEQ, .convolution, .filter]
+            .map { nodeTitle($0) }
+            .map { ($0 as NSString).size(withAttributes: [.font: font]).width }
+            .max() ?? 104
+        return ceil(widest) + 2
+    }
+
+    private var minimumContentWidth: CGFloat {
+        let widestRow = model.snapshot.draft.nodes.map(minimumRowWidth).max() ?? 0
+        return max(Self.minimumToolbarWidth, widestRow)
+    }
+
+    private func minimumRowWidth(_ node: M1ProcessingNode) -> CGFloat {
+        Self.rowChromeWidth + nodeTitleColumnWidth + minimumControlsWidth(node)
+    }
+
+    private func minimumControlsWidth(_ node: M1ProcessingNode) -> CGFloat {
+        switch node.kind {
+        case .channels:
+            // Truncatable channel summary floor + "Change…" menu.
+            return 40 + 8 + 88
+        case .preamp:
+            // Knob 32 + gain field 64 + "dB" label.
+            return 32 + 8 + 64 + 8 + 20
+        case .graphicEQ:
+            let warning: CGFloat = graphicEQDiagnosticSummary(node.id) != nil ? 20 + 8 : 0
+            // Mini curve floor + edit button 24.
+            return warning + 96 + 8 + 24
+        case .convolution:
+            // Truncatable source path column (minWidth 120) + replace button 24.
+            return 120 + 8 + 24
+        case .filter:
+            return minimumFilterControlsWidth(node)
+        }
+    }
+
+    private func minimumFilterControlsWidth(_ node: M1ProcessingNode) -> CGFloat {
+        guard let specification = node.filterSpecification else { return 0 }
+        // Type menu (72 label + menu chrome) + frequency field 72 + "Hz" label.
+        var width: CGFloat = 106 + 8 + 72 + 8 + 20
+        if specification.type.supportsGain {
+            width += 8 + 64 + 8 + 20
+        }
+        // Width menu (56 label + menu chrome) + width field 64.
+        width += 8 + 90 + 8 + 64
+        if specification.type.isShelf {
+            width += 8 + 150
+        }
+        if filterBypassDiagnostic(node.id) != nil {
+            width += 20 + 8
+        }
+        return width
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             toolbar
@@ -710,7 +776,7 @@ private struct M1EditorView: View {
             Divider()
             status
         }
-        .frame(minWidth: 620, minHeight: 420)
+        .frame(minWidth: minimumContentWidth, minHeight: 420)
     }
 
     private var toolbar: some View {
@@ -757,9 +823,11 @@ private struct M1EditorView: View {
             if let layout = model.snapshot.outputLayout {
                 Text("\(layout.channels.count) ch  \(Int(layout.sampleRate)) Hz")
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             } else {
                 Text("No active output")
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
         .padding(12)
@@ -1018,13 +1086,14 @@ private struct M1EditorView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(nodeTitle(node.kind))
                     .fontWeight(.medium)
+                    .lineLimit(1)
                 Text(nodeSubtitle(node))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .help(nodeSubtitle(node))
             }
-            .frame(minWidth: 104, idealWidth: 120, alignment: .leading)
+            .frame(width: nodeTitleColumnWidth, alignment: .leading)
             .allowsHitTesting(false)
 
             nodeControls(node)
@@ -1231,6 +1300,7 @@ private struct M1EditorView: View {
                     Text("Bypassed · \(convolutionBypassText(bypass.reason))")
                         .font(.caption)
                         .foregroundStyle(.orange)
+                        .lineLimit(1)
                 } else if let source {
                     let duration = Double(source.sourceFrameCount) / source.sourceSampleRate
                     if source.hasPerformanceWarning {
@@ -1248,9 +1318,10 @@ private struct M1EditorView: View {
                     Text("Not loaded · Save or Start to apply")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .trailing)
+            .frame(minWidth: 120, maxWidth: 420, alignment: .trailing)
             Button { model.replaceConvolutionIR(id: node.id) } label: {
                 Image(systemName: "folder")
                     .frame(width: 24, height: 28)
