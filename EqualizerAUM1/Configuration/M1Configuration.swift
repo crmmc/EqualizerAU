@@ -99,33 +99,19 @@ enum M1ConfigurationCodec {
             let wire = try JSONDecoder().decode(M1ConfigurationV1Wire.self, from: data)
             snapshot = try wire.snapshot()
         case 2:
-            try M1JSONShapeValidator.validateConfiguration(data, schemaVersion: 2)
-            let wire = try JSONDecoder().decode(M1ConfigurationWire.self, from: data)
-            snapshot = try wire.snapshot(expectedSchemaVersion: 2)
+            snapshot = try decodeCurrentWire(data, schemaVersion: 2)
         case 3:
-            try M1JSONShapeValidator.validateConfiguration(data, schemaVersion: 3)
-            let wire = try JSONDecoder().decode(M1ConfigurationWire.self, from: data)
-            snapshot = try wire.snapshot(expectedSchemaVersion: 3)
+            snapshot = try decodeCurrentWire(data, schemaVersion: 3)
         case 4:
-            try M1JSONShapeValidator.validateConfiguration(data, schemaVersion: 4)
-            let wire = try JSONDecoder().decode(M1ConfigurationWire.self, from: data)
-            snapshot = try wire.snapshot(expectedSchemaVersion: 4)
+            snapshot = try decodeCurrentWire(data, schemaVersion: 4)
         case 5:
-            try M1JSONShapeValidator.validateConfiguration(data, schemaVersion: 5)
-            let wire = try JSONDecoder().decode(M1ConfigurationWire.self, from: data)
-            snapshot = try wire.snapshot(expectedSchemaVersion: 5)
+            snapshot = try decodeCurrentWire(data, schemaVersion: 5)
         case 6:
-            try M1JSONShapeValidator.validateConfiguration(data, schemaVersion: 6)
-            let wire = try JSONDecoder().decode(M1ConfigurationWire.self, from: data)
-            snapshot = try wire.snapshot(expectedSchemaVersion: 6)
+            snapshot = try decodeCurrentWire(data, schemaVersion: 6)
         case 7:
-            try M1JSONShapeValidator.validateConfiguration(data, schemaVersion: 7)
-            let wire = try JSONDecoder().decode(M1ConfigurationWire.self, from: data)
-            snapshot = try wire.snapshot(expectedSchemaVersion: 7)
+            snapshot = try decodeCurrentWire(data, schemaVersion: 7)
         case 8:
-            try M1JSONShapeValidator.validateConfiguration(data, schemaVersion: 8)
-            let wire = try JSONDecoder().decode(M1ConfigurationWire.self, from: data)
-            snapshot = try wire.snapshot(expectedSchemaVersion: 8)
+            snapshot = try decodeCurrentWire(data, schemaVersion: 8)
         case M1ConfigurationSnapshot.schemaVersion:
             try M1JSONShapeValidator.validateConfiguration(
                 data,
@@ -137,6 +123,15 @@ enum M1ConfigurationCodec {
             throw M1ConfigurationCodecError.unsupportedSchema(version.schemaVersion)
         }
         return try encode(snapshot)
+    }
+
+    private static func decodeCurrentWire(
+        _ data: Data,
+        schemaVersion: Int
+    ) throws -> M1ConfigurationSnapshot {
+        try M1JSONShapeValidator.validateConfiguration(data, schemaVersion: schemaVersion)
+        let wire = try JSONDecoder().decode(M1ConfigurationWire.self, from: data)
+        return try wire.snapshot(expectedSchemaVersion: schemaVersion)
     }
 }
 
@@ -829,21 +824,12 @@ enum M1ConfigurationMigration {
                     )
                 )
             case .preamp:
-                if node.channels != .all, node.channels != currentScope {
-                    currentScope = node.channels
-                    let id = uniqueMigratedChannelsID(
-                        preampID: node.id,
-                        selection: currentScope,
-                        occupiedIDs: occupiedIDs
-                    )
-                    occupiedIDs.insert(id)
-                    result.append(
-                        .channels(
-                            id: id,
-                            selection: currentScope
-                        )
-                    )
-                }
+                appendScopeBarrierIfNeeded(
+                    node: node,
+                    result: &result,
+                    currentScope: &currentScope,
+                    occupiedIDs: &occupiedIDs
+                )
                 result.append(
                     M1ProcessingNode(
                         id: node.id,
@@ -853,16 +839,12 @@ enum M1ConfigurationMigration {
                     )
                 )
             case .graphicEQ:
-                if node.channels != .all, node.channels != currentScope {
-                    currentScope = node.channels
-                    let id = uniqueMigratedChannelsID(
-                        preampID: node.id,
-                        selection: currentScope,
-                        occupiedIDs: occupiedIDs
-                    )
-                    occupiedIDs.insert(id)
-                    result.append(.channels(id: id, selection: currentScope))
-                }
+                appendScopeBarrierIfNeeded(
+                    node: node,
+                    result: &result,
+                    currentScope: &currentScope,
+                    occupiedIDs: &occupiedIDs
+                )
                 result.append(
                     .graphicEQ(
                         id: node.id,
@@ -871,16 +853,12 @@ enum M1ConfigurationMigration {
                     )
                 )
             case .convolution:
-                if node.channels != .all, node.channels != currentScope {
-                    currentScope = node.channels
-                    let id = uniqueMigratedChannelsID(
-                        preampID: node.id,
-                        selection: currentScope,
-                        occupiedIDs: occupiedIDs
-                    )
-                    occupiedIDs.insert(id)
-                    result.append(.channels(id: id, selection: currentScope))
-                }
+                appendScopeBarrierIfNeeded(
+                    node: node,
+                    result: &result,
+                    currentScope: &currentScope,
+                    occupiedIDs: &occupiedIDs
+                )
                 result.append(
                     .convolution(
                         id: node.id,
@@ -889,16 +867,12 @@ enum M1ConfigurationMigration {
                     )
                 )
             case .filter:
-                if node.channels != .all, node.channels != currentScope {
-                    currentScope = node.channels
-                    let id = uniqueMigratedChannelsID(
-                        preampID: node.id,
-                        selection: currentScope,
-                        occupiedIDs: occupiedIDs
-                    )
-                    occupiedIDs.insert(id)
-                    result.append(.channels(id: id, selection: currentScope))
-                }
+                appendScopeBarrierIfNeeded(
+                    node: node,
+                    result: &result,
+                    currentScope: &currentScope,
+                    occupiedIDs: &occupiedIDs
+                )
                 result.append(
                     .filter(
                         id: node.id,
@@ -909,6 +883,23 @@ enum M1ConfigurationMigration {
             }
         }
         return result
+    }
+
+    private static func appendScopeBarrierIfNeeded(
+        node: M1ProcessingNode,
+        result: inout [M1ProcessingNode],
+        currentScope: inout M1ChannelSelection,
+        occupiedIDs: inout Set<UUID>
+    ) {
+        guard node.channels != .all, node.channels != currentScope else { return }
+        currentScope = node.channels
+        let id = uniqueMigratedChannelsID(
+            preampID: node.id,
+            selection: currentScope,
+            occupiedIDs: occupiedIDs
+        )
+        occupiedIDs.insert(id)
+        result.append(.channels(id: id, selection: currentScope))
     }
 
     private static func uniqueMigratedChannelsID(

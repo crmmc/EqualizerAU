@@ -79,19 +79,9 @@ struct M1ConvolutionIRStore: M1ConvolutionIRLoading, Sendable {
                 target: targetSampleRate
             )
         }
+        // decode guarantees frameCount > 0, uniform channel lengths, and sample
+        // validity, so no re-validation is needed here.
         let channels = decoded.channels
-        guard let targetFrameCount = channels.first?.count, targetFrameCount > 0 else {
-            throw M1ConvolutionIRError.emptyAudio
-        }
-        for channel in channels {
-            guard channel.count == targetFrameCount else { throw M1ConvolutionIRError.invalidSample }
-            for (index, sample) in channel.enumerated() {
-                if index.isMultiple(of: 4_096) { try Task.checkCancellation() }
-                guard sample == 0 || (sample.isFinite && sample.isNormal) else {
-                    throw M1ConvolutionIRError.invalidSample
-                }
-            }
-        }
         return M1LoadedConvolutionIR(
             source: reference,
             sourceSampleRate: decoded.sampleRate,
