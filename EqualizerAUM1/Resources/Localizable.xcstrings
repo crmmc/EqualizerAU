@@ -917,6 +917,38 @@
         }
       }
     },
+    "Fillable range: %@–%@": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Fillable range: %@–%@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可填范围：%@–%@"
+          }
+        }
+      }
+    },
+    "Fillable range: -100–100": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "new",
+            "value": "Fillable range: -100–100"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可填范围：-100–100"
+          }
+        }
+      }
+    },
     "Filter": {
       "localizations": {
         "zh-Hans": {

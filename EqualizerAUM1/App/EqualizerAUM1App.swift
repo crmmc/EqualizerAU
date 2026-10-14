@@ -1370,6 +1370,8 @@ private struct M1EditorView: View {
                     },
                     onEditingChanged: gestureMarker(for: node.id)
                 )
+                .textFieldStyle(.roundedBorder)
+                .monospacedDigit()
                 .frame(width: 72)
                 Text("Hz").foregroundStyle(.secondary)
 
@@ -1387,6 +1389,8 @@ private struct M1EditorView: View {
                         },
                         onEditingChanged: gestureMarker(for: node.id)
                     )
+                    .textFieldStyle(.roundedBorder)
+                    .monospacedDigit()
                     .frame(width: 64)
                     Text("dB").foregroundStyle(.secondary)
                 }
@@ -1454,6 +1458,8 @@ private struct M1EditorView: View {
             },
             onEditingChanged: gestureMarker(for: node.id)
         )
+        .textFieldStyle(.roundedBorder)
+        .monospacedDigit()
         .frame(width: 64)
 
         if specification.type.isShelf {
@@ -1673,9 +1679,14 @@ private struct M1FilterParameterTextField: View {
     @FocusState private var isFocused: Bool
 
     var body: some View {
-        TextField(titleKey, text: $text)
+        TextField(
+            titleKey,
+            text: $text,
+            prompt: Text("Fillable range: \(formatted(minimum))–\(formatted(maximum))")
+        )
             .focused($isFocused)
             .accessibilityLabel(Text(titleKey))
+            .help("Fillable range: \(formatted(minimum))–\(formatted(maximum))")
             .onAppear { text = formatted(value) }
             .onChange(of: value) { _, newValue in
                 if !isFocused { text = formatted(newValue) }
@@ -1727,6 +1738,7 @@ private struct M1GainTextField: View {
     var body: some View {
         TextField("Gain", text: $text)
             .focused($isFocused)
+            .help("Fillable range: -100–100")
             .onAppear { text = formatted(gainDB) }
             .onChange(of: gainDB) { _, value in
                 if !isFocused { text = formatted(value) }
