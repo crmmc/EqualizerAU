@@ -164,6 +164,31 @@ actor M1RetirementMaintenanceCoordinator {
         return true
     }
 
+    /// Underflow defense: a clock that reports a time before the ticket start
+    /// is treated as the maximum elapsed span instead of wrapping around.
+    private func elapsedNanoseconds(since startedAt: UInt64, now: UInt64) -> UInt64 {
+        now >= startedAt ? now - startedAt : UInt64.max
+    }
+
+    /// Checks the ticket deadline and, when exceeded, finishes the run and
+    /// requests a recoverable stop. Returns whether the caller's loop should
+    /// exit.
+    private func handleTicketTimeout(
+        ticket: UInt64,
+        startedAt: UInt64,
+        now: UInt64,
+        identifier: UInt64,
+        bridgeGeneration: UInt64
+    ) async -> Bool {
+        guard elapsedNanoseconds(since: startedAt, now: now) >= timing.ticketDeadline else {
+            return false
+        }
+        let reason = M1RetirementStopReason.ticketTimedOut(ticket: ticket)
+        guard finishRun(identifier: identifier) else { return true }
+        await access.requestRecoverableStop(reason: reason, bridgeGeneration: bridgeGeneration)
+        return true
+    }
+
     private func runMaintenanceLoop(
         initialTicket: UInt64,
         bridgeGeneration: UInt64,
@@ -199,18 +224,13 @@ actor M1RetirementMaintenanceCoordinator {
                     _ = finishRun(identifier: identifier)
                     return
                 }
-                let elapsed = now >= ticketStartedAt
-                    ? now - ticketStartedAt
-                    : UInt64.max
-                if elapsed >= timing.ticketDeadline {
-                    let reason = M1RetirementStopReason.ticketTimedOut(
-                        ticket: ticket
-                    )
-                    guard finishRun(identifier: identifier) else { return }
-                    await access.requestRecoverableStop(
-                        reason: reason,
-                        bridgeGeneration: bridgeGeneration
-                    )
+                if await handleTicketTimeout(
+                    ticket: ticket,
+                    startedAt: ticketStartedAt,
+                    now: now,
+                    identifier: identifier,
+                    bridgeGeneration: bridgeGeneration
+                ) {
                     return
                 }
 
@@ -243,16 +263,13 @@ actor M1RetirementMaintenanceCoordinator {
                         _ = finishRun(identifier: identifier)
                         return
                     }
-                    let elapsed = now >= ticketStartedAt
-                        ? now - ticketStartedAt
-                        : UInt64.max
-                    if elapsed >= timing.ticketDeadline {
-                        let reason = M1RetirementStopReason.ticketTimedOut(ticket: ticket)
-                        guard finishRun(identifier: identifier) else { return }
-                        await access.requestRecoverableStop(
-                            reason: reason,
-                            bridgeGeneration: bridgeGeneration
-                        )
+                    if await handleTicketTimeout(
+                        ticket: ticket,
+                        startedAt: ticketStartedAt,
+                        now: now,
+                        identifier: identifier,
+                        bridgeGeneration: bridgeGeneration
+                    ) {
                         return
                     }
                 }

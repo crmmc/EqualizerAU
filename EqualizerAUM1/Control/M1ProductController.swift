@@ -696,30 +696,30 @@ actor M1ProductController {
     }
 
     func copySelection(to pasteboard: any M1PasteboardAccess) async throws {
-        guard snapshot().canUseSelection else { throw M1ProductControllerError.commandUnavailable }
-        let session = editingSession
-        let encoded = try await Task.detached { try session.encodedSelection() }.value
-        guard let encoded else { return }
-        guard await pasteboard.writeNodes(encoded.data) else {
-            throw M1ProductControllerError.commandUnavailable
-        }
+        try await writeSelection(to: pasteboard)
     }
 
     func cutSelection(to pasteboard: any M1PasteboardAccess) async throws {
-        guard snapshot().canUseSelection else { throw M1ProductControllerError.commandUnavailable }
         let capturedRevision = draftRevision
         let capturedSelection = editingSession.selectedNodeIDs
-        let session = editingSession
-        let encoded = try await Task.detached { try session.encodedSelection() }.value
-        guard let encoded else { return }
-        guard await pasteboard.writeNodes(encoded.data) else {
-            throw M1ProductControllerError.commandUnavailable
-        }
+        try await writeSelection(to: pasteboard)
         guard capturedRevision == draftRevision,
               capturedSelection == editingSession.selectedNodeIDs else {
             throw M1ProductControllerError.commandUnavailable
         }
         try await deleteSelectedPreamps()
+    }
+
+    /// Shared copy/cut write sequence: selection gate, detached encode, empty
+    /// selection short-circuit, and pasteboard write.
+    private func writeSelection(to pasteboard: any M1PasteboardAccess) async throws {
+        guard snapshot().canUseSelection else { throw M1ProductControllerError.commandUnavailable }
+        let session = editingSession
+        let encoded = try await Task.detached { try session.encodedSelection() }.value
+        guard let encoded else { return }
+        guard await pasteboard.writeNodes(encoded.data) else {
+            throw M1ProductControllerError.commandUnavailable
+        }
     }
 
     func paste(from pasteboard: any M1PasteboardAccess) async throws {
@@ -766,22 +766,18 @@ actor M1ProductController {
 
     func save() async throws {
         try requireReadyForPersistence()
-        acceptedOperations += 1
-        persistenceInFlight = true
-        defer {
-            persistenceInFlight = false
-            acceptedOperations -= 1
+        try await withPersistenceSlot {
+            let captured = draft
+            let preparation = try await audio.prepare(configuration: captured)
+            if audioState == .stopped { availableLayout = preparation.layout }
+            try Task.checkCancellation()
+            try await persist(
+                captured,
+                publishChain: true,
+                preparation: preparation,
+                mode: requiresRepair ? .repair : .save
+            )
         }
-        let captured = draft
-        let preparation = try await audio.prepare(configuration: captured)
-        if audioState == .stopped { availableLayout = preparation.layout }
-        try Task.checkCancellation()
-        try await persist(
-            captured,
-            publishChain: true,
-            preparation: preparation,
-            mode: requiresRepair ? .repair : .save
-        )
     }
 
     func setEffectsEnabled(_ enabled: Bool) async throws {
@@ -798,15 +794,7 @@ actor M1ProductController {
             return
         }
         try enqueueEffectsIntent(enabled)
-        guard !effectsUpdateInFlight else { return }
-        acceptedOperations += 1
-        defer { acceptedOperations -= 1 }
-        try await drainEffectsUpdates()
-        if !persistenceInFlight, pendingEffectsEnabled != nil {
-            persistenceInFlight = true
-            defer { persistenceInFlight = false }
-            try await persistPendingEffects()
-        }
+        try await drainEffectsAndPersistPending()
     }
 
     func setProcessingEnabled(_ enabled: Bool) async throws {
@@ -1280,37 +1268,33 @@ actor M1ProductController {
         guard case let .uncertain(generation) = persistence else {
             throw M1ProductControllerError.commandUnavailable
         }
-        acceptedOperations += 1
-        persistenceInFlight = true
-        defer {
-            persistenceInFlight = false
-            acceptedOperations -= 1
-        }
-        let result = await store.retryUncertain(generation: generation)
-        applyPersistenceResult(result)
-        if case .succeeded = result, let application = uncertainApplication {
-            let preparation: M1AudioConfigurationPreparation
-            do {
-                preparation = try await audio.prepare(configuration: application.snapshot)
-            } catch {
+        try await withPersistenceSlot {
+            let result = await store.retryUncertain(generation: generation)
+            applyPersistenceResult(result)
+            if case .succeeded = result, let application = uncertainApplication {
+                let preparation: M1AudioConfigurationPreparation
+                do {
+                    preparation = try await audio.prepare(configuration: application.snapshot)
+                } catch {
+                    uncertainApplication = nil
+                    persistence = .savedPendingStart
+                    expectedDiagnostics = nil
+                    expectedConfigurationGeneration = nil
+                    visibleError = .technical(String(describing: error))
+                    throw error
+                }
+                let refreshedApplication = PendingApplication(
+                    generation: application.generation,
+                    snapshot: application.snapshot,
+                    preparation: preparation
+                )
                 uncertainApplication = nil
-                persistence = .savedPendingStart
-                expectedDiagnostics = nil
-                expectedConfigurationGeneration = nil
-                visibleError = .technical(String(describing: error))
-                throw error
+                await invalidatePendingApplication()
+                try await publishIfRunning(refreshedApplication)
             }
-            let refreshedApplication = PendingApplication(
-                generation: application.generation,
-                snapshot: application.snapshot,
-                preparation: preparation
-            )
-            uncertainApplication = nil
-            await invalidatePendingApplication()
-            try await publishIfRunning(refreshedApplication)
+            if case .uncertain = result { return }
+            try await persistPendingEffects()
         }
-        if case .uncertain = result { return }
-        try await persistPendingEffects()
     }
 
     func retryOutputDiscovery() async throws {
@@ -1320,20 +1304,16 @@ actor M1ProductController {
         guard case .waitingForOutput = persistence else {
             throw M1ProductControllerError.commandUnavailable
         }
-        acceptedOperations += 1
-        persistenceInFlight = true
-        defer {
-            persistenceInFlight = false
-            acceptedOperations -= 1
+        try await withPersistenceSlot {
+            let preparation = try await audio.prepare(configuration: saved)
+            guard preparation.layout != nil else { return }
+            let application = PendingApplication(
+                generation: commitGeneration,
+                snapshot: saved,
+                preparation: preparation
+            )
+            try await publishIfRunning(application)
         }
-        let preparation = try await audio.prepare(configuration: saved)
-        guard preparation.layout != nil else { return }
-        let application = PendingApplication(
-            generation: commitGeneration,
-            snapshot: saved,
-            preparation: preparation
-        )
-        try await publishIfRunning(application)
     }
 
     func shutdown() async throws {
@@ -1372,15 +1352,13 @@ actor M1ProductController {
                 try await shutdown()
                 return .terminate
             } catch {
-                visibleError = .technical(String(describing: error))
-                return .stayOpen(.technical(String(describing: error)))
+                return stayOpenForTechnicalError(error)
             }
         case .saveAndExit:
             do {
                 try await save()
             } catch {
-                visibleError = .technical(String(describing: error))
-                return .stayOpen(.technical(String(describing: error)))
+                return stayOpenForTechnicalError(error)
             }
         case .retry:
             do {
@@ -1390,8 +1368,7 @@ actor M1ProductController {
                     try await retryEffectsPersistence()
                 }
             } catch {
-                visibleError = .technical(String(describing: error))
-                return .stayOpen(.technical(String(describing: error)))
+                return stayOpenForTechnicalError(error)
             }
         }
 
@@ -1405,8 +1382,7 @@ actor M1ProductController {
             try await shutdown()
             return .terminate
         } catch {
-            visibleError = .technical(String(describing: error))
-            return .stayOpen(.technical(String(describing: error)))
+            return stayOpenForTechnicalError(error)
         }
     }
 
@@ -1439,17 +1415,16 @@ actor M1ProductController {
         )
         if publishChain {
             switch result {
-            case .succeeded, .uncertain:
+            case .succeeded:
                 await invalidatePendingApplication()
+                uncertainApplication = nil
+                try await publishIfRunning(application)
+            case .uncertain:
+                await invalidatePendingApplication()
+                uncertainApplication = application
             case .failed:
                 break
             }
-        }
-        if case .uncertain = result, publishChain {
-            uncertainApplication = application
-        } else if case .succeeded = result, publishChain {
-            uncertainApplication = nil
-            try await publishIfRunning(application)
         }
         if case .uncertain = result { return }
         if case .failed = result {
@@ -1488,17 +1463,13 @@ actor M1ProductController {
             throw M1ProductControllerError.commandUnavailable
         }
         if case .uncertain = persistence { throw M1ProductControllerError.commandUnavailable }
-        acceptedOperations += 1
-        persistenceInFlight = true
-        defer {
-            persistenceInFlight = false
-            acceptedOperations -= 1
+        try await withPersistenceSlot {
+            let candidate = M1ConfigurationSnapshot(
+                effectsEnabled: draft.effectsEnabled,
+                nodes: saved.nodes
+            )
+            try await persist(candidate, publishChain: false, mode: .save)
         }
-        let candidate = M1ConfigurationSnapshot(
-            effectsEnabled: draft.effectsEnabled,
-            nodes: saved.nodes
-        )
-        try await persist(candidate, publishChain: false, mode: .save)
     }
 
     private func currentTerminationDecision() async -> M1TerminationDecision {
@@ -1514,9 +1485,15 @@ actor M1ProductController {
             try await shutdown()
             return .terminate
         } catch {
-            visibleError = .technical(String(describing: error))
-            return .stayOpen(.technical(String(describing: error)))
+            return stayOpenForTechnicalError(error)
         }
+    }
+
+    /// Maps a failure on a termination path onto both surfaces: the visible
+    /// error and the stay-open decision.
+    private func stayOpenForTechnicalError(_ error: any Error) -> M1TerminationDecision {
+        visibleError = .technical(String(describing: error))
+        return .stayOpen(.technical(String(describing: error)))
     }
 
     private func persistPendingEffects() async throws {
@@ -1561,17 +1538,23 @@ actor M1ProductController {
         }
         do {
             try enqueueEffectsIntent(requestedEffectsEnabled)
-            guard !effectsUpdateInFlight else { return }
-            acceptedOperations += 1
-            defer { acceptedOperations -= 1 }
-            try await drainEffectsUpdates()
-            if !persistenceInFlight, pendingEffectsEnabled != nil {
-                persistenceInFlight = true
-                defer { persistenceInFlight = false }
-                try await persistPendingEffects()
-            }
+            try await drainEffectsAndPersistPending()
         } catch {
             visibleError = .technical(String(describing: error))
+        }
+    }
+
+    /// Drains queued effects intents, then persists the pending effects state
+    /// when no other persistence is in flight.
+    private func drainEffectsAndPersistPending() async throws {
+        guard !effectsUpdateInFlight else { return }
+        acceptedOperations += 1
+        defer { acceptedOperations -= 1 }
+        try await drainEffectsUpdates()
+        if !persistenceInFlight, pendingEffectsEnabled != nil {
+            persistenceInFlight = true
+            defer { persistenceInFlight = false }
+            try await persistPendingEffects()
         }
     }
 
@@ -1854,6 +1837,18 @@ actor M1ProductController {
             throw M1ProductControllerError.commandUnavailable
         }
         if case .uncertain = persistence { throw M1ProductControllerError.commandUnavailable }
+    }
+
+    /// Occupies the persistence slot — accepted operation plus in-flight flag —
+    /// for the duration of one persistence-bound operation.
+    private func withPersistenceSlot(_ body: () async throws -> Void) async throws {
+        acceptedOperations += 1
+        persistenceInFlight = true
+        defer {
+            persistenceInFlight = false
+            acceptedOperations -= 1
+        }
+        try await body()
     }
 
     private static func productAudioState(_ state: M1NativeAudioRouteState) -> M1ProductAudioState {
