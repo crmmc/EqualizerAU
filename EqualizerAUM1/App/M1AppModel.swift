@@ -227,13 +227,13 @@ final class M1AppModel: ObservableObject {
     }
 
     func importConvolution(before id: UUID?) {
-        guard let url = selectWAV() else { return }
+        guard let url = wavPicker() else { return }
         let ir = M1ConvolutionIRStore.reference(sourceURL: url)
         performEdit { try await self.controller.addConvolution(before: id, ir: ir) }
     }
 
     func replaceConvolutionIR(id: UUID) {
-        guard let url = selectWAV() else { return }
+        guard let url = wavPicker() else { return }
         let ir = M1ConvolutionIRStore.reference(sourceURL: url)
         performEdit { try await self.controller.setConvolutionIR(id: id, ir: ir) }
     }
@@ -405,11 +405,6 @@ final class M1AppModel: ObservableObject {
             try await self.controller.setProcessingEnabled(enabled)
         }
     }
-
-    private func selectWAV() -> URL? {
-        wavPicker()
-    }
-
 
     func presentDiagnostics() {
         guard !terminationPending else { return }

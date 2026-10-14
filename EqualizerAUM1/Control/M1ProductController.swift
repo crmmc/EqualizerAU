@@ -354,7 +354,6 @@ final class M1PendingEditorCommitCoordinator {
 enum M1ProductControllerError: Error, Equatable, Sendable {
     case notBootstrapped
     case commandUnavailable
-    case nodeNotFound
     case generationExhausted
 }
 

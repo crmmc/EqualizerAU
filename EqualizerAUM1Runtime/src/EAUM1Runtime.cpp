@@ -1,7 +1,6 @@
 #include "EAUM1Runtime.h"
 #include "EAUM1Convolution.hpp"
 
-#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -9,6 +8,7 @@
 #include <cstdint>
 #include <limits>
 #include <new>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 

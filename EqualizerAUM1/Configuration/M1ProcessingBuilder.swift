@@ -132,14 +132,14 @@ struct M1CompiledPreampTargets: Equatable, Sendable {
 }
 
 enum M1ProcessingBuilder {
-    static let maximumStagesPerChannel = 512
-    static let maximumPreparedStageCount = 4_096
+    private static let maximumStagesPerChannel = 512
+    private static let maximumPreparedStageCount = 4_096
     static let maximumConvolutionStages = Int(EAUM1_MAX_CONVOLUTION_STAGES)
-    static let convolutionLatencyFrames = 0
+    private static let convolutionLatencyFrames = 0
     /// 48 kHz reference length; higher sample rates scale via `graphicEQTapCount(forSampleRate:)`.
     static let graphicEQTapCount = 16_384
-    static let graphicEQDesignLength = 32_768
-    static let graphicEQReferenceSampleRate = 48_000.0
+    private static let graphicEQDesignLength = 32_768
+    private static let graphicEQReferenceSampleRate = 48_000.0
     static let graphicEQMaximumResponseErrorDB = 0.75
     static let graphicEQPercentile99ResponseErrorDB = 0.1
 
@@ -823,6 +823,7 @@ enum M1ProcessingBuilder {
         sampleRate: Double,
         sampleCount: Int = 257
     ) throws -> M1GraphicEQPreview {
+        let maximumFrequencyHz = min(M1GraphicEQContract.maximumFrequencyHz, sampleRate / 2)
         try validate(nodes: [.graphicEQ(points: points)])
         guard let taps = try compileGraphicEQTaps(
             nodeID: UUID(),
@@ -832,7 +833,7 @@ enum M1ProcessingBuilder {
             let frequencies = logarithmicGraphicEQFrequencies(
                 sampleRate: sampleRate,
                 sampleCount: sampleCount,
-                maximumFrequencyHz: min(M1GraphicEQContract.maximumFrequencyHz, sampleRate / 2)
+                maximumFrequencyHz: maximumFrequencyHz
             )
             return M1GraphicEQPreview(
                 frequenciesHz: frequencies,
@@ -848,7 +849,7 @@ enum M1ProcessingBuilder {
             points: points,
             sampleRate: sampleRate,
             sampleCount: sampleCount,
-            maximumFrequencyHz: min(M1GraphicEQContract.maximumFrequencyHz, sampleRate / 2)
+            maximumFrequencyHz: maximumFrequencyHz
         )
         return M1GraphicEQPreview(
             frequenciesHz: metrics.frequenciesHz,

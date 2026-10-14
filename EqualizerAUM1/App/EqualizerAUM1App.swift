@@ -700,6 +700,8 @@ private struct M1EditorView: View {
     @State private var dropDestination: Int?
     @State private var editingGraphicEQNodeID: UUID?
 
+    private static let nodeRowHeight: CGFloat = 58
+
     var body: some View {
         VStack(spacing: 0) {
             toolbar
@@ -786,7 +788,7 @@ private struct M1EditorView: View {
                                 delegate: M1NodeDropDelegate(
                                     model: model,
                                     rowIndex: index,
-                                    rowHeight: 58,
+                                    rowHeight: Self.nodeRowHeight,
                                     endDestination: model.snapshot.draft.nodes.count,
                                     dropDestination: $dropDestination
                                 )
@@ -828,7 +830,7 @@ private struct M1EditorView: View {
     private func clearSelectionHeight(in listHeight: CGFloat) -> CGFloat {
         max(
             32,
-            listHeight - CGFloat(model.snapshot.draft.nodes.count) * 58
+            listHeight - CGFloat(model.snapshot.draft.nodes.count) * Self.nodeRowHeight
         )
     }
 
@@ -1035,7 +1037,7 @@ private struct M1EditorView: View {
             .buttonStyle(.plain)
             .help("Delete \(nodeTitle(node.kind))")
         }
-        .frame(minHeight: 58)
+        .frame(minHeight: Self.nodeRowHeight)
         .background {
             Color.clear
                 .contentShape(Rectangle())
@@ -1169,11 +1171,11 @@ private struct M1EditorView: View {
 
     private func graphicEQSummaryControl(_ node: M1ProcessingNode) -> some View {
         HStack(spacing: 8) {
-            if graphicEQDiagnosticSummary(node.id) != nil {
+            if let summary = graphicEQDiagnosticSummary(node.id) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.orange)
-                    .help(graphicEQDiagnosticSummary(node.id) ?? "")
+                    .help(summary)
             }
             M1GraphicEQMiniCurve(points: node.graphicEQPoints)
                 .frame(maxWidth: .infinity, minHeight: 30, maxHeight: 30)
@@ -1333,11 +1335,11 @@ private struct M1EditorView: View {
     private func filterEditor(_ node: M1ProcessingNode) -> some View {
         if let specification = node.filterSpecification {
             HStack(spacing: 8) {
-                if filterBypassSummary(node.id) != nil {
+                if let summary = filterBypassSummary(node.id) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.caption)
                         .foregroundStyle(.orange)
-                        .help(filterBypassSummary(node.id) ?? "")
+                        .help(summary)
                 }
                 Menu {
                     ForEach(M1FilterType.allCases, id: \.self) { type in
@@ -1649,14 +1651,6 @@ private struct M1EditorView: View {
         case .convolution: return String(localized: "Convolution", locale: locale)
         case .filter: return String(localized: "Filter", locale: locale)
         }
-    }
-
-    private func formatFrequency(_ frequencyHz: Double) -> String {
-        if frequencyHz >= 1_000 {
-            let kilohertz = frequencyHz / 1_000
-            return "\(kilohertz.formatted(.number.precision(.fractionLength(kilohertz == kilohertz.rounded() ? 0 : 1)))) kHz"
-        }
-        return "\(frequencyHz.formatted(.number.precision(.fractionLength(frequencyHz == frequencyHz.rounded() ? 0 : 1)))) Hz"
     }
 
     private func selectedIdentifiers(_ selection: M1ChannelSelection) -> [M1ChannelIdentifier] {

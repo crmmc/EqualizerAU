@@ -89,8 +89,6 @@ enum M1ConfigurationCodec {
         let version: M1ConfigurationVersionWire
         do {
             version = try JSONDecoder().decode(M1ConfigurationVersionWire.self, from: data)
-        } catch let error as M1ConfigurationCodecError {
-            throw error
         } catch {
             throw M1ConfigurationCodecError.invalidJSON
         }
@@ -408,11 +406,11 @@ struct M1ProcessingNodeWire: Codable {
     let type: String
     let isEnabled: Bool?
     let gainDB: Double?
-    let channels: M1ChannelSelectionWire?
-    let points: [M1GraphicEQPointWire]?
-    let bands: [M1GraphicEQPointWire]?
-    let ir: M1ConvolutionIRReferenceWire?
-    let filter: M1FilterSpecificationWire?
+    fileprivate let channels: M1ChannelSelectionWire?
+    fileprivate let points: [M1GraphicEQPointWire]?
+    fileprivate let bands: [M1GraphicEQPointWire]?
+    fileprivate let ir: M1ConvolutionIRReferenceWire?
+    fileprivate let filter: M1FilterSpecificationWire?
 
     init(_ node: M1ProcessingNode) {
         id = node.id
@@ -548,7 +546,7 @@ struct M1ProcessingNodeWire: Codable {
     }
 }
 
-struct M1ConvolutionIRReferenceWire: Codable {
+private struct M1ConvolutionIRReferenceWire: Codable {
     let sourcePath: String?
     let storageID: UUID?
     let originalFileName: String?
@@ -600,7 +598,7 @@ struct M1ConvolutionIRReferenceWire: Codable {
     }
 }
 
-struct M1GraphicEQPointWire: Codable {
+private struct M1GraphicEQPointWire: Codable {
     let frequencyHz: Double
     let gainDB: Double
 
@@ -614,7 +612,7 @@ struct M1GraphicEQPointWire: Codable {
     }
 }
 
-struct M1FilterWidthWire: Codable {
+private struct M1FilterWidthWire: Codable {
     let kind: String
     let value: Double
 
@@ -649,7 +647,7 @@ struct M1FilterWidthWire: Codable {
     }
 }
 
-struct M1FilterSpecificationWire: Codable {
+private struct M1FilterSpecificationWire: Codable {
     let type: String
     let frequencyHz: Double
     let gainDB: Double
@@ -755,7 +753,7 @@ struct M1PreampNodeWire: Codable {
     let type: String
     let isEnabled: Bool
     let gainDB: Double
-    let channels: M1ChannelSelectionWire
+    fileprivate let channels: M1ChannelSelectionWire
 
     init(_ node: M1PreampNode) {
         id = node.id
@@ -966,7 +964,7 @@ enum M1ConfigurationMigration {
     }
 }
 
-enum M1ChannelSelectionWire: Codable {
+private enum M1ChannelSelectionWire: Codable {
     case all
     case identifiers([String])
 

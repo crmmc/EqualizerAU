@@ -215,7 +215,7 @@ private enum M1WAVDecoder {
             guard offset + 8 <= data.count else { throw M1ConvolutionIRError.invalidWAV }
             let size = Int(readUInt32(data, offset + 4))
             let payloadStart = offset + 8
-            guard size >= 0, payloadStart <= data.count, size <= data.count - payloadStart else {
+            guard size <= data.count - payloadStart else {
                 throw M1ConvolutionIRError.invalidWAV
             }
             let payload = payloadStart..<(payloadStart + size)
