@@ -197,6 +197,30 @@ bool validateStage(const EAUM1PreparedStage &stage) {
     }
 }
 
+class ChannelStageOrdering {
+public:
+    EAUM1Status advance(uint32_t channelIndex, uint32_t channelCount, uint32_t index) {
+        if (channelIndex >= channelCount
+            || (index != 0 && channelIndex < previousChannel_)) {
+            return EAUM1StatusInvalidArgument;
+        }
+        if (index == 0 || channelIndex != previousChannel_) {
+            stagesForChannel_ = 1;
+        } else {
+            ++stagesForChannel_;
+        }
+        if (stagesForChannel_ > EAUM1_MAX_STAGES_PER_CHANNEL) {
+            return EAUM1StatusCapacityExceeded;
+        }
+        previousChannel_ = channelIndex;
+        return EAUM1StatusOK;
+    }
+
+private:
+    uint32_t previousChannel_ = 0;
+    uint32_t stagesForChannel_ = 0;
+};
+
 std::vector<uint32_t> makeChannelOffsets(
     const std::vector<EAUM1PreparedStage> &stages,
     uint32_t channelCount
@@ -583,6 +607,34 @@ void clearPublicationOutcome(EAUM1PublicationOutcome *outcome) {
     outcome->reserved = 0;
 }
 
+EAUM1Status validatePublicationRequest(
+    EAUM1Runtime *runtime,
+    EAUM1PreparedState **candidateInOut,
+    EAUM1PublicationOutcome *outcomeOut
+) {
+    if (runtime == nullptr
+        || candidateInOut == nullptr
+        || *candidateInOut == nullptr
+        || outcomeOut == nullptr) {
+        return EAUM1StatusInvalidArgument;
+    }
+    if ((*candidateInOut)->channelCount
+        != runtime->activePrepared.load(std::memory_order_acquire)->channelCount) {
+        return EAUM1StatusTopologyMismatch;
+    }
+    return EAUM1StatusOK;
+}
+
+EAUM1Status maintenanceRequiredOutcome(
+    EAUM1Status status,
+    uint64_t retirementTicket,
+    EAUM1PublicationOutcome *outcomeOut
+) {
+    outcomeOut->retirementTicket = retirementTicket;
+    outcomeOut->flags = EAUM1PublicationMaintenanceRequired;
+    return status;
+}
+
 EAUM1Status bypassedReplacementReadiness(const EAUM1Runtime *runtime) {
     if (runtime->effectsEnabled.load(std::memory_order_acquire)
         || runtime->effectsState.load(std::memory_order_acquire)
@@ -793,24 +845,22 @@ EAUM1Status EAUM1PreparedStateCreateV2(
         return EAUM1StatusInvalidArgument;
     }
 
-    uint32_t previousChannel = 0;
-    uint32_t stagesForChannel = 0;
+    ChannelStageOrdering ordering;
     for (uint32_t index = 0; index < description->stageCount; ++index) {
         const EAUM1PreparedStage &stage = description->stages[index];
-        if (stage.channelIndex >= description->channelCount
-            || (index != 0 && stage.channelIndex < previousChannel)
-            || !validateStage(stage)) {
+        // V2 historically rejects malformed stages (InvalidArgument) before the
+        // per-channel capacity check (CapacityExceeded); keep that precedence.
+        if (!validateStage(stage)) {
             return EAUM1StatusInvalidArgument;
         }
-        if (index == 0 || stage.channelIndex != previousChannel) {
-            stagesForChannel = 1;
-        } else {
-            ++stagesForChannel;
+        const EAUM1Status orderingStatus = ordering.advance(
+            stage.channelIndex,
+            description->channelCount,
+            index
+        );
+        if (orderingStatus != EAUM1StatusOK) {
+            return orderingStatus;
         }
-        if (stagesForChannel > EAUM1_MAX_STAGES_PER_CHANNEL) {
-            return EAUM1StatusCapacityExceeded;
-        }
-        previousChannel = stage.channelIndex;
     }
 
     try {
@@ -864,23 +914,18 @@ EAUM1Status EAUM1PreparedStateCreateV3(
         }
     }
 
-    uint32_t previousChannel = 0;
-    uint32_t stagesForChannel = 0;
+    ChannelStageOrdering ordering;
     uint32_t convolutionStageCount = 0;
     std::array<bool, EAUM1_MAX_CONVOLUTION_STAGES> referencedConvolutions{};
     for (uint32_t index = 0; index < description->stageCount; ++index) {
         const EAUM1PreparedStage &stage = description->stages[index];
-        if (stage.channelIndex >= description->channelCount
-            || (index != 0 && stage.channelIndex < previousChannel)) {
-            return EAUM1StatusInvalidArgument;
-        }
-        if (index == 0 || stage.channelIndex != previousChannel) {
-            stagesForChannel = 1;
-        } else {
-            ++stagesForChannel;
-        }
-        if (stagesForChannel > EAUM1_MAX_STAGES_PER_CHANNEL) {
-            return EAUM1StatusCapacityExceeded;
+        const EAUM1Status orderingStatus = ordering.advance(
+            stage.channelIndex,
+            description->channelCount,
+            index
+        );
+        if (orderingStatus != EAUM1StatusOK) {
+            return orderingStatus;
         }
 
         if (stage.kind == EAUM1PreparedStageConvolution) {
@@ -900,7 +945,6 @@ EAUM1Status EAUM1PreparedStateCreateV3(
         } else if (!validateStage(stage)) {
             return EAUM1StatusInvalidArgument;
         }
-        previousChannel = stage.channelIndex;
     }
     for (uint32_t index = 0; index < description->convolutionCount; ++index) {
         if (!referencedConvolutions[index]) {
@@ -1031,15 +1075,13 @@ EAUM1Status EAUM1RuntimePublishPrepared(
     EAUM1PreparedState **candidateInOut,
     EAUM1PublicationOutcome *outcomeOut
 ) {
-    if (runtime == nullptr
-        || candidateInOut == nullptr
-        || *candidateInOut == nullptr
-        || outcomeOut == nullptr) {
-        return EAUM1StatusInvalidArgument;
-    }
-    if ((*candidateInOut)->channelCount
-        != runtime->activePrepared.load(std::memory_order_acquire)->channelCount) {
-        return EAUM1StatusTopologyMismatch;
+    const EAUM1Status validation = validatePublicationRequest(
+        runtime,
+        candidateInOut,
+        outcomeOut
+    );
+    if (validation != EAUM1StatusOK) {
+        return validation;
     }
 
     clearPublicationOutcome(outcomeOut);
@@ -1079,15 +1121,13 @@ EAUM1Status EAUM1RuntimeReplacePreparedWhileBypassed(
     EAUM1PreparedState **candidateInOut,
     EAUM1PublicationOutcome *outcomeOut
 ) {
-    if (runtime == nullptr
-        || candidateInOut == nullptr
-        || *candidateInOut == nullptr
-        || outcomeOut == nullptr) {
-        return EAUM1StatusInvalidArgument;
-    }
-    if ((*candidateInOut)->channelCount
-        != runtime->activePrepared.load(std::memory_order_acquire)->channelCount) {
-        return EAUM1StatusTopologyMismatch;
+    const EAUM1Status validation = validatePublicationRequest(
+        runtime,
+        candidateInOut,
+        outcomeOut
+    );
+    if (validation != EAUM1StatusOK) {
+        return validation;
     }
 
     clearPublicationOutcome(outcomeOut);
@@ -1120,9 +1160,7 @@ EAUM1Status EAUM1RuntimePerformMaintenance(
         std::memory_order_acquire
     );
     if (completed != retirementTicket) {
-        outcomeOut->retirementTicket = retirementTicket;
-        outcomeOut->flags = EAUM1PublicationMaintenanceRequired;
-        return EAUM1StatusOK;
+        return maintenanceRequiredOutcome(EAUM1StatusOK, retirementTicket, outcomeOut);
     }
 
     EAUM1PreparedState *pending = runtime->pendingPrepared;
@@ -1137,9 +1175,11 @@ EAUM1Status EAUM1RuntimePerformMaintenance(
 
     if (pending != nullptr) {
         if (runtime->nextPublicationGeneration == std::numeric_limits<uint64_t>::max()) {
-            outcomeOut->retirementTicket = retirementTicket;
-            outcomeOut->flags = EAUM1PublicationMaintenanceRequired;
-            return EAUM1StatusCapacityExceeded;
+            return maintenanceRequiredOutcome(
+                EAUM1StatusCapacityExceeded,
+                retirementTicket,
+                outcomeOut
+            );
         }
         if (!equivalent) {
             const EAUM1Status copyStatus = copyPreparedToSlot(
@@ -1147,9 +1187,11 @@ EAUM1Status EAUM1RuntimePerformMaintenance(
                 &runtime->slots[targetSlot]
             );
             if (copyStatus != EAUM1StatusOK) {
-                outcomeOut->retirementTicket = retirementTicket;
-                outcomeOut->flags = EAUM1PublicationMaintenanceRequired;
-                return copyStatus;
+                return maintenanceRequiredOutcome(
+                    copyStatus,
+                    retirementTicket,
+                    outcomeOut
+                );
             }
         }
     }
