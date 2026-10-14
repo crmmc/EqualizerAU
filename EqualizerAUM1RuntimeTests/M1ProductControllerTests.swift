@@ -349,6 +349,44 @@ final class M1ProductControllerTests: XCTestCase {
         await fixture.audio.setPreparationGate(nil)
     }
 
+    func testVolumeReadingDuringRepairModeDoesNotRepublish() async throws {
+        // Repair mode runs the transparent recovery baseline, not the editable
+        // snapshot; an environment-driven rebuild from the editable nodes must
+        // not swap the running chain. The reading is only remembered and flows
+        // through the next user-driven preparation (the repair save).
+        let nodeID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
+        var editable = M1ConfigurationSnapshot.initial(nodeID: nodeID)
+        editable.nodes.append(.loudness())
+        let store = ProductStoreFake(bootstrapResult: .recovery(
+            editable: editable,
+            runtime: .transparentRecovery,
+            reason: .initialConfigurationWriteFailed
+        ))
+        let audio = ProductAudioFake()
+        let controller = M1ProductController(
+            store: store,
+            audio: audio,
+            observesOutputVolume: false,
+            loudnessDebounceNanoseconds: 0
+        )
+        await controller.bootstrap(initialNodeID: nodeID)
+        try await controller.start()
+        let started = await audio.startedConfigurations
+        XCTAssertEqual(started, [.transparentRecovery])
+
+        await controller.handleOutputVolumeReading(
+            M1OutputVolumeReading(decibels: -35.4, usesApproximateConversion: false)
+        )
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        let suppressed = await audio.preparedLoudnessVolumes
+        XCTAssertEqual(suppressed, [])
+
+        try await controller.save()
+        let preparedAfterRepair = await audio.preparedLoudnessVolumes
+        XCTAssertEqual(preparedAfterRepair, [-35])
+    }
+
     private func waitForPublishCount(
         _ count: Int,
         on audio: ProductAudioFake,

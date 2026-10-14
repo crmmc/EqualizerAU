@@ -868,6 +868,7 @@ actor M1ProductController {
               !terminating,
               !persistenceInFlight,
               !effectsUpdateInFlight,
+              !requiresRepair,
               audioState == .running,
               saved.containsEnabledLoudnessNode,
               let volumeDB = loudnessVolumeDB
@@ -893,6 +894,14 @@ actor M1ProductController {
                 if publication.disposition == .active {
                     activeDiagnostics = publication.diagnostics
                 } else {
+                    // A coalesced candidate is promoted autonomously by the
+                    // runtime; environment rebuilds deliberately stay out of
+                    // the PendingApplication promotion machinery (it owns
+                    // persistence state, ADR-0023), so the expected state
+                    // persists until the next publication — a later volume
+                    // event or any user action — re-syncs it. Until then the
+                    // UI's expected-diagnostics view already shows the
+                    // incoming chain.
                     expectedDiagnostics = publication.diagnostics
                     expectedConfigurationGeneration = generation
                 }

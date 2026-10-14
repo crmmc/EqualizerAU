@@ -20,6 +20,13 @@ final class M1OutputVolumeObserver: @unchecked Sendable {
     // same function value: Core Audio matches removal by proc + context, and
     // separate closure literals would compile to distinct C thunks that do not
     // match each other on removal.
+    //
+    // The context is passed unretained. The accepted narrow window — a HAL
+    // callback dereferencing the context after the last strong release but
+    // before removal — cannot occur in the shipped lifecycle: the controller
+    // retains the observer from bootstrap until shutdown(), which stops the
+    // listeners (AudioObjectRemovePropertyListener drains in-flight
+    // invocations) before releasing the observer.
     private let systemPropertyListener: AudioObjectPropertyListenerProc = { _, _, _, context in
         guard let context else { return noErr }
         Unmanaged<M1OutputVolumeObserver>

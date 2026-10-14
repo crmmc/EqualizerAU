@@ -2146,6 +2146,13 @@ static EAUM1Runtime *createRuntimeWithPrepared(
         promoted.flags,
         EAUM1PublicationRetiredReclaimed | EAUM1PublicationCandidatePublished
     );
+    XCTAssertEqual(EAUM1TestHooks::activePrepared(runtime), pendingAddress);
+    XCTAssertEqual(EAUM1TestHooks::retiredPrepared(runtime), 0u);
+    XCTAssertEqual(EAUM1TestHooks::pendingPrepared(runtime), 0u);
+    XCTAssertNotEqual(EAUM1TestHooks::activePrepared(runtime), crossfadeAddress);
+
+    EAUM1RuntimeDestroy(runtime);
+    XCTAssertEqual(EAUM1TestHooks::livePreparedCount(), liveBefore);
 }
 
 - (void)testDelayV4ValidatesDescriptorsAndCapacity {

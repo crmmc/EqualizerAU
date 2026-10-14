@@ -57,6 +57,12 @@ audits = {
     "void RuntimeConvolution::addToTimeline(",
     "double RuntimeConvolution::takeTimeline(",
   ],
+  # Defined inline in the class body, so the marker is the unqualified
+  # signature; the constructor allocates on the control thread and is
+  # deliberately outside the audit set.
+  "EqualizerAUM1Runtime/src/EAUM1DelayStage.hpp" => [
+    "double process(",
+  ],
 }
 
 forbidden = {

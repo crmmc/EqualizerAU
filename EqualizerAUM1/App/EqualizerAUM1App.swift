@@ -1405,11 +1405,15 @@ private struct M1EditorView: View {
         let reason: String
         switch bypass.reason {
         case .exceedsBudget:
-            // The budget numbers in these literals must stay in sync with
-            // M1DelayContract.maximumMilliseconds / maximumSamples.
             reason = bypass.unit == .samples
-                ? String(localized: "delay exceeds the 192000 samples budget", locale: locale)
-                : String(localized: "delay exceeds the 1000 ms budget", locale: locale)
+                ? String(
+                    localized: "delay exceeds the \(Int(M1DelayContract.maximumSamples)) samples budget",
+                    locale: locale
+                )
+                : String(
+                    localized: "delay exceeds the \(Int(M1DelayContract.maximumMilliseconds)) ms budget",
+                    locale: locale
+                )
         case .invalidSampleRate:
             reason = String(localized: "invalid output sample rate", locale: locale)
         }

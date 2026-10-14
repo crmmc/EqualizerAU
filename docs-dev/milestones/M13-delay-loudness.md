@@ -35,28 +35,34 @@
 
 ## 自动化证据（2026-10-14，本地 arm64）
 
-- `make check` 通过：project/Plist lint、shell 语法、M1 隔离审计（新增 3 个源文件登记：
-  M1EqualLoudnessCurve.swift、M1OutputVolumeObserver.swift、EAUM1DelayStage.hpp 与测试文件）、
-  实时安全审计（新增延迟回调路径无分配无锁）、本地化一致性（新增 9 键均含 zh-Hans，
-  动态 Text 基线登记 delayUnitLabel）。
-- `make coverage` 通过：`EqualizerAUM1RuntimeTests` 527 用例 0 失败，核心生产逻辑覆盖率
+- `make check` 通过：project/Plist lint、shell 语法、M1 隔离审计（新增 4 个 Swift 源/测试
+  文件登记：M1EqualLoudnessCurve.swift、M1OutputVolumeObserver.swift、M1OutputVolumeMath.swift
+  与 M1EqualLoudnessCurveTests.swift；EAUM1DelayStage.hpp 为 pbxproj 分组引用，头文件不进
+  Sources 阶段）、实时安全审计（延迟回调 `RuntimeDelayLine::process` 已登记，41 → 42 个
+  显式函数）、本地化一致性（新增 10 键均含 zh-Hans，动态 Text 基线登记 delayUnitLabel）。
+- `make coverage` 通过：`EqualizerAUM1RuntimeTests` 528 用例 0 失败，核心生产逻辑覆盖率
   ≥95%（门禁），`EAUM1Runtime.cpp` 单文件 ≥95% 红线，10/10 主功能路径通过。
-- 新增测试：`EAUM1RuntimeSmokeTests` 7 例（V4 校验矩阵、整数/分数脉冲、跨块历史、
-  等价/差异发布语义、增益-双二阶-卷积-延迟混合链）、`M1EqualLoudnessCurveTests` 8 例
-  （1 kHz 归一、公开锚点对照、±对称、夹紧下移、强度缩放、支撑域端点保持）、
-  `M1ProcessingBuilderTests` 8 例（ms/samples 折算、极端采样率旁路、超预算抛错、
-  响度 FIR 随音量变化、参考音量/零强度无阶段、工厂 V4 接线）、
-  `M1FilterEditingTests` 8 例（增删改 + Undo + envelope v10 round-trip + v9 拒绝 +
-  归一化 + 规格助手）、`M1ProductControllerTests` 6 例（同代次重发布、草稿/提交不变、
-  无响度节点不重建、量化去重、停止态记忆、失败吞掉重试）。
+- 新增测试：`EAUM1RuntimeSmokeTests` 9 例（V4 校验矩阵、整数/分数脉冲、跨块历史、
+  等价/差异/fraction-only 发布语义、增益-双二阶-卷积-延迟混合链、V3 拒延迟阶段）、
+  `M1EqualLoudnessCurveTests` 9 例（1 kHz 归一、公开锚点对照、±对称、夹紧下移、强度缩放、
+  支撑域端点保持、phon 下限冻结）、`M1ProcessingBuilderTests` 13 例（ms/samples 折算、
+  极端采样率旁路、超预算抛错、响度 FIR 随音量变化、参考音量/零强度无阶段、工厂 V4 接线、
+  单位换算、下溢旁路、卷积预算共享）、`M1FilterEditingTests` 8 例（增删改 + Undo +
+  envelope v10 round-trip + v9 拒绝 + 归一化 + 规格助手）、`M1ProductControllerTests` 8 例
+  （同代次重发布、草稿/提交不变、无响度节点不重建、量化去重、停止态记忆、失败吞掉重试、
+  重建期间停机丢弃、修复模式不重建）。
 - 既有测试同步：schema 版本预期 9 → 10、不支持 schema 10 → 11、ABI 版本 3 → 4。
 - 全分支代码审查后的加固（2026-10-14）：schema 解码阶梯合并为区间分支（杜绝下次升版
   复发 v9 类事故）；响度听音级夹紧 `minimumFittedPhon = 10`（音量极低时曲线冻结而非
   节点消失）；音量监听器同设备通知不再重复注册、shutdown 时卸载；`M1OutputVolumeMath`
   抽出为独立纯函数文件并纳入覆盖率门禁；延迟 samples 上限桥接 Runtime 宏；单位切换
   按采样率换算；ADR-0022/0023 与实现对齐（公式符号、监听器生命周期、降级路径、
-  samples 预算口径）；新增 9 例审查测试（fraction-only 冷启动、V3 拒延迟阶段、
-  phon 下限、卷积预算共享、重建期间停机丢弃、单位换算、下溢旁路等）。
+  samples 预算口径）；共新增 11 例审查测试。
+- 复审后补强（2026-10-15）：`RuntimeDelayLine::process` 登记进实时审计门禁（此前被
+  `RuntimeConvolution::process` 同名裸匹配掩盖）；恢复被截断的 maintenance 等价提升
+  测试尾部（指针断言 + 销毁 + 泄漏核账）；响度重发布补 `requiresRepair` 守卫（修复
+  模式不再从可编辑快照换链）+ 对应测试；PRD §7.8/§7.9 措辞与实现对齐；旁路文案预算
+  数字改为从契约常量插值。
 
 ## 待完成
 
