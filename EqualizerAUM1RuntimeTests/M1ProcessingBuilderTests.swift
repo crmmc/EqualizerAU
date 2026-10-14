@@ -1061,6 +1061,185 @@ final class M1ProcessingBuilderTests: XCTestCase {
         XCTAssertEqual(samples[1], Float(rightGain), accuracy: 1e-6)
     }
 
+    // MARK: - Delay nodes
+
+    func testDelayNodeCompilesIntegerAndFractionalStagesPerChannel() throws {
+        let exact = try M1ProcessingBuilder.build(
+            nodes: [.delay(specification: .init(value: 10, unit: .milliseconds))],
+            layout: stereoLayout()
+        )
+        XCTAssertEqual(exact.stagesByChannel.count, 2)
+        for channelStages in exact.stagesByChannel {
+            XCTAssertEqual(channelStages.count, 1)
+            guard case let .delay(_, integerDelay, fraction) = channelStages[0] else {
+                return XCTFail("expected delay stage")
+            }
+            XCTAssertEqual(integerDelay, 480)
+            XCTAssertEqual(fraction, 0)
+        }
+
+        let fractional = try M1ProcessingBuilder.build(
+            nodes: [.delay(specification: .init(value: 10.01, unit: .milliseconds))],
+            layout: stereoLayout()
+        )
+        guard case let .delay(_, integerDelay, fraction) = fractional.stagesByChannel[0][0] else {
+            return XCTFail("expected delay stage")
+        }
+        XCTAssertEqual(integerDelay, 480)
+        XCTAssertEqual(fraction, 0.48, accuracy: 0.01)
+    }
+
+    func testDelaySamplesUnitCompilesWithoutRateConversion() throws {
+        let compiled = try M1ProcessingBuilder.build(
+            nodes: [.delay(specification: .init(value: 100.5, unit: .samples))],
+            layout: stereoLayout()
+        )
+        guard case let .delay(_, integerDelay, fraction) = compiled.stagesByChannel[0][0] else {
+            return XCTFail("expected delay stage")
+        }
+        XCTAssertEqual(integerDelay, 100)
+        XCTAssertEqual(fraction, 0.5, accuracy: 1e-6)
+    }
+
+    func testOverBudgetDelayThrowsAndExtremeRateBypassesWithDiagnostic() throws {
+        // Unit-domain overruns are structural failures rejected by validation.
+        XCTAssertThrowsError(
+            try M1ProcessingBuilder.build(
+                nodes: [.delay(specification: .init(value: 1_001, unit: .milliseconds))],
+                layout: stereoLayout()
+            )
+        )
+        XCTAssertThrowsError(
+            try M1ProcessingBuilder.build(
+                nodes: [.delay(specification: .init(value: 192_000.5, unit: .samples))],
+                layout: stereoLayout()
+            )
+        )
+
+        // A ms value inside its own domain can still overrun the sample budget
+        // when the output rate exceeds the 192 kHz reference; that bypasses.
+        guard let extremeRate = M1OutputLayoutSnapshot(
+            sampleRate: 384_000,
+            maximumFrameCount: 512,
+            bufferChannelCounts: [2],
+            semanticPositionsByChannelIndex: [.left, .right]
+        ) else {
+            return XCTFail("extreme rate layout should construct")
+        }
+        let nodeID = UUID()
+        let compiled = try M1ProcessingBuilder.build(
+            nodes: [
+                .delay(
+                    id: nodeID,
+                    specification: .init(value: 1_000, unit: .milliseconds)
+                )
+            ],
+            layout: extremeRate
+        )
+        for channelStages in compiled.stagesByChannel {
+            XCTAssertTrue(channelStages.isEmpty)
+        }
+        XCTAssertEqual(compiled.diagnostics.delayBypasses.count, 1)
+        XCTAssertEqual(compiled.diagnostics.delayBypasses[0].nodeID, nodeID)
+        XCTAssertEqual(compiled.diagnostics.delayBypasses[0].reason, .exceedsBudget)
+    }
+
+    func testDelayValidationRejectsZeroNegativeAndNonFiniteValues() throws {
+        let nodeID = UUID()
+        for value in [0.0, -1.0, .nan, .infinity] {
+            XCTAssertThrowsError(
+                try M1ProcessingBuilder.build(
+                    nodes: [
+                        .delay(
+                            id: nodeID,
+                            specification: .init(value: value, unit: .milliseconds)
+                        )
+                    ],
+                    layout: stereoLayout()
+                )
+            ) { error in
+                XCTAssertEqual(
+                    error as? M1ProcessingBuildError,
+                    .invalidDelayValue(nodeID: nodeID)
+                )
+            }
+        }
+        XCTAssertThrowsError(
+            try M1ProcessingBuilder.validate(nodes: [
+                .delay(specification: .init(value: 2_000, unit: .milliseconds))
+            ])
+        ) { error in
+            guard case .delayExceedsBudget = error as! M1ProcessingBuildError else {
+                return XCTFail("expected budget error")
+            }
+        }
+    }
+
+    // MARK: - Loudness nodes
+
+    func testLoudnessAtReferenceVolumeCompilesNoStage() throws {
+        let compiled = try M1ProcessingBuilder.build(
+            nodes: [.loudness()],
+            layout: stereoLayout(),
+            loudnessVolumeDB: -20
+        )
+        for channelStages in compiled.stagesByChannel {
+            XCTAssertTrue(channelStages.isEmpty)
+        }
+        // Without a reported volume the node also stays flat.
+        let unset = try M1ProcessingBuilder.build(nodes: [.loudness()], layout: stereoLayout())
+        XCTAssertTrue(unset.stagesByChannel[0].isEmpty)
+    }
+
+    func testLoudnessBelowReferenceCompilesFIRStagesThatTrackVolume() throws {
+        let nodeID = UUID()
+        let quieter = try M1ProcessingBuilder.build(
+            nodes: [.loudness(id: nodeID, specification: .init(referenceVolumeDB: -20, strength: 1))],
+            layout: stereoLayout(),
+            loudnessVolumeDB: -40
+        )
+        for channelStages in quieter.stagesByChannel {
+            XCTAssertEqual(channelStages.count, 1)
+            guard case let .convolution(stageNodeID, taps) = channelStages[0] else {
+                return XCTFail("expected loudness convolution stage")
+            }
+            XCTAssertEqual(stageNodeID, nodeID)
+            XCTAssertEqual(taps.count, M1ProcessingBuilder.graphicEQTapCount(forSampleRate: 48_000))
+        }
+
+        let evenQuieter = try M1ProcessingBuilder.build(
+            nodes: [.loudness(specification: .init(referenceVolumeDB: -20, strength: 1))],
+            layout: stereoLayout(),
+            loudnessVolumeDB: -56
+        )
+        guard case let .convolution(_, deeperTaps) = evenQuieter.stagesByChannel[0][0],
+              case let .convolution(_, taps) = quieter.stagesByChannel[0][0]
+        else { return XCTFail("expected convolution stages") }
+        XCTAssertNotEqual(deeperTaps, taps)
+    }
+
+    func testLoudnessStrengthZeroCompilesNoStage() throws {
+        let compiled = try M1ProcessingBuilder.build(
+            nodes: [.loudness(specification: .init(referenceVolumeDB: -20, strength: 0))],
+            layout: stereoLayout(),
+            loudnessVolumeDB: -50
+        )
+        XCTAssertTrue(compiled.stagesByChannel[0].isEmpty)
+    }
+
+    func testLoudnessValidationRejectsOutOfRangeParameters() throws {
+        XCTAssertThrowsError(
+            try M1ProcessingBuilder.validate(nodes: [
+                .loudness(specification: .init(referenceVolumeDB: 5, strength: 1))
+            ])
+        )
+        XCTAssertThrowsError(
+            try M1ProcessingBuilder.validate(nodes: [
+                .loudness(specification: .init(referenceVolumeDB: -20, strength: 1.5))
+            ])
+        )
+    }
+
     private func monoLayout(sampleRate: Double = 48_000) -> M1OutputLayoutSnapshot {
         M1OutputLayoutSnapshot(
             sampleRate: sampleRate,

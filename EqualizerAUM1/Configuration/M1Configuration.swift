@@ -1,7 +1,7 @@
 import Foundation
 
 struct M1ConfigurationSnapshot: Equatable, Sendable {
-    static let schemaVersion = 9
+    static let schemaVersion = 10
 
     var effectsEnabled: Bool
     var nodes: [M1ProcessingNode]
@@ -230,6 +230,24 @@ enum M1JSONShapeValidator {
                     }
                 case M1ProcessingNodeKind.filter.rawValue:
                     throw M1ConfigurationCodecError.invalidJSON
+                case M1ProcessingNodeKind.delay.rawValue where schemaVersion >= 10:
+                    allowedKeys = ["id", "type", "isEnabled", "delay"]
+                    guard let delayNode = node["delay"] as? [String: Any],
+                          Set(delayNode.keys) == ["value", "unit"]
+                    else {
+                        throw M1ConfigurationCodecError.invalidJSON
+                    }
+                case M1ProcessingNodeKind.delay.rawValue:
+                    throw M1ConfigurationCodecError.invalidJSON
+                case M1ProcessingNodeKind.loudness.rawValue where schemaVersion >= 10:
+                    allowedKeys = ["id", "type", "isEnabled", "loudness"]
+                    guard let loudnessNode = node["loudness"] as? [String: Any],
+                          Set(loudnessNode.keys) == ["referenceVolumeDB", "strength"]
+                    else {
+                        throw M1ConfigurationCodecError.invalidJSON
+                    }
+                case M1ProcessingNodeKind.loudness.rawValue:
+                    throw M1ConfigurationCodecError.invalidJSON
                 default:
                     continue
                 }
@@ -406,6 +424,8 @@ struct M1ProcessingNodeWire: Codable {
     fileprivate let bands: [M1GraphicEQPointWire]?
     fileprivate let ir: M1ConvolutionIRReferenceWire?
     fileprivate let filter: M1FilterSpecificationWire?
+    fileprivate let delay: M1DelaySpecificationWire?
+    fileprivate let loudness: M1LoudnessSpecificationWire?
 
     init(_ node: M1ProcessingNode) {
         id = node.id
@@ -419,6 +439,8 @@ struct M1ProcessingNodeWire: Codable {
             bands = nil
             ir = nil
             filter = nil
+            delay = nil
+            loudness = nil
         case .preamp:
             isEnabled = node.isEnabled
             gainDB = node.gainDB
@@ -427,6 +449,8 @@ struct M1ProcessingNodeWire: Codable {
             bands = nil
             ir = nil
             filter = nil
+            delay = nil
+            loudness = nil
         case .graphicEQ:
             isEnabled = node.isEnabled
             gainDB = nil
@@ -435,6 +459,8 @@ struct M1ProcessingNodeWire: Codable {
             bands = nil
             ir = nil
             filter = nil
+            delay = nil
+            loudness = nil
         case .convolution:
             isEnabled = node.isEnabled
             gainDB = nil
@@ -443,6 +469,8 @@ struct M1ProcessingNodeWire: Codable {
             bands = nil
             ir = node.convolutionIR.map(M1ConvolutionIRReferenceWire.init)
             filter = nil
+            delay = nil
+            loudness = nil
         case .filter:
             isEnabled = node.isEnabled
             gainDB = nil
@@ -451,6 +479,28 @@ struct M1ProcessingNodeWire: Codable {
             bands = nil
             ir = nil
             filter = node.filterSpecification.map(M1FilterSpecificationWire.init)
+            delay = nil
+            loudness = nil
+        case .delay:
+            isEnabled = node.isEnabled
+            gainDB = nil
+            channels = nil
+            points = nil
+            bands = nil
+            ir = nil
+            filter = nil
+            delay = node.delaySpecification.map(M1DelaySpecificationWire.init)
+            loudness = nil
+        case .loudness:
+            isEnabled = node.isEnabled
+            gainDB = nil
+            channels = nil
+            points = nil
+            bands = nil
+            ir = nil
+            filter = nil
+            delay = nil
+            loudness = node.loudnessSpecification.map(M1LoudnessSpecificationWire.init)
         }
     }
 
@@ -458,7 +508,7 @@ struct M1ProcessingNodeWire: Codable {
         switch type {
         case M1ProcessingNodeKind.channels.rawValue:
             guard let channels, gainDB == nil, points == nil, bands == nil, ir == nil,
-                  filter == nil else {
+                  filter == nil, delay == nil, loudness == nil else {
                 throw M1ConfigurationCodecError.invalidJSON
             }
             let enabled: Bool
@@ -472,7 +522,7 @@ struct M1ProcessingNodeWire: Codable {
             return .channels(id: id, isEnabled: enabled, selection: try channels.selection())
         case M1ProcessingNodeKind.preamp.rawValue:
             guard let isEnabled, let gainDB, channels == nil, points == nil, bands == nil,
-                  ir == nil, filter == nil else {
+                  ir == nil, filter == nil, delay == nil, loudness == nil else {
                 throw M1ConfigurationCodecError.invalidJSON
             }
             return M1ProcessingNode(
@@ -482,7 +532,8 @@ struct M1ProcessingNodeWire: Codable {
                 channels: .all
             )
         case M1ProcessingNodeKind.graphicEQ.rawValue:
-            guard let isEnabled, gainDB == nil, channels == nil, ir == nil, filter == nil else {
+            guard let isEnabled, gainDB == nil, channels == nil, ir == nil, filter == nil,
+                  delay == nil, loudness == nil else {
                 throw M1ConfigurationCodecError.invalidJSON
             }
             if schemaVersion >= 6 {
@@ -514,7 +565,7 @@ struct M1ProcessingNodeWire: Codable {
             )
         case M1ProcessingNodeKind.convolution.rawValue:
             guard let isEnabled, let ir, gainDB == nil, channels == nil, points == nil,
-                  bands == nil, filter == nil else {
+                  bands == nil, filter == nil, delay == nil, loudness == nil else {
                 throw M1ConfigurationCodecError.invalidJSON
             }
             return .convolution(
@@ -527,13 +578,39 @@ struct M1ProcessingNodeWire: Codable {
                 throw M1ConfigurationCodecError.unknownNodeType(type)
             }
             guard let isEnabled, let filter, gainDB == nil, channels == nil, points == nil,
-                  bands == nil, ir == nil else {
+                  bands == nil, ir == nil, delay == nil, loudness == nil else {
                 throw M1ConfigurationCodecError.invalidJSON
             }
             return .filter(
                 id: id,
                 isEnabled: isEnabled,
                 specification: try filter.specification()
+            )
+        case M1ProcessingNodeKind.delay.rawValue:
+            guard schemaVersion >= 10 else {
+                throw M1ConfigurationCodecError.unknownNodeType(type)
+            }
+            guard let isEnabled, let delay, gainDB == nil, channels == nil, points == nil,
+                  bands == nil, ir == nil, filter == nil, loudness == nil else {
+                throw M1ConfigurationCodecError.invalidJSON
+            }
+            return .delay(
+                id: id,
+                isEnabled: isEnabled,
+                specification: try delay.specification()
+            )
+        case M1ProcessingNodeKind.loudness.rawValue:
+            guard schemaVersion >= 10 else {
+                throw M1ConfigurationCodecError.unknownNodeType(type)
+            }
+            guard let isEnabled, let loudness, gainDB == nil, channels == nil, points == nil,
+                  bands == nil, ir == nil, filter == nil, delay == nil else {
+                throw M1ConfigurationCodecError.invalidJSON
+            }
+            return .loudness(
+                id: id,
+                isEnabled: isEnabled,
+                specification: try loudness.specification()
             )
         default:
             throw M1ConfigurationCodecError.unknownNodeType(type)
@@ -670,6 +747,43 @@ private struct M1FilterSpecificationWire: Codable {
             gainDB: gainDB,
             width: try width.width(),
             cornerFrequency: cornerFrequency
+        )
+    }
+}
+
+private struct M1DelaySpecificationWire: Codable {
+    let value: Double
+    let unit: String
+
+    init(_ specification: M1DelaySpecification) {
+        value = specification.value
+        unit = specification.unit.rawValue
+    }
+
+    func specification() throws -> M1DelaySpecification {
+        guard let delayUnit = M1DelayUnit(rawValue: unit), value.isFinite else {
+            throw M1ConfigurationCodecError.invalidJSON
+        }
+        return M1DelaySpecification(value: value, unit: delayUnit)
+    }
+}
+
+private struct M1LoudnessSpecificationWire: Codable {
+    let referenceVolumeDB: Double
+    let strength: Double
+
+    init(_ specification: M1LoudnessSpecification) {
+        referenceVolumeDB = specification.referenceVolumeDB
+        strength = specification.strength
+    }
+
+    func specification() throws -> M1LoudnessSpecification {
+        guard referenceVolumeDB.isFinite, strength.isFinite else {
+            throw M1ConfigurationCodecError.invalidJSON
+        }
+        return M1LoudnessSpecification(
+            referenceVolumeDB: referenceVolumeDB,
+            strength: strength
         )
     }
 }
@@ -878,6 +992,34 @@ enum M1ConfigurationMigration {
                         id: node.id,
                         isEnabled: node.isEnabled,
                         specification: node.filterSpecification!
+                    )
+                )
+            case .delay:
+                appendScopeBarrierIfNeeded(
+                    node: node,
+                    result: &result,
+                    currentScope: &currentScope,
+                    occupiedIDs: &occupiedIDs
+                )
+                result.append(
+                    .delay(
+                        id: node.id,
+                        isEnabled: node.isEnabled,
+                        specification: node.delaySpecification!
+                    )
+                )
+            case .loudness:
+                appendScopeBarrierIfNeeded(
+                    node: node,
+                    result: &result,
+                    currentScope: &currentScope,
+                    occupiedIDs: &occupiedIDs
+                )
+                result.append(
+                    .loudness(
+                        id: node.id,
+                        isEnabled: node.isEnabled,
+                        specification: node.loudnessSpecification!
                     )
                 )
             }

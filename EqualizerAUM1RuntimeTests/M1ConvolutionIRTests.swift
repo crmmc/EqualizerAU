@@ -530,7 +530,7 @@ final class M1ConvolutionIRTests: XCTestCase {
         let prepared = try M1RuntimePreparedStateFactory.create(stagesByChannel: compiled.stagesByChannel)
         XCTAssertNotNil(prepared)
         EAUM1PreparedStateDestroy(prepared)
-        XCTAssertEqual(EAUM1RuntimeABIVersion(), 3)
+        XCTAssertEqual(EAUM1RuntimeABIVersion(), 4)
     }
 
     func testCancelledPreparedCreationStopsBeforeNativeWork() async {

@@ -573,6 +573,18 @@ actor M1ProductController {
         }
     }
 
+    func addDelay(before id: UUID? = nil, nodeID: UUID = UUID()) async throws {
+        try await updateEditingSession { session, effectsEnabled in
+            try session.addDelay(before: id, nodeID: nodeID, effectsEnabled: effectsEnabled)
+        }
+    }
+
+    func addLoudness(before id: UUID? = nil, nodeID: UUID = UUID()) async throws {
+        try await updateEditingSession { session, effectsEnabled in
+            try session.addLoudness(before: id, nodeID: nodeID, effectsEnabled: effectsEnabled)
+        }
+    }
+
     func addConvolution(
         before id: UUID? = nil,
         nodeID: UUID = UUID(),
@@ -676,6 +688,26 @@ actor M1ProductController {
     func setFilterSpecification(id: UUID, specification: M1FilterSpecification) async throws {
         try await updateEditingSession { session, effectsEnabled in
             try session.setFilterSpecification(
+                id: id,
+                specification: specification,
+                effectsEnabled: effectsEnabled
+            )
+        }
+    }
+
+    func setDelaySpecification(id: UUID, specification: M1DelaySpecification) async throws {
+        try await updateEditingSession { session, effectsEnabled in
+            try session.setDelaySpecification(
+                id: id,
+                specification: specification,
+                effectsEnabled: effectsEnabled
+            )
+        }
+    }
+
+    func setLoudnessSpecification(id: UUID, specification: M1LoudnessSpecification) async throws {
+        try await updateEditingSession { session, effectsEnabled in
+            try session.setLoudnessSpecification(
                 id: id,
                 specification: specification,
                 effectsEnabled: effectsEnabled

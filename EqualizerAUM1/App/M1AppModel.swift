@@ -226,6 +226,14 @@ final class M1AppModel: ObservableObject {
         performEdit { try await self.controller.addFilter(before: id) }
     }
 
+    func addDelay(before id: UUID?) {
+        performEdit { try await self.controller.addDelay(before: id) }
+    }
+
+    func addLoudness(before id: UUID?) {
+        performEdit { try await self.controller.addLoudness(before: id) }
+    }
+
     func importConvolution(before id: UUID?) {
         guard let url = wavPicker() else { return }
         let ir = M1ConvolutionIRStore.reference(sourceURL: url)
@@ -263,6 +271,24 @@ final class M1AppModel: ObservableObject {
     func setFilterSpecification(_ specification: M1FilterSpecification, id: UUID) {
         performEdit {
             try await self.controller.setFilterSpecification(
+                id: id,
+                specification: specification
+            )
+        }
+    }
+
+    func setDelaySpecification(_ specification: M1DelaySpecification, id: UUID) {
+        performEdit {
+            try await self.controller.setDelaySpecification(
+                id: id,
+                specification: specification
+            )
+        }
+    }
+
+    func setLoudnessSpecification(_ specification: M1LoudnessSpecification, id: UUID) {
+        performEdit {
+            try await self.controller.setLoudnessSpecification(
                 id: id,
                 specification: specification
             )

@@ -747,6 +747,12 @@ private struct M1EditorView: View {
             return 120 + 8 + 24
         case .filter:
             return minimumFilterControlsWidth(node)
+        case .delay:
+            // Value field 72 + unit menu (56 label + chrome).
+            return 72 + 8 + 64
+        case .loudness:
+            // Reference field 64 + "dB" + strength field 64 + "%".
+            return 64 + 8 + 20 + 8 + 8 + 64 + 8 + 16
         }
     }
 
@@ -800,6 +806,8 @@ private struct M1EditorView: View {
                 Button("Preamp") { model.add(before: nil) }
                 Button("Graphic EQ") { model.addGraphicEQ(before: nil) }
                 Button("Filter") { model.addFilter(before: nil) }
+                Button("Delay") { model.addDelay(before: nil) }
+                Button("Loudness") { model.addLoudness(before: nil) }
                 Button("Convolution…") { model.importConvolution(before: nil) }
             } label: {
                 Label("Add", systemImage: "plus")
@@ -1141,6 +1149,10 @@ private struct M1EditorView: View {
             convolutionEditor(node)
         case .filter:
             filterEditor(node)
+        case .delay:
+            delayEditor(node)
+        case .loudness:
+            loudnessEditor(node)
         }
     }
 
@@ -1157,7 +1169,7 @@ private struct M1EditorView: View {
         case .channels:
             return scopeDiagnosticSummary(node.id)
                 ?? String(localized: "Scope for following processors", locale: locale)
-        case .preamp, .graphicEQ, .convolution, .filter:
+        case .preamp, .graphicEQ, .convolution, .filter, .delay, .loudness:
             let channels = channelSummary(effectiveSelections[node.id] ?? .all)
             return String(localized: "\(channels) channels", locale: locale)
         }
@@ -1383,6 +1395,19 @@ private struct M1EditorView: View {
         return diagnostics?.filterBypasses.first { $0.nodeID == nodeID }
     }
 
+    private func delayBypassDiagnostic(_ nodeID: UUID) -> M1DelayBypassDiagnostic? {
+        let diagnostics = model.snapshot.expectedDiagnostics ?? model.snapshot.activeDiagnostics
+        return diagnostics?.delayBypasses.first { $0.nodeID == nodeID }
+    }
+
+    private func delayBypassSummary(_ nodeID: UUID) -> String? {
+        guard let bypass = delayBypassDiagnostic(nodeID) else { return nil }
+        let reason = bypass.reason == .exceedsBudget
+            ? String(localized: "delay exceeds the 1000 ms budget", locale: locale)
+            : String(localized: "invalid output sample rate", locale: locale)
+        return String(localized: "Delay bypassed · \(reason)", locale: locale)
+    }
+
     private func filterBypassSummary(_ nodeID: UUID) -> String? {
         guard let bypass = filterBypassDiagnostic(nodeID) else { return nil }
         return String(
@@ -1405,8 +1430,7 @@ private struct M1EditorView: View {
 
     @ViewBuilder
     private func filterEditor(_ node: M1ProcessingNode) -> some View {
-        if let specification = node.filterSpecification {
-            HStack(spacing: 8) {
+        if let specification = node.filterSpecification {            HStack(spacing: 8) {
                 if let summary = filterBypassSummary(node.id) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.caption)
@@ -1467,6 +1491,104 @@ private struct M1EditorView: View {
                 }
 
                 filterWidthEditor(node, specification: specification)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func delayEditor(_ node: M1ProcessingNode) -> some View {
+        if let specification = node.delaySpecification {
+            HStack(spacing: 8) {
+                if let summary = delayBypassSummary(node.id) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .help(summary)
+                }
+                M1FilterParameterTextField(
+                    titleKey: "Delay",
+                    value: specification.value,
+                    minimum: 0.01,
+                    maximum: specification.unit == .milliseconds
+                        ? M1DelayContract.maximumMilliseconds
+                        : M1DelayContract.maximumSamples,
+                    onChange: { value in
+                        model.setDelaySpecification(
+                            specification.withValue(value),
+                            id: node.id
+                        )
+                    },
+                    onEditingChanged: gestureMarker(for: node.id)
+                )
+                .textFieldStyle(.roundedBorder)
+                .monospacedDigit()
+                .frame(width: 72)
+                Menu {
+                    ForEach(M1DelayUnit.allCases, id: \.self) { unit in
+                        Button(delayUnitLabel(unit)) {
+                            model.setDelaySpecification(
+                                specification.withUnit(unit),
+                                id: node.id
+                            )
+                        }
+                    }
+                } label: {
+                    Text(delayUnitLabel(specification.unit))
+                        .frame(minWidth: 56)
+                }
+                .fixedSize()
+            }
+        }
+    }
+
+    private func delayUnitLabel(_ unit: M1DelayUnit) -> String {
+        switch unit {
+        case .milliseconds:
+            return String(localized: "ms", locale: locale)
+        case .samples:
+            return String(localized: "samples", locale: locale)
+        }
+    }
+
+    @ViewBuilder
+    private func loudnessEditor(_ node: M1ProcessingNode) -> some View {
+        if let specification = node.loudnessSpecification {
+            HStack(spacing: 8) {
+                M1FilterParameterTextField(
+                    titleKey: "Reference volume",
+                    value: specification.referenceVolumeDB,
+                    minimum: M1LoudnessContract.minimumReferenceVolumeDB,
+                    maximum: M1LoudnessContract.maximumReferenceVolumeDB,
+                    onChange: { referenceVolumeDB in
+                        model.setLoudnessSpecification(
+                            specification.withReferenceVolumeDB(referenceVolumeDB),
+                            id: node.id
+                        )
+                    },
+                    onEditingChanged: gestureMarker(for: node.id)
+                )
+                .textFieldStyle(.roundedBorder)
+                .monospacedDigit()
+                .frame(width: 64)
+                Text("dB").foregroundStyle(.secondary)
+
+                M1FilterParameterTextField(
+                    titleKey: "Strength",
+                    value: specification.strength * 100,
+                    minimum: 0,
+                    maximum: 100,
+                    onChange: { percent in
+                        model.setLoudnessSpecification(
+                            specification.withStrength(percent / 100),
+                            id: node.id
+                        )
+                    },
+                    onEditingChanged: gestureMarker(for: node.id)
+                )
+                .textFieldStyle(.roundedBorder)
+                .monospacedDigit()
+                .frame(width: 64)
+                Text("%").foregroundStyle(.secondary)
             }
         }
     }
@@ -1701,6 +1823,8 @@ private struct M1EditorView: View {
         case .graphicEQ: return "slider.vertical.3"
         case .convolution: return "waveform.path"
         case .filter: return "tuningfork"
+        case .delay: return "clock.arrow.circlepath"
+        case .loudness: return "ear"
         }
     }
 
@@ -1711,6 +1835,8 @@ private struct M1EditorView: View {
         case .graphicEQ: return String(localized: "Graphic EQ", locale: locale)
         case .convolution: return String(localized: "Convolution", locale: locale)
         case .filter: return String(localized: "Filter", locale: locale)
+        case .delay: return String(localized: "Delay", locale: locale)
+        case .loudness: return String(localized: "Loudness", locale: locale)
         }
     }
 

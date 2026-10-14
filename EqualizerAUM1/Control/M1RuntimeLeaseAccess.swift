@@ -26,6 +26,7 @@ enum M1RuntimePreparedStateFactory {
         }
         var stages: [EAUM1PreparedStage] = []
         var convolutionTaps: [[Float]] = []
+        var delayDescriptors: [EAUM1PreparedDelay] = []
         stages.reserveCapacity(stagesByChannel.reduce(0) { $0 + $1.count })
         for (channelIndex, channelStages) in stagesByChannel.enumerated() {
             guard channelStages.count <= Int(EAUM1_MAX_STAGES_PER_CHANNEL),
@@ -73,6 +74,22 @@ enum M1RuntimePreparedStateFactory {
                             a2: 0
                         )
                     )
+                case let .delay(_, integerDelay, fraction):
+                    let descriptorIndex = delayDescriptors.count
+                    delayDescriptors.append(
+                        EAUM1PreparedDelay(integerDelay: integerDelay, fraction: fraction)
+                    )
+                    stages.append(
+                        EAUM1PreparedStage(
+                            kind: UInt32(EAUM1PreparedStageDelay),
+                            channelIndex: channel,
+                            b0: Double(descriptorIndex),
+                            b1: 0,
+                            b2: 0,
+                            a1: 0,
+                            a2: 0
+                        )
+                    )
                 }
             }
         }
@@ -80,6 +97,9 @@ enum M1RuntimePreparedStateFactory {
               let stageCount = UInt32(exactly: stages.count)
         else {
             throw M1AudioIOError.invalidConfiguration("Prepared total stage capacity exceeded")
+        }
+        guard delayDescriptors.count <= Int(EAUM1_MAX_DELAY_STAGES) else {
+            throw M1AudioIOError.invalidConfiguration("Prepared delay capacity exceeded")
         }
 
         var prepared: OpaquePointer?
@@ -91,16 +111,20 @@ enum M1RuntimePreparedStateFactory {
             index: 0,
             descriptors: &convolutionDescriptors
         ) { descriptors in
-            stages.withUnsafeBufferPointer { stageValues in
-                descriptors.withUnsafeBufferPointer { convolutionValues in
-                    var description = EAUM1PreparedDescriptionV3(
-                        channelCount: channelCount,
-                        stageCount: stageCount,
-                        stages: stageValues.baseAddress,
-                        convolutionCount: UInt32(convolutionValues.count),
-                        convolutions: convolutionValues.baseAddress
-                    )
-                    return EAUM1PreparedStateCreateV3(&description, &prepared)
+            delayDescriptors.withUnsafeBufferPointer { delayValues in
+                stages.withUnsafeBufferPointer { stageValues in
+                    descriptors.withUnsafeBufferPointer { convolutionValues in
+                        var description = EAUM1PreparedDescriptionV4(
+                            channelCount: channelCount,
+                            stageCount: stageCount,
+                            stages: stageValues.baseAddress,
+                            convolutionCount: UInt32(convolutionValues.count),
+                            convolutions: convolutionValues.baseAddress,
+                            delayCount: UInt32(delayValues.count),
+                            delays: delayValues.baseAddress
+                        )
+                        return EAUM1PreparedStateCreateV4(&description, &prepared)
+                    }
                 }
             }
         }

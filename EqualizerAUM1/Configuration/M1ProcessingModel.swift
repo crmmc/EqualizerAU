@@ -33,6 +33,8 @@ enum M1ProcessingNodeKind: String, Sendable {
     case graphicEQ
     case convolution
     case filter
+    case delay
+    case loudness
 }
 
 struct M1ConvolutionIRReference: Equatable, Sendable {
@@ -272,6 +274,121 @@ extension M1FilterSpecification {
     }
 }
 
+// MARK: - Delay
+
+enum M1DelayUnit: String, CaseIterable, Sendable {
+    case milliseconds
+    case samples
+}
+
+enum M1DelayContract {
+    /// Mirrors `EAUM1_MAX_DELAY_SAMPLES`: the 1000 ms budget at the highest
+    /// supported output rate (192 kHz). Both units share this budget.
+    static let maximumMilliseconds = 1_000.0
+    static let maximumSamples = 192_000.0
+    static let defaultMilliseconds = 10.0
+}
+
+struct M1DelaySpecification: Hashable, Sendable {
+    var value: Double
+    var unit: M1DelayUnit
+
+    static func defaultSpecification() -> Self {
+        Self(value: M1DelayContract.defaultMilliseconds, unit: .milliseconds)
+    }
+
+    func validate(nodeID: UUID) throws {
+        guard value.isFinite, value > 0 else {
+            throw M1ProcessingBuildError.invalidDelayValue(nodeID: nodeID)
+        }
+        switch unit {
+        case .milliseconds where value > M1DelayContract.maximumMilliseconds:
+            throw M1ProcessingBuildError.delayExceedsBudget(nodeID: nodeID)
+        case .samples where value > M1DelayContract.maximumSamples:
+            throw M1ProcessingBuildError.delayExceedsBudget(nodeID: nodeID)
+        case .milliseconds, .samples:
+            break
+        }
+    }
+
+    /// Total delay in samples at the given output rate. The value is frozen
+    /// when the prepared chain is built; the realtime stage never re-derives it.
+    func samples(atSampleRate sampleRate: Double) -> Double? {
+        guard sampleRate.isFinite, sampleRate > 0 else { return nil }
+        switch unit {
+        case .milliseconds:
+            return value * sampleRate / 1_000.0
+        case .samples:
+            return value
+        }
+    }
+
+    func withValue(_ value: Double) -> Self {
+        var result = self
+        result.value = value
+        return result
+    }
+
+    func withUnit(_ unit: M1DelayUnit) -> Self {
+        var result = self
+        result.unit = unit
+        return result
+    }
+}
+
+// MARK: - Loudness correction
+
+enum M1LoudnessContract {
+    /// Output-volume knob domain: 0 dB is the loudest the device goes.
+    static let minimumReferenceVolumeDB = -60.0
+    static let maximumReferenceVolumeDB = 0.0
+    static let referenceVolumeStepDB = 1.0
+    static let defaultReferenceVolumeDB = -20.0
+    static let minimumStrength = 0.0
+    static let maximumStrength = 1.0
+    static let strengthStep = 0.05
+    static let defaultStrength = 1.0
+}
+
+struct M1LoudnessSpecification: Hashable, Sendable {
+    var referenceVolumeDB: Double
+    var strength: Double
+
+    static func defaultSpecification() -> Self {
+        Self(
+            referenceVolumeDB: M1LoudnessContract.defaultReferenceVolumeDB,
+            strength: M1LoudnessContract.defaultStrength
+        )
+    }
+
+    func validate(nodeID: UUID) throws {
+        guard referenceVolumeDB.isFinite,
+              referenceVolumeDB >= M1LoudnessContract.minimumReferenceVolumeDB,
+              referenceVolumeDB <= M1LoudnessContract.maximumReferenceVolumeDB
+        else {
+            throw M1ProcessingBuildError.invalidLoudnessReferenceVolume(nodeID: nodeID)
+        }
+        guard strength.isFinite,
+              strength >= M1LoudnessContract.minimumStrength,
+              strength <= M1LoudnessContract.maximumStrength
+        else {
+            throw M1ProcessingBuildError.invalidLoudnessStrength(nodeID: nodeID)
+        }
+    }
+
+    func withReferenceVolumeDB(_ referenceVolumeDB: Double) -> Self {
+        var result = self
+        result.referenceVolumeDB = referenceVolumeDB
+        return result
+    }
+
+    func withStrength(_ strength: Double) -> Self {
+        var result = self
+        result.strength = strength
+        return result
+    }
+}
+
 struct M1ProcessingNode: Identifiable, Equatable, Sendable {
     let id: UUID
     var kind: M1ProcessingNodeKind
@@ -281,6 +398,8 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
     var graphicEQPoints: [M1GraphicEQPoint]
     var convolutionIR: M1ConvolutionIRReference?
     var filterSpecification: M1FilterSpecification?
+    var delaySpecification: M1DelaySpecification?
+    var loudnessSpecification: M1LoudnessSpecification?
 
     init(
         id: UUID,
@@ -296,6 +415,8 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
         graphicEQPoints = []
         convolutionIR = nil
         filterSpecification = nil
+        delaySpecification = nil
+        loudnessSpecification = nil
     }
 
     static func channels(
@@ -363,6 +484,40 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
         )
     }
 
+    static func delay(
+        id: UUID = UUID(),
+        isEnabled: Bool = true,
+        specification: M1DelaySpecification = .defaultSpecification()
+    ) -> Self {
+        Self(
+            id: id,
+            kind: .delay,
+            isEnabled: isEnabled,
+            gainDB: 0,
+            channels: .all,
+            graphicEQPoints: [],
+            convolutionIR: nil,
+            delaySpecification: specification
+        )
+    }
+
+    static func loudness(
+        id: UUID = UUID(),
+        isEnabled: Bool = true,
+        specification: M1LoudnessSpecification = .defaultSpecification()
+    ) -> Self {
+        Self(
+            id: id,
+            kind: .loudness,
+            isEnabled: isEnabled,
+            gainDB: 0,
+            channels: .all,
+            graphicEQPoints: [],
+            convolutionIR: nil,
+            loudnessSpecification: specification
+        )
+    }
+
     private init(
         id: UUID,
         kind: M1ProcessingNodeKind,
@@ -371,7 +526,9 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
         channels: M1ChannelSelection,
         graphicEQPoints: [M1GraphicEQPoint],
         convolutionIR: M1ConvolutionIRReference?,
-        filterSpecification: M1FilterSpecification? = nil
+        filterSpecification: M1FilterSpecification? = nil,
+        delaySpecification: M1DelaySpecification? = nil,
+        loudnessSpecification: M1LoudnessSpecification? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -381,6 +538,8 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
         self.graphicEQPoints = graphicEQPoints
         self.convolutionIR = convolutionIR
         self.filterSpecification = filterSpecification
+        self.delaySpecification = delaySpecification
+        self.loudnessSpecification = loudnessSpecification
     }
 
     func copied(id: UUID) -> Self {
@@ -400,6 +559,10 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
             return .convolution(id: id, isEnabled: isEnabled, ir: convolutionIR!)
         case .filter:
             return .filter(id: id, isEnabled: isEnabled, specification: filterSpecification!)
+        case .delay:
+            return .delay(id: id, isEnabled: isEnabled, specification: delaySpecification!)
+        case .loudness:
+            return .loudness(id: id, isEnabled: isEnabled, specification: loudnessSpecification!)
         }
     }
 }

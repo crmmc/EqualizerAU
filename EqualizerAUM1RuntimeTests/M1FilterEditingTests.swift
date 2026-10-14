@@ -174,7 +174,7 @@ final class M1FilterEditingTests: XCTestCase {
     func testUnknownFilterTypeInV9DocumentIsRejected() throws {
         let json = """
         {
-          "schemaVersion": 9,
+          "schemaVersion": 10,
           "effectsEnabled": true,
           "nodes": [
             {"id": "\(testID.uuidString)", "type": "filter", "isEnabled": true, "filter": {
@@ -198,7 +198,7 @@ final class M1FilterEditingTests: XCTestCase {
         ) -> String {
             """
             {
-              "schemaVersion": 9,
+              "schemaVersion": 10,
               "effectsEnabled": true,
               "nodes": [
                 {"id": "\(testID.uuidString)", "type": "filter", "isEnabled": true, "filter": {
@@ -260,6 +260,120 @@ final class M1FilterEditingTests: XCTestCase {
         let encoded = try M1ConfigurationCodec.encode(snapshot)
         let decoded = try M1ConfigurationCodec.decode(encoded.data)
         XCTAssertEqual(decoded.snapshot, encoded.snapshot)
+    }
+
+    // MARK: - Delay nodes (M13)
+
+    func testAddDelayInsertsDefaultNodeAndEditsParameters() throws {
+        var session = M1EditingSession(nodes: [])
+        try session.addDelay(before: nil, nodeID: testID, effectsEnabled: true)
+        XCTAssertEqual(session.nodes[0].kind, .delay)
+        XCTAssertEqual(session.nodes[0].delaySpecification, .defaultSpecification())
+
+        let specification = M1DelaySpecification(value: 24.5, unit: .samples)
+        try session.setDelaySpecification(
+            id: testID,
+            specification: specification,
+            effectsEnabled: true
+        )
+        XCTAssertEqual(session.nodes[0].delaySpecification, specification)
+        try session.undo(effectsEnabled: true)
+        XCTAssertEqual(session.nodes[0].delaySpecification, .defaultSpecification())
+
+        try session.addPreamp(before: nil, nodeID: otherID, effectsEnabled: true)
+        XCTAssertThrowsError(
+            try session.setDelaySpecification(
+                id: otherID,
+                specification: specification,
+                effectsEnabled: true
+            )
+        )
+    }
+
+    func testDelayNodeCopiesRoundTripThroughSelectionEnvelope() throws {
+        var session = M1EditingSession(nodes: [])
+        try session.addDelay(before: nil, nodeID: testID, effectsEnabled: true)
+        session.select(testID, mode: .replacing)
+        let encoded = try session.encodedSelection()
+        let decoded = try M1NodeEnvelopeCodec.decode(encoded!.data)
+        XCTAssertEqual(decoded.nodes[0].kind, .delay)
+        XCTAssertEqual(decoded.nodes[0].delaySpecification, .defaultSpecification())
+    }
+
+    func testDelayConfigurationRoundTripsThroughSchemaV10AndV9RejectsIt() throws {
+        let specification = M1DelaySpecification(value: 12.5, unit: .milliseconds)
+        let snapshot = M1ConfigurationSnapshot(
+            effectsEnabled: true,
+            nodes: [.delay(specification: specification)]
+        )
+        let encoded = try M1ConfigurationCodec.encode(snapshot)
+        XCTAssertEqual(encoded.snapshot.nodes[0].delaySpecification, specification)
+        let decoded = try M1ConfigurationCodec.decode(encoded.data)
+        XCTAssertEqual(decoded.snapshot, encoded.snapshot)
+
+        let v9JSONWithDelay = """
+        {
+          "schemaVersion": 9,
+          "effectsEnabled": true,
+          "nodes": [
+            {"id": "\(testID.uuidString)", "type": "delay", "isEnabled": true,
+             "delay": {"value": 10, "unit": "milliseconds"}}
+          ]
+        }
+        """
+        XCTAssertThrowsError(try M1ConfigurationCodec.decode(Data(v9JSONWithDelay.utf8)))
+    }
+
+    // MARK: - Loudness nodes (M13)
+
+    func testAddLoudnessInsertsDefaultNodeAndEditsParameters() throws {
+        var session = M1EditingSession(nodes: [])
+        try session.addLoudness(before: nil, nodeID: testID, effectsEnabled: true)
+        XCTAssertEqual(session.nodes[0].kind, .loudness)
+        XCTAssertEqual(session.nodes[0].loudnessSpecification, .defaultSpecification())
+
+        let specification = M1LoudnessSpecification(referenceVolumeDB: -30, strength: 0.6)
+        try session.setLoudnessSpecification(
+            id: testID,
+            specification: specification,
+            effectsEnabled: true
+        )
+        XCTAssertEqual(session.nodes[0].loudnessSpecification, specification)
+        try session.undo(effectsEnabled: true)
+        XCTAssertEqual(session.nodes[0].loudnessSpecification, .defaultSpecification())
+
+        try session.addPreamp(before: nil, nodeID: otherID, effectsEnabled: true)
+        XCTAssertThrowsError(
+            try session.setLoudnessSpecification(
+                id: otherID,
+                specification: specification,
+                effectsEnabled: true
+            )
+        )
+    }
+
+    func testLoudnessConfigurationRoundTripsThroughSchemaV10AndV9RejectsIt() throws {
+        let specification = M1LoudnessSpecification(referenceVolumeDB: -25, strength: 0.8)
+        let snapshot = M1ConfigurationSnapshot(
+            effectsEnabled: true,
+            nodes: [.loudness(specification: specification)]
+        )
+        let encoded = try M1ConfigurationCodec.encode(snapshot)
+        XCTAssertEqual(encoded.snapshot.nodes[0].loudnessSpecification, specification)
+        let decoded = try M1ConfigurationCodec.decode(encoded.data)
+        XCTAssertEqual(decoded.snapshot, encoded.snapshot)
+
+        let v9JSONWithLoudness = """
+        {
+          "schemaVersion": 9,
+          "effectsEnabled": true,
+          "nodes": [
+            {"id": "\(testID.uuidString)", "type": "loudness", "isEnabled": true,
+             "loudness": {"referenceVolumeDB": -20, "strength": 1}}
+          ]
+        }
+        """
+        XCTAssertThrowsError(try M1ConfigurationCodec.decode(Data(v9JSONWithLoudness.utf8)))
     }
 
     private var testID = UUID()
