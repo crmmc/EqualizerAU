@@ -1175,11 +1175,7 @@ EAUM1Status EAUM1RuntimePerformMaintenance(
 
     if (pending != nullptr) {
         if (runtime->nextPublicationGeneration == std::numeric_limits<uint64_t>::max()) {
-            return maintenanceRequiredOutcome(
-                EAUM1StatusCapacityExceeded,
-                retirementTicket,
-                outcomeOut
-            );
+            return maintenanceRequiredOutcome(EAUM1StatusCapacityExceeded, retirementTicket, outcomeOut);
         }
         if (!equivalent) {
             const EAUM1Status copyStatus = copyPreparedToSlot(
@@ -1187,11 +1183,7 @@ EAUM1Status EAUM1RuntimePerformMaintenance(
                 &runtime->slots[targetSlot]
             );
             if (copyStatus != EAUM1StatusOK) {
-                return maintenanceRequiredOutcome(
-                    copyStatus,
-                    retirementTicket,
-                    outcomeOut
-                );
+                return maintenanceRequiredOutcome(copyStatus, retirementTicket, outcomeOut);
             }
         }
     }
