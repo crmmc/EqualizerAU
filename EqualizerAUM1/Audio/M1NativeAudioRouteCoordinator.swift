@@ -252,14 +252,10 @@ actor M1NativeAudioRouteCoordinator {
             )
             resources.aggregate = aggregate
             try checkStartCancellation()
-            let irLoader = irLoader
-            let compiled = try await detachedValue {
-                try M1ProcessingBuilder.build(
-                    nodes: configuration.nodes,
-                    layout: output.layout,
-                    irLoader: irLoader
-                )
-            }
+            let compiled = try await compileStages(
+                nodes: configuration.nodes,
+                layout: output.layout
+            )
             try checkStartCancellation()
             let runtime = try runtimeFactory.createRuntime(
                 bridgeGeneration: resources.bridgeGeneration,
@@ -391,26 +387,20 @@ actor M1NativeAudioRouteCoordinator {
                 bridgeGeneration: current.bridgeGeneration
             )
         } catch {
-            guard self.current === current, current.phase == .running else { return nil }
+            guard isRunning(current) else { return nil }
             throw error
         }
-        guard self.current === current, current.phase == .running else { return nil }
+        guard isRunning(current) else { return nil }
         return M1RealtimeDiagnostics(io: ioCounters, runtime: runtimeCounters)
     }
 
     func prepare(configuration: M1ConfigurationSnapshot) async throws -> M1AudioConfigurationPreparation {
         if let current, current.phase == .running, let output = current.output {
-            let irLoader = irLoader
-            let compiled = try await detachedValue {
-                try M1ProcessingBuilder.build(
-                    nodes: configuration.nodes,
-                    layout: output.layout,
-                    irLoader: irLoader
-                )
-            }
-            guard self.current === current, current.phase == .running else {
-                return .waitingForOutput
-            }
+            let compiled = try await compileStages(
+                nodes: configuration.nodes,
+                layout: output.layout
+            )
+            guard isRunning(current) else { return .waitingForOutput }
             return M1AudioConfigurationPreparation(
                 layout: output.layout,
                 compiled: compiled,
@@ -424,14 +414,10 @@ actor M1NativeAudioRouteCoordinator {
         do {
             let discoveryGeneration = M1AudioRouteGeneration(rawValue: nextGeneration + 1)
             let output = try await routeResources.discoverOutput(generation: discoveryGeneration)
-            let irLoader = irLoader
-            let compiled = try await detachedValue {
-                try M1ProcessingBuilder.build(
-                    nodes: configuration.nodes,
-                    layout: output.layout,
-                    irLoader: irLoader
-                )
-            }
+            let compiled = try await compileStages(
+                nodes: configuration.nodes,
+                layout: output.layout
+            )
             guard current == nil, !operationInProgress else { return .waitingForOutput }
             return M1AudioConfigurationPreparation(
                 layout: output.layout,
@@ -467,10 +453,10 @@ actor M1NativeAudioRouteCoordinator {
                 bridgeGeneration: current.bridgeGeneration
             )
         } catch {
-            guard self.current === current, current.phase == .running else { return nil }
+            guard isRunning(current) else { return nil }
             throw error
         }
-        guard self.current === current, current.phase == .running else { return nil }
+        guard isRunning(current) else { return nil }
         if let ticket = runtimePublication.retirementTicket {
             _ = await retirementMaintenance.start(
                 ticket: ticket,
@@ -519,9 +505,7 @@ actor M1NativeAudioRouteCoordinator {
         }
         await retirementMaintenance.waitUntilIdle()
         guard activationToken.isCurrent else { throw CancellationError() }
-        guard self.current === current, current.phase == .running else {
-            throw M1AudioIOError.generationMismatch
-        }
+        guard isRunning(current) else { throw M1AudioIOError.generationMismatch }
 
         let startedAt = await effectsTransitionTiming.nowNanoseconds()
         while true {
@@ -530,9 +514,7 @@ actor M1NativeAudioRouteCoordinator {
             let ready = try await runtimeAccess.canReplaceWhileBypassed(
                 bridgeGeneration: current.bridgeGeneration
             )
-            guard self.current === current, current.phase == .running else {
-                throw M1AudioIOError.generationMismatch
-            }
+            guard isRunning(current) else { throw M1AudioIOError.generationMismatch }
             guard activationToken.isCurrent else { throw CancellationError() }
             if ready {
                 let replaced = try await runtimeAccess.replaceWhileBypassed(
@@ -540,9 +522,7 @@ actor M1NativeAudioRouteCoordinator {
                     configurationGeneration: nil,
                     bridgeGeneration: current.bridgeGeneration
                 )
-                guard self.current === current, current.phase == .running else {
-                    throw M1AudioIOError.generationMismatch
-                }
+                guard isRunning(current) else { throw M1AudioIOError.generationMismatch }
                 guard activationToken.isCurrent else { throw CancellationError() }
                 if replaced {
                     guard !(await effectsDeadlineReached(since: startedAt)) else {
@@ -555,15 +535,11 @@ actor M1NativeAudioRouteCoordinator {
                 throw M1AudioIOError.invalidState("bypassed replacement timed out")
             }
             try await effectsTransitionTiming.sleep(effectsTransitionTiming.pollInterval)
-            guard self.current === current, current.phase == .running else {
-                throw M1AudioIOError.generationMismatch
-            }
+            guard isRunning(current) else { throw M1AudioIOError.generationMismatch }
         }
 
         let fadeInStartedAt = await effectsTransitionTiming.nowNanoseconds()
-        guard self.current === current, current.phase == .running else {
-            throw M1AudioIOError.generationMismatch
-        }
+        guard isRunning(current) else { throw M1AudioIOError.generationMismatch }
         try await runtimeAccess.enableEffects(
             bridgeGeneration: current.bridgeGeneration,
             activationToken: activationToken
@@ -590,7 +566,7 @@ actor M1NativeAudioRouteCoordinator {
         guard let current, current.phase == .running else { return false }
         let bridgeGeneration = current.bridgeGeneration
         await retirementMaintenance.waitUntilIdle()
-        guard self.current === current, current.phase == .running else { return false }
+        guard isRunning(current) else { return false }
         let generations = await runtimeAccess.configurationGenerations(
             bridgeGeneration: bridgeGeneration
         )
@@ -738,15 +714,11 @@ actor M1NativeAudioRouteCoordinator {
             let state = try await runtimeAccess.effectsState(
                 bridgeGeneration: resources.bridgeGeneration
             )
-            guard current === resources, resources.phase == .running else {
-                throw M1AudioIOError.generationMismatch
-            }
+            guard isRunning(resources) else { throw M1AudioIOError.generationMismatch }
             if state == expected { return true }
             if await effectsDeadlineReached(since: startedAt) { return false }
             try await effectsTransitionTiming.sleep(effectsTransitionTiming.pollInterval)
-            guard current === resources, resources.phase == .running else {
-                throw M1AudioIOError.generationMismatch
-            }
+            guard isRunning(resources) else { throw M1AudioIOError.generationMismatch }
         }
     }
 
@@ -760,6 +732,24 @@ actor M1NativeAudioRouteCoordinator {
         try Task.checkCancellation()
         if startCancellationRequested {
             throw CancellationError()
+        }
+    }
+
+    private func isRunning(_ resources: RouteResources) -> Bool {
+        current === resources && resources.phase == .running
+    }
+
+    private func compileStages(
+        nodes: [M1ProcessingNode],
+        layout: M1OutputLayoutSnapshot
+    ) async throws -> M1CompiledPreampTargets {
+        let irLoader = irLoader
+        return try await detachedValue {
+            try M1ProcessingBuilder.build(
+                nodes: nodes,
+                layout: layout,
+                irLoader: irLoader
+            )
         }
     }
 

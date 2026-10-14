@@ -84,12 +84,13 @@ final class M1SystemAudioLifecycleMonitor: M1AudioLifecycleMonitoring, @unchecke
     }
 
     func start(handler: @escaping @Sendable (M1AudioLifecycleEvent) -> Void) throws {
-        let startOnQueue = {
+        try performOnQueue {
             guard !self.isStarted else { return }
             self.handler = handler
             do {
-                try self.addSystemListener(kAudioHardwarePropertyDefaultOutputDevice)
-                try self.addSystemListener(kAudioHardwarePropertyDevices)
+                for selector in Self.systemSelectors {
+                    try self.addSystemListener(selector)
+                }
                 try self.bindDefaultOutputDevice()
                 self.addWorkspaceObservers()
                 self.isStarted = true
@@ -99,29 +100,27 @@ final class M1SystemAudioLifecycleMonitor: M1AudioLifecycleMonitoring, @unchecke
                 throw error
             }
         }
-        if DispatchQueue.getSpecific(key: queueKey) != nil {
-            try startOnQueue()
-        } else {
-            try queue.sync(execute: startOnQueue)
-        }
     }
 
     func stop() {
-        let stopOnQueue = {
+        performOnQueue {
             guard self.isStarted || self.handler != nil else { return }
             self.removeRegisteredListeners()
             self.handler = nil
             self.isStarted = false
         }
-        if DispatchQueue.getSpecific(key: queueKey) != nil {
-            stopOnQueue()
-        } else {
-            queue.sync(execute: stopOnQueue)
-        }
     }
 
     deinit {
         stop()
+    }
+
+    private func performOnQueue(_ body: () throws -> Void) rethrows {
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            try body()
+        } else {
+            try queue.sync(execute: body)
+        }
     }
 
     private func handleSystemProperties(
@@ -315,10 +314,7 @@ final class M1SystemAudioLifecycleMonitor: M1AudioLifecycleMonitoring, @unchecke
         retryRetiredDeviceListeners()
         currentDeviceID = AudioObjectID(kAudioObjectUnknown)
         currentDeviceUID = ""
-        for selector in [
-            kAudioHardwarePropertyDefaultOutputDevice,
-            kAudioHardwarePropertyDevices,
-        ] {
+        for selector in Self.systemSelectors {
             _ = operations.removePropertyListener(
                 objectID: AudioObjectID(kAudioObjectSystemObject),
                 selector: selector,
@@ -360,6 +356,10 @@ final class M1SystemAudioLifecycleMonitor: M1AudioLifecycleMonitoring, @unchecke
         registrations.forEach(retainIfRemovalFails)
     }
 
+    private static let systemSelectors: [AudioObjectPropertySelector] = [
+        kAudioHardwarePropertyDefaultOutputDevice,
+        kAudioHardwarePropertyDevices,
+    ]
     private static let deviceSelectors: [AudioObjectPropertySelector] = [
         kAudioDevicePropertyDeviceIsAlive,
         kAudioDevicePropertyNominalSampleRate,

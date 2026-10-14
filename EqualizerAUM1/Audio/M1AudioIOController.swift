@@ -277,13 +277,9 @@ actor M1AudioIOController {
             let diagnostics = try operations.outputDiagnostics(output)
             try validateOutput(diagnostics, snapshot: state.outputSnapshot, requireRunning: false)
         } catch {
-            do {
-                try operations.destroyOutput(output)
-                state.output = nil
-                throw error
-            } catch let cleanupError {
-                throw cleanupError
-            }
+            try operations.destroyOutput(output)
+            state.output = nil
+            throw error
         }
     }
 
@@ -301,13 +297,9 @@ actor M1AudioIOController {
             let diagnostics = try operations.outputDiagnostics(output)
             try validateOutput(diagnostics, snapshot: state.outputSnapshot, requireRunning: true)
         } catch {
-            do {
-                try operations.stopOutput(output)
-                state.outputStarted = false
-                throw error
-            } catch let cleanupError {
-                throw cleanupError
-            }
+            try operations.stopOutput(output)
+            state.outputStarted = false
+            throw error
         }
     }
 
@@ -330,23 +322,15 @@ actor M1AudioIOController {
                 deadline: timing.fadeDeadlineNanoseconds,
                 predicate: { self.operations.isFadeComplete(resource.host) }
             )
-            do {
-                try operations.stopOutput(output)
-                state.outputStarted = false
-            } catch {
-                throw error
-            }
+            try operations.stopOutput(output)
+            state.outputStarted = false
         }
         if state.captureStarted {
             guard let capture = state.capture else {
                 throw M1AudioIOError.staleResource
             }
-            do {
-                try operations.stopCapture(capture)
-                state.captureStarted = false
-            } catch {
-                throw error
-            }
+            try operations.stopCapture(capture)
+            state.captureStarted = false
         }
         operations.beginStopping(resource.host)
     }
