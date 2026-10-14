@@ -1696,6 +1696,7 @@ private struct M1FilterParameterTextField: View {
 
     var body: some View {
         TextField(titleKey, text: $text)
+            .focused($isFocused)
             .accessibilityLabel(Text(titleKey))
             .onAppear { text = formatted(value) }
             .onChange(of: value) { _, newValue in
