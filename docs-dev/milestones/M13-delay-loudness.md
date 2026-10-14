@@ -39,8 +39,8 @@
   M1EqualLoudnessCurve.swift、M1OutputVolumeObserver.swift、EAUM1DelayStage.hpp 与测试文件）、
   实时安全审计（新增延迟回调路径无分配无锁）、本地化一致性（新增 9 键均含 zh-Hans，
   动态 Text 基线登记 delayUnitLabel）。
-- `make coverage` 通过：`EqualizerAUM1RuntimeTests` 520+ 用例 0 失败，核心生产逻辑覆盖率
-  ≥95%（门禁），`EAUM1Runtime.cpp` 单文件 95.10% ≥95% 红线，10/10 主功能路径通过。
+- `make coverage` 通过：`EqualizerAUM1RuntimeTests` 527 用例 0 失败，核心生产逻辑覆盖率
+  ≥95%（门禁），`EAUM1Runtime.cpp` 单文件 ≥95% 红线，10/10 主功能路径通过。
 - 新增测试：`EAUM1RuntimeSmokeTests` 7 例（V4 校验矩阵、整数/分数脉冲、跨块历史、
   等价/差异发布语义、增益-双二阶-卷积-延迟混合链）、`M1EqualLoudnessCurveTests` 8 例
   （1 kHz 归一、公开锚点对照、±对称、夹紧下移、强度缩放、支撑域端点保持）、
@@ -50,6 +50,13 @@
   归一化 + 规格助手）、`M1ProductControllerTests` 6 例（同代次重发布、草稿/提交不变、
   无响度节点不重建、量化去重、停止态记忆、失败吞掉重试）。
 - 既有测试同步：schema 版本预期 9 → 10、不支持 schema 10 → 11、ABI 版本 3 → 4。
+- 全分支代码审查后的加固（2026-10-14）：schema 解码阶梯合并为区间分支（杜绝下次升版
+  复发 v9 类事故）；响度听音级夹紧 `minimumFittedPhon = 10`（音量极低时曲线冻结而非
+  节点消失）；音量监听器同设备通知不再重复注册、shutdown 时卸载；`M1OutputVolumeMath`
+  抽出为独立纯函数文件并纳入覆盖率门禁；延迟 samples 上限桥接 Runtime 宏；单位切换
+  按采样率换算；ADR-0022/0023 与实现对齐（公式符号、监听器生命周期、降级路径、
+  samples 预算口径）；新增 9 例审查测试（fraction-only 冷启动、V3 拒延迟阶段、
+  phon 下限、卷积预算共享、重建期间停机丢弃、单位换算、下溢旁路等）。
 
 ## 待完成
 

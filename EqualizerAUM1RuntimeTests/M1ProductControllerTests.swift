@@ -323,6 +323,32 @@ final class M1ProductControllerTests: XCTestCase {
         try await waitForPublishCount(2, on: fixture.audio)
     }
 
+    func testVolumeRepublishIsDroppedWhenAudioStopsDuringTheRebuild() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        try await fixture.controller.addLoudness(nodeID: UUID())
+        try await fixture.controller.save()
+
+        // Suspend the volume rebuild inside prepare, stop the audio while it
+        // hangs, then let it resume: the stale rebuild must be dropped instead
+        // of publishing over the stopped route.
+        let gate = ProductTestGate()
+        await fixture.audio.setPreparationGate(gate)
+        await fixture.controller.handleOutputVolumeReading(
+            M1OutputVolumeReading(decibels: -35.4, usesApproximateConversion: false)
+        )
+        await waitUntil { await fixture.audio.preparedLoudnessVolumes.count == 2 }
+
+        try await fixture.controller.stop()
+
+        await gate.open()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let publishedGenerations = await fixture.audio.publishedGenerations
+        XCTAssertEqual(publishedGenerations.count, 1)
+        await fixture.audio.setPreparationGate(nil)
+    }
+
     private func waitForPublishCount(
         _ count: Int,
         on audio: ProductAudioFake,

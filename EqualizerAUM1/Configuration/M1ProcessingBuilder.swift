@@ -24,6 +24,7 @@ enum M1ProcessingBuildError: Error, Equatable, Sendable {
     case delayExceedsBudget(nodeID: UUID)
     case invalidDelaySampleRate(nodeID: UUID)
     case delayStageCapacityExceeded
+    case invalidLoudnessSpecification(nodeID: UUID)
     case invalidLoudnessReferenceVolume(nodeID: UUID)
     case invalidLoudnessStrength(nodeID: UUID)
     case stageCapacityExceeded(channel: M1ChannelIdentifier)
@@ -364,6 +365,10 @@ enum M1ProcessingBuilder {
                         integerDelay += 1
                         fraction = 0
                     }
+                    // A subnormal total (hand-edited config only; the UI floor
+                    // is 0.01) can collapse to (0, 0), which the runtime ABI
+                    // rejects — bypass the node instead of failing prepare.
+                    guard integerDelay != 0 || fraction != 0 else { continue }
                     for index in selectedIndexes {
                         delayStageCount += 1
                         guard delayStageCount <= maximumDelayStages else {
@@ -397,7 +402,9 @@ enum M1ProcessingBuilder {
                 guard !selectedIndexes.isEmpty else { continue }
                 guard let specification = node.loudnessSpecification else { continue }
                 let currentVolumeDB = loudnessVolumeDB ?? specification.referenceVolumeDB
-                let volumeDeltaDB = (currentVolumeDB - specification.referenceVolumeDB).rounded()
+                let volumeStepDB = M1LoudnessContract.referenceVolumeStepDB
+                let rawDeltaDB = currentVolumeDB - specification.referenceVolumeDB
+                let volumeDeltaDB = (rawDeltaDB / volumeStepDB).rounded() * volumeStepDB
                 guard let targetGainDB = M1EqualLoudnessCurve.compensationTargetGainDB(
                     referencePhon: M1EqualLoudnessCurve.assumedReferencePhon,
                     currentPhon: M1EqualLoudnessCurve.assumedReferencePhon + volumeDeltaDB,
@@ -606,7 +613,7 @@ enum M1ProcessingBuilder {
             }
             if node.kind == .loudness {
                 guard let specification = node.loudnessSpecification else {
-                    throw M1ProcessingBuildError.invalidLoudnessReferenceVolume(nodeID: node.id)
+                    throw M1ProcessingBuildError.invalidLoudnessSpecification(nodeID: node.id)
                 }
                 try specification.validate(nodeID: node.id)
             }

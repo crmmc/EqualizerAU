@@ -2231,6 +2231,16 @@
         }
       }
     },
+    "delay exceeds the 192000 samples budget": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "延迟超出 192000 采样点预算"
+          }
+        }
+      }
+    },
     "empty WAV": {
       "localizations": {
         "zh-Hans": {

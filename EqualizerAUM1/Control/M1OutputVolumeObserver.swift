@@ -7,21 +7,6 @@ struct M1OutputVolumeReading: Equatable, Sendable {
     let usesApproximateConversion: Bool
 }
 
-enum M1OutputVolumeMath {
-    /// ADR-0023 fallback when the device cannot convert scalar to decibels.
-    static func approximateDecibels(fromScalar scalar: Float) -> Double? {
-        guard scalar.isFinite else { return nil }
-        guard scalar > 0 else { return -120 }
-        return max(20 * log10(Double(scalar)), -120)
-    }
-
-    /// Volume events are quantized to whole decibels before republishing.
-    static func quantizedDecibels(_ decibels: Double) -> Double? {
-        guard decibels.isFinite else { return nil }
-        return decibels.rounded()
-    }
-}
-
 /// Control-layer observer for the system default output device's volume knob
 /// (ADR-0023 decision 4). Attaches Core Audio property listeners on its own
 /// thread and reports readings through a Sendable callback; the realtime path
@@ -30,6 +15,27 @@ enum M1OutputVolumeMath {
 final class M1OutputVolumeObserver: @unchecked Sendable {
     private let queue = DispatchQueue(label: "EqualizerAU.M1OutputVolumeObserver")
     private let onReading: @Sendable (M1OutputVolumeReading) -> Void
+
+    // Listener procs are stored once so registration and removal present the
+    // same function value: Core Audio matches removal by proc + context, and
+    // separate closure literals would compile to distinct C thunks that do not
+    // match each other on removal.
+    private let systemPropertyListener: AudioObjectPropertyListenerProc = { _, _, _, context in
+        guard let context else { return noErr }
+        Unmanaged<M1OutputVolumeObserver>
+            .fromOpaque(context)
+            .takeUnretainedValue()
+            .handleDefaultDeviceChange()
+        return noErr
+    }
+    private let volumePropertyListener: AudioObjectPropertyListenerProc = { _, _, _, context in
+        guard let context else { return noErr }
+        Unmanaged<M1OutputVolumeObserver>
+            .fromOpaque(context)
+            .takeUnretainedValue()
+            .handleVolumeChange()
+        return noErr
+    }
 
     private var systemAddress = AudioObjectPropertyAddress(
         mSelector: kAudioHardwarePropertyDefaultOutputDevice,
@@ -55,20 +61,13 @@ final class M1OutputVolumeObserver: @unchecked Sendable {
     func start() {
         queue.sync {
             guard !started else { return }
-            started = true
             guard AudioObjectAddPropertyListener(
                 AudioObjectID(kAudioObjectSystemObject),
                 &systemAddress,
-                { _, _, _, context in
-                    guard let context else { return noErr }
-                    Unmanaged<M1OutputVolumeObserver>
-                        .fromOpaque(context)
-                        .takeUnretainedValue()
-                        .handleDefaultDeviceChange()
-                    return noErr
-                },
+                systemPropertyListener,
                 Unmanaged.passUnretained(self).toOpaque()
             ) == noErr else { return }
+            started = true
             attachToDevice()
         }
     }
@@ -106,22 +105,21 @@ final class M1OutputVolumeObserver: @unchecked Sendable {
             detachFromDevice()
             return
         }
-        if deviceID != observedDeviceID {
-            detachFromDevice()
-            observedDeviceID = deviceID
+        // A default-device notification does not imply the device actually
+        // changed; re-adding the listener for the device already observed
+        // would stack registrations that detach only removes once. Just
+        // re-read the volume on the existing listener.
+        guard deviceID != observedDeviceID else {
+            readAndReport()
+            return
         }
+        detachFromDevice()
+        observedDeviceID = deviceID
         var address = volumeAddress
         guard AudioObjectAddPropertyListener(
             observedDeviceID,
             &address,
-            { _, _, _, context in
-                guard let context else { return noErr }
-                Unmanaged<M1OutputVolumeObserver>
-                    .fromOpaque(context)
-                    .takeUnretainedValue()
-                    .handleVolumeChange()
-                return noErr
-            },
+            volumePropertyListener,
             Unmanaged.passUnretained(self).toOpaque()
         ) == noErr else {
             observedDeviceID = kAudioObjectUnknown
@@ -136,14 +134,7 @@ final class M1OutputVolumeObserver: @unchecked Sendable {
         AudioObjectRemovePropertyListener(
             observedDeviceID,
             &address,
-            { _, _, _, context in
-                guard let context else { return noErr }
-                Unmanaged<M1OutputVolumeObserver>
-                    .fromOpaque(context)
-                    .takeUnretainedValue()
-                    .handleVolumeChange()
-                return noErr
-            },
+            volumePropertyListener,
             Unmanaged.passUnretained(self).toOpaque()
         )
         observedDeviceID = kAudioObjectUnknown
@@ -155,14 +146,7 @@ final class M1OutputVolumeObserver: @unchecked Sendable {
         AudioObjectRemovePropertyListener(
             AudioObjectID(kAudioObjectSystemObject),
             &address,
-            { _, _, _, context in
-                guard let context else { return noErr }
-                Unmanaged<M1OutputVolumeObserver>
-                    .fromOpaque(context)
-                    .takeUnretainedValue()
-                    .handleDefaultDeviceChange()
-                return noErr
-            },
+            systemPropertyListener,
             Unmanaged.passUnretained(self).toOpaque()
         )
     }

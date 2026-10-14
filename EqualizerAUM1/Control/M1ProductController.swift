@@ -878,7 +878,9 @@ actor M1ProductController {
             // Re-validate after suspension: a user save, route change or stop
             // may have raced the rebuild; stale preparations are dropped.
             guard audioState == .running,
+                  !terminating,
                   !persistenceInFlight,
+                  !effectsUpdateInFlight,
                   saved == snapshot,
                   let generation = activeConfigurationGeneration
             else { return }
@@ -1446,6 +1448,7 @@ actor M1ProductController {
                 try await Task.sleep(for: .milliseconds(1))
             }
             try await stop()
+            volumeObserver?.stop()
         } catch {
             terminating = false
             throw error

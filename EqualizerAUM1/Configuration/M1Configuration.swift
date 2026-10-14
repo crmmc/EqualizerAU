@@ -98,29 +98,12 @@ enum M1ConfigurationCodec {
             try M1JSONShapeValidator.validateConfiguration(data, schemaVersion: 1)
             let wire = try JSONDecoder().decode(M1ConfigurationV1Wire.self, from: data)
             snapshot = try wire.snapshot()
-        case 2:
-            snapshot = try decodeCurrentWire(data, schemaVersion: 2)
-        case 3:
-            snapshot = try decodeCurrentWire(data, schemaVersion: 3)
-        case 4:
-            snapshot = try decodeCurrentWire(data, schemaVersion: 4)
-        case 5:
-            snapshot = try decodeCurrentWire(data, schemaVersion: 5)
-        case 6:
-            snapshot = try decodeCurrentWire(data, schemaVersion: 6)
-        case 7:
-            snapshot = try decodeCurrentWire(data, schemaVersion: 7)
-        case 8:
-            snapshot = try decodeCurrentWire(data, schemaVersion: 8)
-        case 9:
-            snapshot = try decodeCurrentWire(data, schemaVersion: 9)
-        case M1ConfigurationSnapshot.schemaVersion:
-            try M1JSONShapeValidator.validateConfiguration(
-                data,
-                schemaVersion: M1ConfigurationSnapshot.schemaVersion
-            )
-            let wire = try JSONDecoder().decode(M1ConfigurationWire.self, from: data)
-            snapshot = try wire.snapshot(expectedSchemaVersion: M1ConfigurationSnapshot.schemaVersion)
+        // Every version since 2 decodes through the same wire + migration path,
+        // so the ladder is a closed range keyed on the live constant: bumping
+        // the constant keeps on-disk configs of every older version decodable
+        // instead of dropping them into `unsupportedSchema` (the v9 regression).
+        case 2...M1ConfigurationSnapshot.schemaVersion:
+            snapshot = try decodeCurrentWire(data, schemaVersion: version.schemaVersion)
         default:
             throw M1ConfigurationCodecError.unsupportedSchema(version.schemaVersion)
         }

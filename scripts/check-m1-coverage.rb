@@ -25,6 +25,7 @@ included_sources = %w[
   EqualizerAUM1/Audio/M1SystemAudioLifecycleMonitor.swift
   EqualizerAUM1/Control/M1ProductController.swift
   EqualizerAUM1/Control/M1EditingSession.swift
+  EqualizerAUM1/Control/M1OutputVolumeMath.swift
   EqualizerAUM1Runtime/src/EAUM1Runtime.cpp
 ].freeze
 

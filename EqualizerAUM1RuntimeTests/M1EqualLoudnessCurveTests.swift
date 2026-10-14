@@ -125,4 +125,34 @@ final class M1EqualLoudnessCurveTests: XCTestCase {
         XCTAssertEqual(curve(12_500), curve(20_000), accuracy: 0.001)
         XCTAssertEqual(curve(20), curve(10), accuracy: 0.001)
     }
+
+    func testExtremeVolumeDropClampsToFloorContourInsteadOfDropping() {
+        // A volume far below the reference drives currentPhon under the fit's
+        // domain; the clamp freezes the curve at the floor contour instead of
+        // returning nil (which would drop the whole node, ADR-0023).
+        let frozen = M1EqualLoudnessCurve.compensationTargetGainDB(
+            referencePhon: 85,
+            currentPhon: M1EqualLoudnessCurve.minimumFittedPhon - 25,
+            strength: 1
+        )
+        let atFloor = M1EqualLoudnessCurve.compensationTargetGainDB(
+            referencePhon: 85,
+            currentPhon: M1EqualLoudnessCurve.minimumFittedPhon,
+            strength: 1
+        )
+        XCTAssertNotNil(frozen)
+        XCTAssertNotNil(atFloor)
+        for frequency in [20.0, 100, 1_000, 10_000] {
+            XCTAssertEqual(frozen!(frequency), atFloor!(frequency), accuracy: 0.001)
+        }
+
+        // Both phon inputs clamp, so a wholly below-floor pair is flat (nil).
+        XCTAssertNil(
+            M1EqualLoudnessCurve.compensationTargetGainDB(
+                referencePhon: -20,
+                currentPhon: -30,
+                strength: 1
+            )
+        )
+    }
 }

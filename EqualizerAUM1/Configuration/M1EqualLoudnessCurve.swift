@@ -10,11 +10,20 @@ import Foundation
 /// so the perceived spectral balance matches the reference listening level while
 /// the overall level change itself is left to the user. The standard defines
 /// contours only on its 20 Hz…12.5 kHz third-octave support; gains outside that
-/// support hold the nearest endpoint value (documented deviation).
+/// support hold the nearest endpoint value (documented deviation). Phon inputs
+/// below `minimumFittedPhon` are clamped to the floor contour so extreme volume
+/// drops keep a frozen curve instead of dropping the node.
 enum M1EqualLoudnessCurve {
     /// Documented calibration assumption: the reference volume corresponds to an
     /// assumed 85 phon listening level; `strength` absorbs individual error.
     static let assumedReferencePhon = 85.0
+
+    /// The analytic fit is only meaningful for positive loudness levels, and a
+    /// volume far below the reference would drive `currentPhon` through zero.
+    /// Compensation inputs are clamped to this floor so an extreme volume drop
+    /// freezes the curve at the floor contour instead of dropping the node
+    /// (ADR-0023); the clamp is continuous at the boundary.
+    static let minimumFittedPhon = 10.0
 
     private struct Row {
         let frequencyHz: Double
@@ -67,24 +76,27 @@ enum M1EqualLoudnessCurve {
     }
 
     /// dB gain for frequency `f` so its perceived balance at `currentPhon`
-    /// matches `referencePhon`, normalized to 0 dB at 1 kHz.
+    /// matches `referencePhon`, normalized to 0 dB at 1 kHz. Both phon inputs
+    /// are clamped to `minimumFittedPhon` (see there).
     static func compensationGainDB(
         frequencyHz: Double,
         referencePhon: Double,
         currentPhon: Double
     ) -> Double? {
+        let reference = max(referencePhon, minimumFittedPhon)
+        let current = max(currentPhon, minimumFittedPhon)
         guard let atReference = soundPressureLevelDB(
             frequencyHz: frequencyHz,
-            phon: referencePhon
+            phon: reference
         ), let atCurrent = soundPressureLevelDB(
             frequencyHz: frequencyHz,
-            phon: currentPhon
+            phon: current
         ), let referenceAtKilohertz = soundPressureLevelDB(
             frequencyHz: 1_000,
-            phon: referencePhon
+            phon: reference
         ), let currentAtKilohertz = soundPressureLevelDB(
             frequencyHz: 1_000,
-            phon: currentPhon
+            phon: current
         ) else { return nil }
         return (atCurrent - atReference) - (currentAtKilohertz - referenceAtKilohertz)
     }
@@ -99,14 +111,16 @@ enum M1EqualLoudnessCurve {
         currentPhon: Double,
         strength: Double
     ) -> ((Double) -> Double)? {
-        guard strength > 0, referencePhon != currentPhon else { return nil }
+        let reference = max(referencePhon, minimumFittedPhon)
+        let current = max(currentPhon, minimumFittedPhon)
+        guard strength > 0, reference != current else { return nil }
         var rowGains: [Double] = []
         rowGains.reserveCapacity(rows.count)
         for row in rows {
             guard let gain = compensationGainDB(
                 frequencyHz: row.frequencyHz,
-                referencePhon: referencePhon,
-                currentPhon: currentPhon
+                referencePhon: reference,
+                currentPhon: current
             ) else { return nil }
             rowGains.append(max(-24, min(24, gain * strength)))
         }
@@ -117,24 +131,32 @@ enum M1EqualLoudnessCurve {
         }
     }
 
-    private static func level(frequencyHz: Double, phon: Double) -> Double? {
+    /// Picks the log-frequency bracket for `frequencyHz`: the lower row index
+    /// and the blend fraction toward the next row, clamped to the table ends
+    /// (fraction 0 means the lower row stands alone).
+    private static func logFrequencyBracket(frequencyHz: Double) -> (lower: Int, fraction: Double) {
         let logarithmic = log2(frequencyHz)
         if logarithmic <= log2(rows[0].frequencyHz) {
-            return rowLevel(rows[0], phon: phon)
+            return (0, 0)
         }
         if logarithmic >= log2(rows[rows.count - 1].frequencyHz) {
-            return rowLevel(rows[rows.count - 1], phon: phon)
+            return (rows.count - 1, 0)
         }
         var lower = 0
         while log2(rows[lower + 1].frequencyHz) < logarithmic {
             lower += 1
         }
-        let upper = lower + 1
-        guard let lowerLevel = rowLevel(rows[lower], phon: phon),
-              let upperLevel = rowLevel(rows[upper], phon: phon) else { return nil }
         let fraction = (logarithmic - log2(rows[lower].frequencyHz))
-            / (log2(rows[upper].frequencyHz) - log2(rows[lower].frequencyHz))
-        return lowerLevel + fraction * (upperLevel - lowerLevel)
+            / (log2(rows[lower + 1].frequencyHz) - log2(rows[lower].frequencyHz))
+        return (lower, fraction)
+    }
+
+    private static func level(frequencyHz: Double, phon: Double) -> Double? {
+        let bracket = logFrequencyBracket(frequencyHz: frequencyHz)
+        guard let lowerLevel = rowLevel(rows[bracket.lower], phon: phon) else { return nil }
+        guard bracket.fraction > 0 else { return lowerLevel }
+        guard let upperLevel = rowLevel(rows[bracket.lower + 1], phon: phon) else { return nil }
+        return lowerLevel + bracket.fraction * (upperLevel - lowerLevel)
     }
 
     private static func rowLevel(_ row: Row, phon: Double) -> Double? {
@@ -147,18 +169,9 @@ enum M1EqualLoudnessCurve {
     }
 
     private static func interpolatedShiftedGain(_ shiftedGains: [Double], frequencyHz: Double) -> Double {
-        let logarithmic = log2(frequencyHz)
-        let first = log2(rows[0].frequencyHz)
-        let last = log2(rows[rows.count - 1].frequencyHz)
-        if logarithmic <= first { return shiftedGains[0] }
-        if logarithmic >= last { return shiftedGains[shiftedGains.count - 1] }
-        var lower = 0
-        while log2(rows[lower + 1].frequencyHz) < logarithmic {
-            lower += 1
-        }
-        let upper = lower + 1
-        let fraction = (logarithmic - log2(rows[lower].frequencyHz))
-            / (log2(rows[upper].frequencyHz) - log2(rows[lower].frequencyHz))
-        return shiftedGains[lower] + fraction * (shiftedGains[upper] - shiftedGains[lower])
+        let bracket = logFrequencyBracket(frequencyHz: frequencyHz)
+        guard bracket.fraction > 0 else { return shiftedGains[bracket.lower] }
+        return shiftedGains[bracket.lower]
+            + bracket.fraction * (shiftedGains[bracket.lower + 1] - shiftedGains[bracket.lower])
     }
 }

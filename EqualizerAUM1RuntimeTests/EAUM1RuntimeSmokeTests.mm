@@ -2341,7 +2341,8 @@ static EAUM1Runtime *createRuntimeWithPrepared(
     EAUM1RuntimeDestroy(runtime);
 }
 
-- (void)testDelayPublicationWithDifferentParametersRestartsCold {    const uint64_t liveBefore = EAUM1TestHooks::livePreparedCount();
+- (void)testDelayPublicationWithDifferentParametersRestartsCold {
+    const uint64_t liveBefore = EAUM1TestHooks::livePreparedCount();
     const EAUM1PreparedDelay delay = {.integerDelay = 20, .fraction = 0.0f};
     const EAUM1PreparedStage stage = {
         .kind = EAUM1PreparedStageDelay,
@@ -2384,6 +2385,92 @@ static EAUM1Runtime *createRuntimeWithPrepared(
     );
     EAUM1RuntimeDestroy(runtime);
     XCTAssertEqual(EAUM1TestHooks::livePreparedCount(), liveBefore);
+}
+
+- (void)testDelayPublicationWithFractionOnlyChangeRestartsCold {
+    // Same integerDelay, different fraction: the plan must still mismatch so
+    // the publication cold-restarts instead of reusing the delay history.
+    const uint64_t liveBefore = EAUM1TestHooks::livePreparedCount();
+    const EAUM1PreparedDelay delay = {.integerDelay = 20, .fraction = 0.0f};
+    const EAUM1PreparedStage stage = {
+        .kind = EAUM1PreparedStageDelay,
+        .channelIndex = 0,
+        .b0 = 0.0,
+    };
+    EAUM1PreparedState *prepared = createPreparedV4(1, &stage, 1, &delay, 1);
+    EAUM1Runtime *runtime = createRuntimeWithPrepared(&prepared, 1, 16, 1000.0);
+
+    std::vector<float> first(16, 0.0f);
+    first[0] = 1.0f;
+    EAUM1AudioBuffer buffer = {.samples = first.data(), .channelCount = 1};
+    XCTAssertEqual(EAUM1RuntimeProcess(runtime, &buffer, 1, 16), EAUM1StatusOK);
+
+    const EAUM1PreparedDelay shifted = {.integerDelay = 20, .fraction = 0.25f};
+    EAUM1PreparedState *candidate = createPreparedV4(1, &stage, 1, &shifted, 1);
+    EAUM1PublicationOutcome outcome = {};
+    XCTAssertEqual(
+        EAUM1RuntimePublishPrepared(runtime, &candidate, &outcome),
+        EAUM1StatusOK
+    );
+    XCTAssertNotEqual(outcome.retirementTicket, 0u);
+
+    // Flush the crossfade so the new chain owns the output alone, then prove
+    // the cold start numerically: a fresh impulse produces the interpolated
+    // pair (1 - fraction at d, fraction at d + 1) from a zero history.
+    std::vector<float> flush(16, 0.0f);
+    for (int block = 0; block < 3; ++block) {
+        EAUM1AudioBuffer flushBuffer = {.samples = flush.data(), .channelCount = 1};
+        XCTAssertEqual(EAUM1RuntimeProcess(runtime, &flushBuffer, 1, 16), EAUM1StatusOK);
+        std::fill(flush.begin(), flush.end(), 0.0f);
+    }
+    std::vector<float> impulse(16, 0.0f);
+    impulse[0] = 1.0f;
+    EAUM1AudioBuffer impulseBuffer = {.samples = impulse.data(), .channelCount = 1};
+    XCTAssertEqual(EAUM1RuntimeProcess(runtime, &impulseBuffer, 1, 16), EAUM1StatusOK);
+    for (float sample : impulse) {
+        XCTAssertEqual(sample, 0.0f);
+    }
+    std::vector<float> tail(16, 0.0f);
+    EAUM1AudioBuffer tailBuffer = {.samples = tail.data(), .channelCount = 1};
+    XCTAssertEqual(EAUM1RuntimeProcess(runtime, &tailBuffer, 1, 16), EAUM1StatusOK);
+    XCTAssertEqualWithAccuracy(tail[4], 0.75f, 1e-9f);
+    XCTAssertEqualWithAccuracy(tail[5], 0.25f, 1e-9f);
+    for (uint32_t index = 0; index < 16; ++index) {
+        if (index != 4 && index != 5) {
+            XCTAssertEqual(tail[index], 0.0f);
+        }
+    }
+
+    EAUM1PublicationOutcome reclaimed = {};
+    XCTAssertEqual(
+        EAUM1RuntimePerformMaintenance(runtime, outcome.retirementTicket, &reclaimed),
+        EAUM1StatusOK
+    );
+    EAUM1RuntimeDestroy(runtime);
+    XCTAssertEqual(EAUM1TestHooks::livePreparedCount(), liveBefore);
+}
+
+- (void)testV3RejectsDelayKindStages {
+    // Delay stages exist only in the V4 description; the V3 entry point must
+    // keep rejecting them even though V3/V4 now share the validation loop.
+    const EAUM1PreparedStage stage = {
+        .kind = EAUM1PreparedStageDelay,
+        .channelIndex = 0,
+        .b0 = 0.0,
+    };
+    const EAUM1PreparedDescriptionV3 description = {
+        .channelCount = 1,
+        .stageCount = 1,
+        .stages = &stage,
+        .convolutionCount = 0,
+        .convolutions = nullptr,
+    };
+    EAUM1PreparedState *prepared = nullptr;
+    XCTAssertEqual(
+        EAUM1PreparedStateCreateV3(&description, &prepared),
+        EAUM1StatusInvalidArgument
+    );
+    XCTAssertEqual(prepared, nullptr);
 }
 
 - (void)testV4MixesGainBiquadConvolutionAndDelayAcrossChannels {

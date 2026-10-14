@@ -282,10 +282,11 @@ enum M1DelayUnit: String, CaseIterable, Sendable {
 }
 
 enum M1DelayContract {
-    /// Mirrors `EAUM1_MAX_DELAY_SAMPLES`: the 1000 ms budget at the highest
-    /// supported output rate (192 kHz). Both units share this budget.
+    /// 1000 ms budget; the samples cap bridges `EAUM1_MAX_DELAY_SAMPLES`
+    /// (the same budget at the highest supported rate, 192 kHz) so the model
+    /// and the runtime ABI cannot drift apart.
     static let maximumMilliseconds = 1_000.0
-    static let maximumSamples = 192_000.0
+    static let maximumSamples = Double(EAUM1_MAX_DELAY_SAMPLES)
     static let defaultMilliseconds = 10.0
 }
 
@@ -301,13 +302,13 @@ struct M1DelaySpecification: Hashable, Sendable {
         guard value.isFinite, value > 0 else {
             throw M1ProcessingBuildError.invalidDelayValue(nodeID: nodeID)
         }
+        let limit: Double
         switch unit {
-        case .milliseconds where value > M1DelayContract.maximumMilliseconds:
+        case .milliseconds: limit = M1DelayContract.maximumMilliseconds
+        case .samples: limit = M1DelayContract.maximumSamples
+        }
+        guard value <= limit else {
             throw M1ProcessingBuildError.delayExceedsBudget(nodeID: nodeID)
-        case .samples where value > M1DelayContract.maximumSamples:
-            throw M1ProcessingBuildError.delayExceedsBudget(nodeID: nodeID)
-        case .milliseconds, .samples:
-            break
         }
     }
 
@@ -334,6 +335,36 @@ struct M1DelaySpecification: Hashable, Sendable {
         result.unit = unit
         return result
     }
+
+    /// The same physical delay expressed in `unit`, clamped to that unit's
+    /// domain. When the output rate is unknown the value is kept unchanged
+    /// (no conversion basis); `nil` never leaks from the UI path.
+    func convertingValue(to unit: M1DelayUnit, sampleRate: Double?) -> Self {
+        guard unit != self.unit else { return self }
+        guard let sampleRate, sampleRate.isFinite, sampleRate > 0 else {
+            return withUnit(unit)
+        }
+        let milliseconds: Double
+        switch self.unit {
+        case .milliseconds:
+            milliseconds = value
+        case .samples:
+            milliseconds = value / sampleRate * 1_000.0
+        }
+        let converted: Double
+        switch unit {
+        case .milliseconds:
+            converted = milliseconds
+        case .samples:
+            converted = milliseconds * sampleRate / 1_000.0
+        }
+        let limit: Double
+        switch unit {
+        case .milliseconds: limit = M1DelayContract.maximumMilliseconds
+        case .samples: limit = M1DelayContract.maximumSamples
+        }
+        return Self(value: min(max(converted, 0.01), limit), unit: unit)
+    }
 }
 
 // MARK: - Loudness correction
@@ -346,7 +377,6 @@ enum M1LoudnessContract {
     static let defaultReferenceVolumeDB = -20.0
     static let minimumStrength = 0.0
     static let maximumStrength = 1.0
-    static let strengthStep = 0.05
     static let defaultStrength = 1.0
 }
 

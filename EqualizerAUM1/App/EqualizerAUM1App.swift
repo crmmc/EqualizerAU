@@ -752,7 +752,7 @@ private struct M1EditorView: View {
             return 72 + 8 + 64
         case .loudness:
             // Reference field 64 + "dB" + strength field 64 + "%".
-            return 64 + 8 + 20 + 8 + 8 + 64 + 8 + 16
+            return 64 + 8 + 20 + 8 + 64 + 8 + 16
         }
     }
 
@@ -1402,9 +1402,17 @@ private struct M1EditorView: View {
 
     private func delayBypassSummary(_ nodeID: UUID) -> String? {
         guard let bypass = delayBypassDiagnostic(nodeID) else { return nil }
-        let reason = bypass.reason == .exceedsBudget
-            ? String(localized: "delay exceeds the 1000 ms budget", locale: locale)
-            : String(localized: "invalid output sample rate", locale: locale)
+        let reason: String
+        switch bypass.reason {
+        case .exceedsBudget:
+            // The budget numbers in these literals must stay in sync with
+            // M1DelayContract.maximumMilliseconds / maximumSamples.
+            reason = bypass.unit == .samples
+                ? String(localized: "delay exceeds the 192000 samples budget", locale: locale)
+                : String(localized: "delay exceeds the 1000 ms budget", locale: locale)
+        case .invalidSampleRate:
+            reason = String(localized: "invalid output sample rate", locale: locale)
+        }
         return String(localized: "Delay bypassed · \(reason)", locale: locale)
     }
 
@@ -1430,7 +1438,8 @@ private struct M1EditorView: View {
 
     @ViewBuilder
     private func filterEditor(_ node: M1ProcessingNode) -> some View {
-        if let specification = node.filterSpecification {            HStack(spacing: 8) {
+        if let specification = node.filterSpecification {
+            HStack(spacing: 8) {
                 if let summary = filterBypassSummary(node.id) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.caption)
@@ -1527,7 +1536,11 @@ private struct M1EditorView: View {
                     ForEach(M1DelayUnit.allCases, id: \.self) { unit in
                         Button(delayUnitLabel(unit)) {
                             model.setDelaySpecification(
-                                specification.withUnit(unit),
+                                specification.convertingValue(
+                                    to: unit,
+                                    sampleRate: model.snapshot.outputLayout?.sampleRate
+                                        ?? model.snapshot.availableOutputLayout?.sampleRate
+                                ),
                                 id: node.id
                             )
                         }

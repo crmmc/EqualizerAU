@@ -171,7 +171,8 @@ EAUM1Status EAUM1PreparedStateCreateV3(
 /*
  * Delay stage b0 is an exact zero-based delay descriptor index; b1, b2, a1
  * and a2 must be zero. Descriptors are copied. integerDelay must be at most
- * EAUM1_MAX_DELAY_SAMPLES and fraction must lie in [0, 1).
+ * EAUM1_MAX_DELAY_SAMPLES and fraction must lie in [0, 1); a descriptor with
+ * integerDelay 0 and fraction 0 (no delay at all) is rejected.
  */
 EAUM1Status EAUM1PreparedStateCreateV4(
     const EAUM1PreparedDescriptionV4 *description,

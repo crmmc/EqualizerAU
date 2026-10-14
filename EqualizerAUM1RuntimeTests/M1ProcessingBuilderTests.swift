@@ -1109,6 +1109,51 @@ final class M1ProcessingBuilderTests: XCTestCase {
         XCTAssertEqual(fraction, 0.5, accuracy: 1e-6)
     }
 
+    func testSubnormalDelayValueBypassesInsteadOfFailingPrepare() throws {
+        // A hand-edited config can carry a value whose sample total underflows
+        // Float fraction to (0, 0); the ABI rejects that descriptor, so the
+        // builder bypasses the node instead of failing the whole prepare.
+        let compiled = try M1ProcessingBuilder.build(
+            nodes: [.delay(specification: .init(value: 1e-50, unit: .milliseconds))],
+            layout: stereoLayout()
+        )
+        for channelStages in compiled.stagesByChannel {
+            XCTAssertTrue(channelStages.isEmpty)
+        }
+        XCTAssertTrue(compiled.diagnostics.delayBypasses.isEmpty)
+    }
+
+    func testDelayUnitConversionPreservesPhysicalDelay() {
+        let base = M1DelaySpecification(value: 10, unit: .milliseconds)
+        let samples = base.convertingValue(to: .samples, sampleRate: 48_000)
+        XCTAssertEqual(samples.unit, .samples)
+        XCTAssertEqual(samples.value, 480, accuracy: 0.001)
+        let roundTrip = samples.convertingValue(to: .milliseconds, sampleRate: 48_000)
+        XCTAssertEqual(roundTrip.value, 10, accuracy: 0.001)
+
+        // Unknown rate keeps the numeric value; same unit is a no-op.
+        let unknownRate = base.convertingValue(to: .samples, sampleRate: nil)
+        XCTAssertEqual(unknownRate.value, 10)
+        XCTAssertEqual(unknownRate.unit, .samples)
+        XCTAssertEqual(base.convertingValue(to: .milliseconds, sampleRate: nil).value, 10)
+
+        // Conversion clamps into the target unit's budget.
+        let clamped = M1DelaySpecification(value: 1_000, unit: .milliseconds)
+            .convertingValue(to: .samples, sampleRate: 384_000)
+        XCTAssertEqual(clamped.value, M1DelayContract.maximumSamples, accuracy: 0.001)
+    }
+
+    func testDelaySamplesAtInvalidRateReturnsNilDefensively() {
+        // Production layouts always carry a finite positive rate, so this is a
+        // defensive path; pin that it reports nil rather than crashing.
+        XCTAssertNil(
+            M1DelaySpecification(value: 10, unit: .milliseconds).samples(atSampleRate: 0)
+        )
+        XCTAssertNil(
+            M1DelaySpecification(value: 10, unit: .milliseconds).samples(atSampleRate: .nan)
+        )
+    }
+
     func testOverBudgetDelayThrowsAndExtremeRateBypassesWithDiagnostic() throws {
         // Unit-domain overruns are structural failures rejected by validation.
         XCTAssertThrowsError(
@@ -1246,6 +1291,47 @@ final class M1ProcessingBuilderTests: XCTestCase {
                 .loudness(specification: .init(referenceVolumeDB: -20, strength: 1.5))
             ])
         )
+    }
+
+    func testLoudnessAtExtremeLowVolumeStillCompilesStages() throws {
+        // Default reference -20 dB plus an approximate-conversion floor of
+        // -120 dB drives the phon level below the fit floor; the clamp keeps
+        // the node compiling instead of dropping out (ADR-0023).
+        let compiled = try M1ProcessingBuilder.build(
+            nodes: [.loudness()],
+            layout: stereoLayout(),
+            loudnessVolumeDB: -120
+        )
+        for channelStages in compiled.stagesByChannel {
+            XCTAssertEqual(channelStages.count, 1)
+        }
+    }
+
+    func testLoudnessStagesShareTheConvolutionStageBudget() throws {
+        // Loudness FIRs consume the same EAUM1_MAX_CONVOLUTION_STAGES budget
+        // as GraphicEQ and convolution IRs; the overflow error names the
+        // shared budget.
+        let fiveNodes = (0..<5).map { _ in M1ProcessingNode.loudness() }
+        XCTAssertThrowsError(
+            try M1ProcessingBuilder.build(
+                nodes: fiveNodes,
+                layout: stereoLayout(),
+                loudnessVolumeDB: -30
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? M1ProcessingBuildError,
+                .convolutionStageCapacityExceeded
+            )
+        }
+
+        let fourNodes = (0..<4).map { _ in M1ProcessingNode.loudness() }
+        let exact = try M1ProcessingBuilder.build(
+            nodes: fourNodes,
+            layout: stereoLayout(),
+            loudnessVolumeDB: -30
+        )
+        XCTAssertEqual(exact.stagesByChannel[0].count, 4)
     }
 
     private func monoLayout(sampleRate: Double = 48_000) -> M1OutputLayoutSnapshot {
