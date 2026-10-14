@@ -219,9 +219,9 @@ final class M1EditingSessionTests: XCTestCase {
     }
 
     func testClipboardRejectsUnsupportedSchemaMalformedAndOversizedData() {
-        let unsupported = Data("{\"nodes\":[],\"schemaVersion\":9}\n".utf8)
+        let unsupported = Data("{\"nodes\":[],\"schemaVersion\":10}\n".utf8)
         XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(unsupported)) {
-            XCTAssertEqual($0 as? M1EditingSessionError, .unsupportedClipboardSchema(9))
+            XCTAssertEqual($0 as? M1EditingSessionError, .unsupportedClipboardSchema(10))
         }
         XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(Data("nope".utf8)))
         XCTAssertThrowsError(try M1NodeEnvelopeCodec.decode(Data(
@@ -423,7 +423,7 @@ final class M1EditingSessionTests: XCTestCase {
                 M1ConvolutionIRStore.legacyReference(storageID: legacyStorageID)
             )
             let canonical = String(decoding: migrated.data, as: UTF8.self)
-            XCTAssertTrue(canonical.contains("\"schemaVersion\" : 8"))
+            XCTAssertTrue(canonical.contains("\"schemaVersion\" : 9"))
             XCTAssertFalse(canonical.contains("\"storageID\""))
         }
         let decodedV6 = try M1NodeEnvelopeCodec.decode(v6)
@@ -437,7 +437,7 @@ final class M1EditingSessionTests: XCTestCase {
             ]
         )
         XCTAssertTrue(String(decoding: decodedV6.data, as: UTF8.self)
-            .contains("\"schemaVersion\" : 8"))
+            .contains("\"schemaVersion\" : 9"))
     }
 
     func testConvolutionClipboardRoundTripAndCopyPreserveImmutableIRWithNewNodeIdentity() throws {

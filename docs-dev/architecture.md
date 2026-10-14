@@ -13,13 +13,17 @@ bundle ID 为 `com.ruimingchen.EqualizerAU`。M1 正常构建产物位于 config
 
 `EqualizerAUM1Runtime` 提供正式 C ABI v3、有限值 Gain/Biquad/Convolution chain、10 ms 双槽切换、Prepared
 发布和退休回收；`EqualizerAUM1` 独立拥有原生 Tap、Aggregate、捕获、输出和代次生命周期。
-配置层使用有序的 typed processing-node 快照以及版本化规范 JSON。schema v8 当前包含
-非 DSP 的 Channels 作用域节点，以及 Preamp、任意频率控制点 Graphic EQ 和 Convolution 效果节点：
-启用的 Channels 选择后续效果的目标声道，直到下一个启用的 Channels 节点覆盖；停用的 Channels
+配置层使用有序的 typed processing-node 快照以及版本化规范 JSON。schema v9 当前包含
+非 DSP 的 Channels 作用域节点，以及 Preamp、任意频率控制点 Graphic EQ、Convolution 和经典
+滤波器效果节点：启用的 Channels 选择后续效果的目标声道，直到下一个启用的 Channels 节点覆盖；停用的 Channels
 不改变作用域，所有节点的 `isEnabled` 均由 typed 字段持久化，效果节点不重复保存声道字段。
+经典滤波器节点（ADR-0021）承载 peaking/low-pass/high-pass/band-pass/low-shelf/high-shelf/
+notch/all-pass 八类参数滤波，显式持久化类型、中心频率、增益、Q/带宽/搁架斜率与搁架频点含义，
+创建时即落盘参考默认值（低/高/带通 Q 0.707、搁架 10.8 dB/oct 转角、陷波 Q 30）；
+参数域为 Fc 1...20 000 Hz、增益 ±24 dB。
 schema v1 读取时按有效作用域
 变化确定性插入 Channels 节点，保留原 Preamp UUID/顺序，并以确定性加盐避开任何已有 UUID；
-下一次 Save 写出 v8；schema v2/v3/v4/v5/v6/v7 也会在读取后规范化为 v8，其中旧版 Channels 缺省迁移为
+下一次 Save 写出 v9；schema v2/v3/v4/v5/v6/v7/v8 也会在读取后规范化为 v9，其中旧版 Channels 缺省迁移为
 启用，schema v3-v5 的固定 15 段 Graphic EQ 在按旧契约严格验证后逐点迁移；schema v6 的
 20...30 kHz 点原样保留；schema v4-v7 的 Convolution `storageID` 确定性映射为现有历史
 sidecar 的绝对路径，迁移不读取或删除文件。编码结果按键排序、可读格式、
@@ -54,6 +58,15 @@ Graphic EQ 保存 `0...512` 个按频率严格升序的正有限频率控制点�
 20...40 Hz 和 18...20 kHz 的边界过渡仍由双曲线公开显示。编辑器只暴露任意点
 模型，使用只读 target/compiled 曲线、独立 Select 列、有边框 Frequency/Gain 表格与
 Import/Export/Invert/Normalize/Reset 工具；所有表格编辑在弹窗关闭时一次提交。
+
+经典滤波器节点（ADR-0021）由控制线程的 `M1BiquadFilterDesign` 按输出采样率生成 RBJ 系数：
+公式与默认值逐条对照本地 EqualizerAPO 参考实现，搁架转角频点按参考的 DCX2496 兼容因子换算为
+中心频点后进入公式。系数归一化后先做与 Runtime `isStableBiquad` 相同的有限性与稳定性预校验；
+有效频率 ≥ Nyquist 或预校验拒绝时该节点不生成 stage 并产生节点归属的旁路诊断（isEnabled 不变，
+下一次生效重试）。启用的滤波器节点按当前 Channels 作用域逐通道生成一个 `.biquad` 编译阶段，
+零处理延迟，经既有 ABI `EAUM1PreparedStageBiquad` 路径发布并受双槽切换保护；0 dB peaking 照常
+编译。⌘V 文本回退按行解析 `GraphicEQ:` 与 `Filter:` 命令并保持行序建节点，非法/域外行丢弃但
+在可见报告中计数，`Filter:` 行上限 512；私有节点 JSON 剪贴板始终优先。
 
 Runtime ABI v3 的 Convolution stage 引用 Prepared 中的 planar taps。Graphic EQ FIR 与 WAV IR
 共同使用该 stage；每个 kernel 前 256 taps 逐样本 Float64 direct FIR，余下 tail 按
@@ -167,7 +180,7 @@ flowchart LR
     J[扬声器或耳机]
 
     A --> B --> C --> D --> E --> F --> G --> H --> I --> J
-    F -. M10 fully-bypassed 目标<br/>当前未实现 .-> I
+    F -. M10 fully-bypassed<br/>ADR-0018 已实现 .-> I
 ```
 
 启动构建期间，实际路线 Tap 先以 `.unmuted` 创建；捕获 IOProc 注册后，在同一 Tap 上完成权限
@@ -436,6 +449,8 @@ flowchart LR
 | `EqualizerAUIntegrationTests/` | 不启动音频的真实 HAL 测试 |
 | `EqualizerAUM1Runtime/` | M1 独立实时库与正式 C ABI |
 | `EqualizerAUM1/Audio/` | M1 独立原生音频宿主、路线与生命周期 |
+| `EqualizerAUM1/App/` | M1 SwiftUI 宿主、应用模型与系统适配器 |
+| `EqualizerAUM1/Control/` | M1 编辑会话与产品控制器 |
 | `EqualizerAUM1/Configuration/` | M1 typed 配置、Builder、规范 JSON 与可恢复持久化 |
 | `EqualizerAUM1RuntimeTests/` | 不加载应用宿主的 M1 Runtime、配置和故障注入测试 |
-| `docs/` | 需求、架构、ADR 和里程碑 |
+| `docs-dev/` | 需求、架构、ADR 和里程碑 |

@@ -94,13 +94,16 @@ approved_dynamic_text = {
     "language.titleKey", "statusText", "label", 'details.joined(separator: " · "',
     "nodeTitle(node.kind", "nodeSubtitle(node", "ir.sourcePath",
     "channelSummary(node.channels", "validationMessage",
+    "filterTypeTitle(specification.type", "filterWidthUnit(specification.width",
+    "titleKey",
 }
 dynamic_text = set(re.findall(r'\bText\((?!")([^\n]+?)\)', app_source))
 if dynamic_text != approved_dynamic_text:
     raise SystemExit(f"dynamic Text review set changed: {sorted(dynamic_text)}")
 approved_dynamic_help = {
-    "nodeToggleLabel(node", "graphicEQDiagnosticSummary(node.id", "ir.sourcePath",
+    "nodeToggleLabel(node", "ir.sourcePath",
     "nodeSubtitle(node", "selectedPointIDs.contains(point.id", "help",
+    "summary",
 }
 dynamic_help = set(re.findall(r'\.help\((?!")([^\n]+?)\)', app_source))
 if dynamic_help != approved_dynamic_help:

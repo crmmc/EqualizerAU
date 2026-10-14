@@ -565,7 +565,7 @@ struct EqualizerAUM1App: App {
                 }
         }
         .windowResizability(.contentMinSize)
-        .defaultSize(width: 760, height: 520)
+        .defaultSize(width: 1180, height: 520)
         .environment(\.locale, applicationLanguage.locale)
         .commandsRemoved()
         .commands {
@@ -700,6 +700,74 @@ private struct M1EditorView: View {
     @State private var dropDestination: Int?
     @State private var editingGraphicEQNodeID: UUID?
 
+    private static let nodeRowHeight: CGFloat = 58
+
+    // Width floor that keeps the toolbar readable when the chain is empty.
+    private static let minimumToolbarWidth: CGFloat = 400
+
+    // Mirrors nodeRow: drag 26 + index 32 + power 26 + icon 20 + delete 24 + six 8 pt
+    // gaps, plus horizontal list row insets. The title column adds nodeTitleColumnWidth
+    // on top. Keep in sync with nodeRow and the per-kind editors when layout changes.
+    private static let rowChromeWidth: CGFloat = 192
+
+    // Widest localized node title, so the title column hugs its content instead of a
+    // hardcoded width. Keep the kind list in sync with nodeTitle.
+    private var nodeTitleColumnWidth: CGFloat {
+        let font = NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .medium)
+        let widest = [M1ProcessingNodeKind.channels, .preamp, .graphicEQ, .convolution, .filter]
+            .map { nodeTitle($0) }
+            .map { ($0 as NSString).size(withAttributes: [.font: font]).width }
+            .max() ?? 104
+        return ceil(widest) + 2
+    }
+
+    private var minimumContentWidth: CGFloat {
+        let widestRow = model.snapshot.draft.nodes.map(minimumRowWidth).max() ?? 0
+        return max(Self.minimumToolbarWidth, widestRow)
+    }
+
+    private func minimumRowWidth(_ node: M1ProcessingNode) -> CGFloat {
+        Self.rowChromeWidth + nodeTitleColumnWidth + minimumControlsWidth(node)
+    }
+
+    private func minimumControlsWidth(_ node: M1ProcessingNode) -> CGFloat {
+        switch node.kind {
+        case .channels:
+            // Truncatable channel summary floor + "Change…" menu.
+            return 40 + 8 + 88
+        case .preamp:
+            // Knob 32 + gain field 64 + "dB" label.
+            return 32 + 8 + 64 + 8 + 20
+        case .graphicEQ:
+            let warning: CGFloat = graphicEQDiagnosticSummary(node.id) != nil ? 20 + 8 : 0
+            // Mini curve floor + edit button 24.
+            return warning + 96 + 8 + 24
+        case .convolution:
+            // Truncatable source path column (minWidth 120) + replace button 24.
+            return 120 + 8 + 24
+        case .filter:
+            return minimumFilterControlsWidth(node)
+        }
+    }
+
+    private func minimumFilterControlsWidth(_ node: M1ProcessingNode) -> CGFloat {
+        guard let specification = node.filterSpecification else { return 0 }
+        // Type menu (72 label + menu chrome) + frequency field 72 + "Hz" label.
+        var width: CGFloat = 106 + 8 + 72 + 8 + 20
+        if specification.type.supportsGain {
+            width += 8 + 64 + 8 + 20
+        }
+        // Width menu (56 label + menu chrome) + width field 64.
+        width += 8 + 90 + 8 + 64
+        if specification.type.isShelf {
+            width += 8 + 150
+        }
+        if filterBypassDiagnostic(node.id) != nil {
+            width += 20 + 8
+        }
+        return width
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             toolbar
@@ -708,7 +776,7 @@ private struct M1EditorView: View {
             Divider()
             status
         }
-        .frame(minWidth: 620, minHeight: 420)
+        .frame(minWidth: minimumContentWidth, minHeight: 420)
     }
 
     private var toolbar: some View {
@@ -731,6 +799,7 @@ private struct M1EditorView: View {
                 Button("Channels") { model.addChannels(before: nil) }
                 Button("Preamp") { model.add(before: nil) }
                 Button("Graphic EQ") { model.addGraphicEQ(before: nil) }
+                Button("Filter") { model.addFilter(before: nil) }
                 Button("Convolution…") { model.importConvolution(before: nil) }
             } label: {
                 Label("Add", systemImage: "plus")
@@ -754,9 +823,11 @@ private struct M1EditorView: View {
             if let layout = model.snapshot.outputLayout {
                 Text("\(layout.channels.count) ch  \(Int(layout.sampleRate)) Hz")
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             } else {
                 Text("No active output")
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
         .padding(12)
@@ -785,7 +856,7 @@ private struct M1EditorView: View {
                                 delegate: M1NodeDropDelegate(
                                     model: model,
                                     rowIndex: index,
-                                    rowHeight: 58,
+                                    rowHeight: Self.nodeRowHeight,
                                     endDestination: model.snapshot.draft.nodes.count,
                                     dropDestination: $dropDestination
                                 )
@@ -827,7 +898,7 @@ private struct M1EditorView: View {
     private func clearSelectionHeight(in listHeight: CGFloat) -> CGFloat {
         max(
             32,
-            listHeight - CGFloat(model.snapshot.draft.nodes.count) * 58
+            listHeight - CGFloat(model.snapshot.draft.nodes.count) * Self.nodeRowHeight
         )
     }
 
@@ -976,6 +1047,12 @@ private struct M1EditorView: View {
                 locale: locale
             ))
         }
+        if !diagnostics.filterBypasses.isEmpty {
+            details.append(String(
+                localized: "Filter bypassed: \(diagnostics.filterBypasses.count)",
+                locale: locale
+            ))
+        }
         return details
     }
 
@@ -1009,13 +1086,14 @@ private struct M1EditorView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(nodeTitle(node.kind))
                     .fontWeight(.medium)
+                    .lineLimit(1)
                 Text(nodeSubtitle(node))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .help(nodeSubtitle(node))
             }
-            .frame(minWidth: 104, idealWidth: 120, alignment: .leading)
+            .frame(width: nodeTitleColumnWidth, alignment: .leading)
             .allowsHitTesting(false)
 
             nodeControls(node)
@@ -1028,7 +1106,7 @@ private struct M1EditorView: View {
             .buttonStyle(.plain)
             .help("Delete \(nodeTitle(node.kind))")
         }
-        .frame(minHeight: 58)
+        .frame(minHeight: Self.nodeRowHeight)
         .background {
             Color.clear
                 .contentShape(Rectangle())
@@ -1061,6 +1139,8 @@ private struct M1EditorView: View {
             graphicEQSummaryControl(node)
         case .convolution:
             convolutionEditor(node)
+        case .filter:
+            filterEditor(node)
         }
     }
 
@@ -1077,7 +1157,7 @@ private struct M1EditorView: View {
         case .channels:
             return scopeDiagnosticSummary(node.id)
                 ?? String(localized: "Scope for following processors", locale: locale)
-        case .preamp, .graphicEQ, .convolution:
+        case .preamp, .graphicEQ, .convolution, .filter:
             let channels = channelSummary(effectiveSelections[node.id] ?? .all)
             return String(localized: "\(channels) channels", locale: locale)
         }
@@ -1133,23 +1213,24 @@ private struct M1EditorView: View {
         M1ProcessingScopeResolver.effectiveSelections(nodes: model.snapshot.draft.nodes)
     }
 
+    private func gestureMarker(for nodeID: UUID) -> (Bool) -> Void {
+        { editing in
+            if editing { model.beginGesture(nodeID) }
+            else { model.endGesture(nodeID) }
+        }
+    }
+
     private func preampEditor(_ node: M1ProcessingNode) -> some View {
         HStack(spacing: 8) {
             M1GainKnob(
                 gainDB: node.gainDB,
                 onChange: { model.setGain($0, id: node.id) },
-                onEditingChanged: {
-                    if $0 { model.beginGesture(node.id) }
-                    else { model.endGesture(node.id) }
-                }
+                onEditingChanged: gestureMarker(for: node.id)
             )
             M1GainTextField(
                 gainDB: node.gainDB,
                 onChange: { model.setGain($0, id: node.id) },
-                onEditingChanged: {
-                    if $0 { model.beginGesture(node.id) }
-                    else { model.endGesture(node.id) }
-                }
+                onEditingChanged: gestureMarker(for: node.id)
             )
             .textFieldStyle(.roundedBorder)
             .monospacedDigit()
@@ -1160,11 +1241,11 @@ private struct M1EditorView: View {
 
     private func graphicEQSummaryControl(_ node: M1ProcessingNode) -> some View {
         HStack(spacing: 8) {
-            if graphicEQDiagnosticSummary(node.id) != nil {
+            if let summary = graphicEQDiagnosticSummary(node.id) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.orange)
-                    .help(graphicEQDiagnosticSummary(node.id) ?? "")
+                    .help(summary)
             }
             M1GraphicEQMiniCurve(points: node.graphicEQPoints)
                 .frame(maxWidth: .infinity, minHeight: 30, maxHeight: 30)
@@ -1219,6 +1300,7 @@ private struct M1EditorView: View {
                     Text("Bypassed · \(convolutionBypassText(bypass.reason))")
                         .font(.caption)
                         .foregroundStyle(.orange)
+                        .lineLimit(1)
                 } else if let source {
                     let duration = Double(source.sourceFrameCount) / source.sourceSampleRate
                     if source.hasPerformanceWarning {
@@ -1236,9 +1318,10 @@ private struct M1EditorView: View {
                     Text("Not loaded · Save or Start to apply")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .trailing)
+            .frame(minWidth: 120, maxWidth: 420, alignment: .trailing)
             Button { model.replaceConvolutionIR(id: node.id) } label: {
                 Image(systemName: "folder")
                     .frame(width: 24, height: 28)
@@ -1295,6 +1378,237 @@ private struct M1EditorView: View {
         }
     }
 
+    private func filterBypassDiagnostic(_ nodeID: UUID) -> M1FilterBypassDiagnostic? {
+        let diagnostics = model.snapshot.expectedDiagnostics ?? model.snapshot.activeDiagnostics
+        return diagnostics?.filterBypasses.first { $0.nodeID == nodeID }
+    }
+
+    private func filterBypassSummary(_ nodeID: UUID) -> String? {
+        guard let bypass = filterBypassDiagnostic(nodeID) else { return nil }
+        return String(
+            localized: "Filter bypassed · \(filterBypassText(bypass.reason))",
+            locale: locale
+        )
+    }
+
+    private func filterBypassText(_ reason: M1FilterBypassReason) -> String {
+        switch reason {
+        case .frequencyAtOrAboveNyquist:
+            return String(
+                localized: "frequency at or above Nyquist",
+                locale: locale
+            )
+        case .coefficientsRejected:
+            return String(localized: "coefficients rejected", locale: locale)
+        }
+    }
+
+    @ViewBuilder
+    private func filterEditor(_ node: M1ProcessingNode) -> some View {
+        if let specification = node.filterSpecification {
+            HStack(spacing: 8) {
+                if let summary = filterBypassSummary(node.id) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .help(summary)
+                }
+                Menu {
+                    ForEach(M1FilterType.allCases, id: \.self) { type in
+                        Button(filterTypeTitle(type)) {
+                            model.setFilterSpecification(
+                                specification.withType(type),
+                                id: node.id
+                            )
+                        }
+                    }
+                } label: {
+                    Text(filterTypeTitle(specification.type))
+                        .frame(minWidth: 72)
+                }
+                .fixedSize()
+
+                M1FilterParameterTextField(
+                    titleKey: "Center frequency",
+                    value: specification.frequencyHz,
+                    minimum: M1FilterContract.minimumFrequencyHz,
+                    maximum: M1FilterContract.maximumFrequencyHz,
+                    onChange: { frequency in
+                        model.setFilterSpecification(
+                            specification.withFrequencyHz(frequency),
+                            id: node.id
+                        )
+                    },
+                    onEditingChanged: gestureMarker(for: node.id)
+                )
+                .textFieldStyle(.roundedBorder)
+                .monospacedDigit()
+                .frame(width: 72)
+                Text("Hz").foregroundStyle(.secondary)
+
+                if specification.type.supportsGain {
+                    M1FilterParameterTextField(
+                        titleKey: "Gain",
+                        value: specification.gainDB,
+                        minimum: M1FilterContract.minimumGainDB,
+                        maximum: M1FilterContract.maximumGainDB,
+                        onChange: { gain in
+                            model.setFilterSpecification(
+                                specification.withGainDB(gain),
+                                id: node.id
+                            )
+                        },
+                        onEditingChanged: gestureMarker(for: node.id)
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .monospacedDigit()
+                    .frame(width: 64)
+                    Text("dB").foregroundStyle(.secondary)
+                }
+
+                filterWidthEditor(node, specification: specification)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func filterWidthEditor(
+        _ node: M1ProcessingNode,
+        specification: M1FilterSpecification
+    ) -> some View {
+        Menu {
+            Button("Q") {
+                model.setFilterSpecification(
+                    specification.withWidth(
+                        .q(specification.widthValue ?? M1FilterContract.defaultQ)
+                    ),
+                    id: node.id
+                )
+            }
+            if specification.type.isShelf {
+                Button("Slope dB/oct") {
+                    model.setFilterSpecification(
+                        specification.withWidth(
+                            .slopeDBPerOctave(
+                                specification.widthValue
+                                    ?? M1FilterContract.defaultShelfSlopeDBPerOctave
+                            )
+                        ),
+                        id: node.id
+                    )
+                }
+            } else {
+                Button("Bandwidth oct") {
+                    model.setFilterSpecification(
+                        specification.withWidth(
+                            .bandwidthOctaves(
+                                specification.widthValue
+                                    ?? M1FilterContract.maximumBandwidthOctaves / 12
+                            )
+                        ),
+                        id: node.id
+                    )
+                }
+            }
+        } label: {
+            Text(filterWidthUnit(specification.width))
+                .frame(minWidth: 56)
+        }
+        .fixedSize()
+
+        M1FilterParameterTextField(
+            titleKey: "Width",
+            value: specification.widthValue ?? M1FilterContract.defaultQ,
+            minimum: filterWidthMinimum(specification.width),
+            maximum: filterWidthMaximum(specification.width),
+            onChange: { value in
+                model.setFilterSpecification(
+                    specification.withWidthValue(value),
+                    id: node.id
+                )
+            },
+            onEditingChanged: gestureMarker(for: node.id)
+        )
+        .textFieldStyle(.roundedBorder)
+        .monospacedDigit()
+        .frame(width: 64)
+
+        if specification.type.isShelf {
+            Picker(
+                "Shelf frequency meaning",
+                selection: Binding(
+                    get: { specification.cornerFrequency },
+                    set: { corner in
+                        model.setFilterSpecification(
+                            specification.withCornerFrequency(corner),
+                            id: node.id
+                        )
+                    }
+                )
+            ) {
+                Text("Corner").tag(true)
+                Text("Center").tag(false)
+            }
+            .pickerStyle(.segmented)
+            .fixedSize()
+            .help("Shelf frequency meaning")
+        }
+    }
+
+    private func filterTypeTitle(_ type: M1FilterType) -> String {
+        switch type {
+        case .peaking:
+            return String(localized: "Peaking", locale: locale)
+        case .lowPass:
+            return String(localized: "Low-pass", locale: locale)
+        case .highPass:
+            return String(localized: "High-pass", locale: locale)
+        case .bandPass:
+            return String(localized: "Band-pass", locale: locale)
+        case .lowShelf:
+            return String(localized: "Low shelf", locale: locale)
+        case .highShelf:
+            return String(localized: "High shelf", locale: locale)
+        case .notch:
+            return String(localized: "Notch", locale: locale)
+        case .allPass:
+            return String(localized: "All-pass", locale: locale)
+        }
+    }
+
+    private func filterWidthUnit(_ width: M1FilterWidth) -> String {
+        switch width {
+        case .q:
+            return "Q"
+        case .bandwidthOctaves:
+            return String(localized: "oct", locale: locale)
+        case .slopeDBPerOctave:
+            return String(localized: "dB/oct", locale: locale)
+        }
+    }
+
+    private func filterWidthMinimum(_ width: M1FilterWidth) -> Double {
+        switch width {
+        case .q:
+            return M1FilterContract.minimumQ
+        case .bandwidthOctaves:
+            return M1FilterContract.minimumBandwidthOctaves
+        case .slopeDBPerOctave:
+            return 0.1
+        }
+    }
+
+    private func filterWidthMaximum(_ width: M1FilterWidth) -> Double {
+        switch width {
+        case .q:
+            return M1FilterContract.maximumQ
+        case .bandwidthOctaves:
+            return M1FilterContract.maximumBandwidthOctaves
+        case .slopeDBPerOctave:
+            return M1FilterContract.maximumSlopeDBPerOctave
+        }
+    }
+
     private func channelEditor(_ node: M1ProcessingNode) -> some View {
         let available = availableChannelIdentifiers
         let unavailable = selectedIdentifiers(node.channels).filter { !available.contains($0) }
@@ -1309,39 +1623,13 @@ private struct M1EditorView: View {
                         .foregroundStyle(.secondary)
                 }
                 ForEach(available, id: \.self) { identifier in
-                    Toggle(
-                        channelDisplayName(identifier),
-                        isOn: Binding(
-                            get: { selectedIdentifiers(node.channels).contains(identifier) },
-                            set: { selected in
-                                model.setChannels(
-                                    updatedChannels(node.channels, identifier: identifier, selected: selected),
-                                    id: node.id
-                                )
-                            }
-                        )
-                    )
+                    channelToggle(identifier: identifier, node: node)
                 }
                 if !unavailable.isEmpty {
                     Divider()
                     Section("Unavailable in Current Output") {
                         ForEach(unavailable, id: \.self) { identifier in
-                            Toggle(
-                                channelDisplayName(identifier),
-                                isOn: Binding(
-                                    get: { selectedIdentifiers(node.channels).contains(identifier) },
-                                    set: { selected in
-                                        model.setChannels(
-                                            updatedChannels(
-                                                node.channels,
-                                                identifier: identifier,
-                                                selected: selected
-                                            ),
-                                            id: node.id
-                                        )
-                                    }
-                                )
-                            )
+                            channelToggle(identifier: identifier, node: node)
                         }
                     }
                 }
@@ -1350,6 +1638,24 @@ private struct M1EditorView: View {
             }
             .fixedSize()
         }
+    }
+
+    private func channelToggle(
+        identifier: M1ChannelIdentifier,
+        node: M1ProcessingNode
+    ) -> some View {
+        Toggle(
+            channelDisplayName(identifier),
+            isOn: Binding(
+                get: { selectedIdentifiers(node.channels).contains(identifier) },
+                set: { selected in
+                    model.setChannels(
+                        updatedChannels(node.channels, identifier: identifier, selected: selected),
+                        id: node.id
+                    )
+                }
+            )
+        )
     }
 
     private func rowBackground(for id: UUID) -> some View {
@@ -1394,6 +1700,7 @@ private struct M1EditorView: View {
         case .preamp: return "dial.medium"
         case .graphicEQ: return "slider.vertical.3"
         case .convolution: return "waveform.path"
+        case .filter: return "tuningfork"
         }
     }
 
@@ -1403,15 +1710,8 @@ private struct M1EditorView: View {
         case .preamp: return String(localized: "Preamp", locale: locale)
         case .graphicEQ: return String(localized: "Graphic EQ", locale: locale)
         case .convolution: return String(localized: "Convolution", locale: locale)
+        case .filter: return String(localized: "Filter", locale: locale)
         }
-    }
-
-    private func formatFrequency(_ frequencyHz: Double) -> String {
-        if frequencyHz >= 1_000 {
-            let kilohertz = frequencyHz / 1_000
-            return "\(kilohertz.formatted(.number.precision(.fractionLength(kilohertz == kilohertz.rounded() ? 0 : 1)))) kHz"
-        }
-        return "\(frequencyHz.formatted(.number.precision(.fractionLength(frequencyHz == frequencyHz.rounded() ? 0 : 1)))) Hz"
     }
 
     private func selectedIdentifiers(_ selection: M1ChannelSelection) -> [M1ChannelIdentifier] {
@@ -1438,6 +1738,66 @@ private struct M1EditorView: View {
     }
 }
 
+private struct M1FilterParameterTextField: View {
+    let titleKey: String
+    let value: Double
+    let minimum: Double
+    let maximum: Double
+    let onChange: (Double) -> Void
+    let onEditingChanged: (Bool) -> Void
+
+    @State private var text = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        TextField(
+            titleKey,
+            text: $text,
+            prompt: Text("Fillable range: \(formatted(minimum))–\(formatted(maximum))")
+        )
+            .focused($isFocused)
+            .accessibilityLabel(Text(titleKey))
+            .help("Fillable range: \(formatted(minimum))–\(formatted(maximum))")
+            .onAppear { text = formatted(value) }
+            .onChange(of: value) { _, newValue in
+                if !isFocused { text = formatted(newValue) }
+            }
+            .onChange(of: text) { _, newValue in
+                guard isFocused, let parsed = parsed(newValue) else { return }
+                onChange(min(max(parsed, minimum), maximum))
+            }
+            .onChange(of: isFocused) { wasFocused, focused in
+                if focused {
+                    text = formatted(value)
+                    onEditingChanged(true)
+                } else if wasFocused {
+                    normalizeText()
+                    onEditingChanged(false)
+                }
+            }
+            .onSubmit { isFocused = false }
+    }
+
+    private func normalizeText() {
+        let value = parsed(text).map { min(max($0, minimum), maximum) } ?? value
+        onChange(value)
+        text = formatted(value)
+    }
+
+    private func parsed(_ value: String) -> Double? {
+        let decimalSeparator = Locale.current.decimalSeparator ?? "."
+        return Double(
+            value
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: decimalSeparator, with: ".")
+        )
+    }
+
+    private func formatted(_ value: Double) -> String {
+        value.formatted(.number.grouping(.never).precision(.fractionLength(0...2)))
+    }
+}
+
 private struct M1GainTextField: View {
     let gainDB: Double
     let onChange: (Double) -> Void
@@ -1449,6 +1809,7 @@ private struct M1GainTextField: View {
     var body: some View {
         TextField("Gain", text: $text)
             .focused($isFocused)
+            .help("Fillable range: -100–100")
             .onAppear { text = formatted(gainDB) }
             .onChange(of: gainDB) { _, value in
                 if !isFocused { text = formatted(value) }
@@ -1502,6 +1863,33 @@ private enum M1GraphicEQPlot {
         let position = (M1GraphicEQContract.maximumGainDB - gainDB) / range
         return height * CGFloat(min(max(position, 0), 1))
     }
+
+    static func frequency(at fraction: Double) -> Double {
+        exp(
+            log(M1GraphicEQContract.minimumFrequencyHz)
+                + (log(M1GraphicEQContract.maximumFrequencyHz)
+                    - log(M1GraphicEQContract.minimumFrequencyHz)) * fraction
+        )
+    }
+
+    static func curvePath(points: [M1GraphicEQPoint], sampleCount: Int, in size: CGSize) -> Path {
+        let processingPoints = M1ProcessingBuilder.graphicEQProcessingPoints(points)
+        var path = Path()
+        for index in 0...sampleCount {
+            let frequencyHz = frequency(at: Double(index) / Double(sampleCount))
+            let gainDB = M1ProcessingBuilder.graphicEQGainDB(
+                frequencyHz: frequencyHz,
+                points: processingPoints
+            )
+            let position = CGPoint(
+                x: x(for: frequencyHz, width: size.width),
+                y: y(for: gainDB, height: size.height)
+            )
+            if index == 0 { path.move(to: position) }
+            else { path.addLine(to: position) }
+        }
+        return path
+    }
 }
 
 private struct M1GraphicEQMiniCurve: View {
@@ -1509,26 +1897,7 @@ private struct M1GraphicEQMiniCurve: View {
 
     var body: some View {
         Canvas { context, size in
-            let processingPoints = M1ProcessingBuilder.graphicEQProcessingPoints(points)
-            var path = Path()
-            for index in 0...64 {
-                let fraction = Double(index) / 64
-                let frequency = exp(
-                    log(M1GraphicEQContract.minimumFrequencyHz)
-                        + (log(M1GraphicEQContract.maximumFrequencyHz)
-                            - log(M1GraphicEQContract.minimumFrequencyHz)) * fraction
-                )
-                let gain = M1ProcessingBuilder.graphicEQGainDB(
-                    frequencyHz: frequency,
-                    points: processingPoints
-                )
-                let position = CGPoint(
-                    x: M1GraphicEQPlot.x(for: frequency, width: size.width),
-                    y: M1GraphicEQPlot.y(for: gain, height: size.height)
-                )
-                if index == 0 { path.move(to: position) }
-                else { path.addLine(to: position) }
-            }
+            let path = M1GraphicEQPlot.curvePath(points: points, sampleCount: 64, in: size)
             context.stroke(path, with: .color(.accentColor), lineWidth: 2)
         }
     }
@@ -1831,26 +2200,7 @@ private struct M1GraphicEQEditor: View {
     }
 
     private func drawTargetCurve(context: inout GraphicsContext, size: CGSize) {
-        var path = Path()
-        let processingPoints = M1ProcessingBuilder.graphicEQProcessingPoints(modelPoints)
-        for index in 0...256 {
-            let fraction = Double(index) / 256
-            let frequency = exp(
-                log(M1GraphicEQContract.minimumFrequencyHz)
-                    + (log(M1GraphicEQContract.maximumFrequencyHz)
-                        - log(M1GraphicEQContract.minimumFrequencyHz)) * fraction
-            )
-            let gain = M1ProcessingBuilder.graphicEQGainDB(
-                frequencyHz: frequency,
-                points: processingPoints
-            )
-            let position = CGPoint(
-                x: M1GraphicEQPlot.x(for: frequency, width: size.width),
-                y: M1GraphicEQPlot.y(for: gain, height: size.height)
-            )
-            if index == 0 { path.move(to: position) }
-            else { path.addLine(to: position) }
-        }
+        let path = M1GraphicEQPlot.curvePath(points: modelPoints, sampleCount: 256, in: size)
         context.stroke(path, with: .color(.accentColor), lineWidth: 2)
     }
 

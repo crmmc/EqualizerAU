@@ -38,6 +38,10 @@ extension M1PresentationMessage {
             "Configuration repair failed"
         case let .pastedGraphicEQPointLimitExceeded(count, maximum):
             "The pasted GraphicEQ line has \(count) points, above the \(maximum)-point limit; nothing was inserted."
+        case let .pastedFilterLineLimitExceeded(count, maximum):
+            "The pasted text has \(count) Filter lines, above the \(maximum)-line limit; nothing was inserted."
+        case let .pastedTextPartialImport(report):
+            "Pasted text imported \(report.graphicEQLineCount + report.filterLineCount) node(s); ignored \(report.ignoredLineCount) line(s) and \(report.ignoredParameterCount) parameter(s)."
         case .terminationCancelled:
             "Termination cancelled"
         case let .technical(reason):
@@ -71,6 +75,16 @@ extension M1PresentationMessage {
         case let .pastedGraphicEQPointLimitExceeded(count, maximum):
             String(
                 localized: "The pasted GraphicEQ line has \(count) points, above the \(maximum)-point limit; nothing was inserted.",
+                locale: locale
+            )
+        case let .pastedFilterLineLimitExceeded(count, maximum):
+            String(
+                localized: "The pasted text has \(count) Filter lines, above the \(maximum)-line limit; nothing was inserted.",
+                locale: locale
+            )
+        case let .pastedTextPartialImport(report):
+            String(
+                localized: "Pasted text imported \(report.graphicEQLineCount + report.filterLineCount) node(s); ignored \(report.ignoredLineCount) line(s) and \(report.ignoredParameterCount) parameter(s).",
                 locale: locale
             )
         case .terminationCancelled:
@@ -208,14 +222,18 @@ final class M1AppModel: ObservableObject {
         performEdit { try await self.controller.addGraphicEQ(before: id) }
     }
 
+    func addFilter(before id: UUID?) {
+        performEdit { try await self.controller.addFilter(before: id) }
+    }
+
     func importConvolution(before id: UUID?) {
-        guard let url = selectWAV() else { return }
+        guard let url = wavPicker() else { return }
         let ir = M1ConvolutionIRStore.reference(sourceURL: url)
         performEdit { try await self.controller.addConvolution(before: id, ir: ir) }
     }
 
     func replaceConvolutionIR(id: UUID) {
-        guard let url = selectWAV() else { return }
+        guard let url = wavPicker() else { return }
         let ir = M1ConvolutionIRStore.reference(sourceURL: url)
         performEdit { try await self.controller.setConvolutionIR(id: id, ir: ir) }
     }
@@ -242,6 +260,15 @@ final class M1AppModel: ObservableObject {
         }
     }
 
+    func setFilterSpecification(_ specification: M1FilterSpecification, id: UUID) {
+        performEdit {
+            try await self.controller.setFilterSpecification(
+                id: id,
+                specification: specification
+            )
+        }
+    }
+
     func setChannels(_ channels: M1ChannelSelection, id: UUID) {
         performEdit { try await self.controller.setChannels(id: id, channels: channels) }
     }
@@ -263,11 +290,13 @@ final class M1AppModel: ObservableObject {
         performEdit { await self.controller.selectAllNodes() }
     }
     func moveFocus(by offset: Int, extending: Bool) {
-        let selector = extending
-            ? (offset < 0
-                ? #selector(NSText.moveUpAndModifySelection(_:))
-                : #selector(NSText.moveDownAndModifySelection(_:)))
-            : (offset < 0 ? #selector(NSText.moveUp(_:)) : #selector(NSText.moveDown(_:)))
+        let selector: Selector
+        switch (extending, offset < 0) {
+        case (true, true): selector = #selector(NSText.moveUpAndModifySelection(_:))
+        case (true, false): selector = #selector(NSText.moveDownAndModifySelection(_:))
+        case (false, true): selector = #selector(NSText.moveUp(_:))
+        case (false, false): selector = #selector(NSText.moveDown(_:))
+        }
         if routeTextCommand(selector) { return }
         performEdit { await self.controller.moveSelectionFocus(by: offset, extending: extending) }
     }
@@ -378,11 +407,6 @@ final class M1AppModel: ObservableObject {
             try await self.controller.setProcessingEnabled(enabled)
         }
     }
-
-    private func selectWAV() -> URL? {
-        wavPicker()
-    }
-
 
     func presentDiagnostics() {
         guard !terminationPending else { return }

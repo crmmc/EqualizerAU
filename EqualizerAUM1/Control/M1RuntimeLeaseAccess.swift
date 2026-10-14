@@ -176,9 +176,7 @@ actor M1RuntimeLeaseAccess: M1RetirementMaintenanceAccess {
         configurationGeneration: UInt64,
         bridgeGeneration: UInt64
     ) throws -> M1RuntimePreparedPublication {
-        guard let retained = lease, retained.bridgeGeneration == bridgeGeneration else {
-            throw M1AudioIOError.generationMismatch
-        }
+        let retained = try retainedLease(bridgeGeneration: bridgeGeneration)
         var prepared: OpaquePointer? = try M1RuntimePreparedStateFactory.create(
             stagesByChannel: stagesByChannel
         )
@@ -209,9 +207,7 @@ actor M1RuntimeLeaseAccess: M1RetirementMaintenanceAccess {
     }
 
     func canReplaceWhileBypassed(bridgeGeneration: UInt64) throws -> Bool {
-        guard let retained = lease, retained.bridgeGeneration == bridgeGeneration else {
-            throw M1AudioIOError.generationMismatch
-        }
+        let retained = try retainedLease(bridgeGeneration: bridgeGeneration)
         let status = EAUM1RuntimeCanReplacePreparedWhileBypassed(retained.pointer)
         if status == EAUM1StatusNotReady { return false }
         guard status == EAUM1StatusOK else {
@@ -225,9 +221,7 @@ actor M1RuntimeLeaseAccess: M1RetirementMaintenanceAccess {
         configurationGeneration: UInt64?,
         bridgeGeneration: UInt64
     ) throws -> Bool {
-        guard let retained = lease, retained.bridgeGeneration == bridgeGeneration else {
-            throw M1AudioIOError.generationMismatch
-        }
+        let retained = try retainedLease(bridgeGeneration: bridgeGeneration)
         var prepared: OpaquePointer? = try M1RuntimePreparedStateFactory.create(
             stagesByChannel: stagesByChannel
         )
@@ -255,9 +249,7 @@ actor M1RuntimeLeaseAccess: M1RetirementMaintenanceAccess {
         bridgeGeneration: UInt64,
         activationToken: M1EffectsActivationToken
     ) throws {
-        guard let retained = lease, retained.bridgeGeneration == bridgeGeneration else {
-            throw M1AudioIOError.generationMismatch
-        }
+        let retained = try retainedLease(bridgeGeneration: bridgeGeneration)
         guard let status = activationToken.performIfCurrent({
             EAUM1RuntimeSetEffectsEnabled(retained.pointer, 1)
         }) else {
@@ -269,9 +261,7 @@ actor M1RuntimeLeaseAccess: M1RetirementMaintenanceAccess {
     }
 
     func setEffectsEnabled(_ enabled: Bool, bridgeGeneration: UInt64) throws {
-        guard let retained = lease, retained.bridgeGeneration == bridgeGeneration else {
-            throw M1AudioIOError.generationMismatch
-        }
+        let retained = try retainedLease(bridgeGeneration: bridgeGeneration)
         let status = EAUM1RuntimeSetEffectsEnabled(retained.pointer, enabled ? 1 : 0)
         guard status == EAUM1StatusOK else {
             throw M1AudioIOError.invalidState("effects update failed: \(status)")
@@ -279,9 +269,7 @@ actor M1RuntimeLeaseAccess: M1RetirementMaintenanceAccess {
     }
 
     func effectsState(bridgeGeneration: UInt64) throws -> M1RuntimeEffectsState {
-        guard let retained = lease, retained.bridgeGeneration == bridgeGeneration else {
-            throw M1AudioIOError.generationMismatch
-        }
+        let retained = try retainedLease(bridgeGeneration: bridgeGeneration)
         var state: EAUM1EffectsState = 0
         let status = EAUM1RuntimeCopyEffectsState(retained.pointer, &state)
         guard status == EAUM1StatusOK else {
@@ -307,9 +295,7 @@ actor M1RuntimeLeaseAccess: M1RetirementMaintenanceAccess {
     }
 
     func diagnostics(bridgeGeneration: UInt64) throws -> M1RuntimeCounters {
-        guard let retained = lease, retained.bridgeGeneration == bridgeGeneration else {
-            throw M1AudioIOError.generationMismatch
-        }
+        let retained = try retainedLease(bridgeGeneration: bridgeGeneration)
         var runtime = EAUM1RuntimeDiagnostics()
         var concurrency = EAUM1ConcurrencyDiagnostics()
         let runtimeStatus = EAUM1RuntimeCopyDiagnostics(retained.pointer, &runtime)
@@ -359,5 +345,15 @@ actor M1RuntimeLeaseAccess: M1RetirementMaintenanceAccess {
     ) async {
         guard lease?.bridgeGeneration == bridgeGeneration else { return }
         await stopHandler(reason, bridgeGeneration)
+    }
+
+    /// Serialized lease retention with the bridge generation check; every
+    /// throwing entry point must go through here before dereferencing the
+    /// handle.
+    private func retainedLease(bridgeGeneration: UInt64) throws -> M1RuntimeHandleLease {
+        guard let retained = lease, retained.bridgeGeneration == bridgeGeneration else {
+            throw M1AudioIOError.generationMismatch
+        }
+        return retained
     }
 }

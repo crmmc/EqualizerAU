@@ -1,7 +1,7 @@
 import Foundation
 
 struct M1ConfigurationSnapshot: Equatable, Sendable {
-    static let schemaVersion = 8
+    static let schemaVersion = 9
 
     var effectsEnabled: Bool
     var nodes: [M1ProcessingNode]
@@ -89,8 +89,6 @@ enum M1ConfigurationCodec {
         let version: M1ConfigurationVersionWire
         do {
             version = try JSONDecoder().decode(M1ConfigurationVersionWire.self, from: data)
-        } catch let error as M1ConfigurationCodecError {
-            throw error
         } catch {
             throw M1ConfigurationCodecError.invalidJSON
         }
@@ -101,29 +99,19 @@ enum M1ConfigurationCodec {
             let wire = try JSONDecoder().decode(M1ConfigurationV1Wire.self, from: data)
             snapshot = try wire.snapshot()
         case 2:
-            try M1JSONShapeValidator.validateConfiguration(data, schemaVersion: 2)
-            let wire = try JSONDecoder().decode(M1ConfigurationWire.self, from: data)
-            snapshot = try wire.snapshot(expectedSchemaVersion: 2)
+            snapshot = try decodeCurrentWire(data, schemaVersion: 2)
         case 3:
-            try M1JSONShapeValidator.validateConfiguration(data, schemaVersion: 3)
-            let wire = try JSONDecoder().decode(M1ConfigurationWire.self, from: data)
-            snapshot = try wire.snapshot(expectedSchemaVersion: 3)
+            snapshot = try decodeCurrentWire(data, schemaVersion: 3)
         case 4:
-            try M1JSONShapeValidator.validateConfiguration(data, schemaVersion: 4)
-            let wire = try JSONDecoder().decode(M1ConfigurationWire.self, from: data)
-            snapshot = try wire.snapshot(expectedSchemaVersion: 4)
+            snapshot = try decodeCurrentWire(data, schemaVersion: 4)
         case 5:
-            try M1JSONShapeValidator.validateConfiguration(data, schemaVersion: 5)
-            let wire = try JSONDecoder().decode(M1ConfigurationWire.self, from: data)
-            snapshot = try wire.snapshot(expectedSchemaVersion: 5)
+            snapshot = try decodeCurrentWire(data, schemaVersion: 5)
         case 6:
-            try M1JSONShapeValidator.validateConfiguration(data, schemaVersion: 6)
-            let wire = try JSONDecoder().decode(M1ConfigurationWire.self, from: data)
-            snapshot = try wire.snapshot(expectedSchemaVersion: 6)
+            snapshot = try decodeCurrentWire(data, schemaVersion: 6)
         case 7:
-            try M1JSONShapeValidator.validateConfiguration(data, schemaVersion: 7)
-            let wire = try JSONDecoder().decode(M1ConfigurationWire.self, from: data)
-            snapshot = try wire.snapshot(expectedSchemaVersion: 7)
+            snapshot = try decodeCurrentWire(data, schemaVersion: 7)
+        case 8:
+            snapshot = try decodeCurrentWire(data, schemaVersion: 8)
         case M1ConfigurationSnapshot.schemaVersion:
             try M1JSONShapeValidator.validateConfiguration(
                 data,
@@ -135,6 +123,15 @@ enum M1ConfigurationCodec {
             throw M1ConfigurationCodecError.unsupportedSchema(version.schemaVersion)
         }
         return try encode(snapshot)
+    }
+
+    private static func decodeCurrentWire(
+        _ data: Data,
+        schemaVersion: Int
+    ) throws -> M1ConfigurationSnapshot {
+        try M1JSONShapeValidator.validateConfiguration(data, schemaVersion: schemaVersion)
+        let wire = try JSONDecoder().decode(M1ConfigurationWire.self, from: data)
+        return try wire.snapshot(expectedSchemaVersion: schemaVersion)
     }
 }
 
@@ -220,6 +217,18 @@ enum M1JSONShapeValidator {
                         throw M1ConfigurationCodecError.invalidJSON
                     }
                 case M1ProcessingNodeKind.convolution.rawValue:
+                    throw M1ConfigurationCodecError.invalidJSON
+                case M1ProcessingNodeKind.filter.rawValue where schemaVersion >= 9:
+                    allowedKeys = ["id", "type", "isEnabled", "filter"]
+                    guard let filterNode = node["filter"] as? [String: Any],
+                          Set(filterNode.keys)
+                              == ["type", "frequencyHz", "gainDB", "width", "cornerFrequency"],
+                          let width = filterNode["width"] as? [String: Any],
+                          Set(width.keys) == ["kind", "value"]
+                    else {
+                        throw M1ConfigurationCodecError.invalidJSON
+                    }
+                case M1ProcessingNodeKind.filter.rawValue:
                     throw M1ConfigurationCodecError.invalidJSON
                 default:
                     continue
@@ -392,10 +401,11 @@ struct M1ProcessingNodeWire: Codable {
     let type: String
     let isEnabled: Bool?
     let gainDB: Double?
-    let channels: M1ChannelSelectionWire?
-    let points: [M1GraphicEQPointWire]?
-    let bands: [M1GraphicEQPointWire]?
-    let ir: M1ConvolutionIRReferenceWire?
+    fileprivate let channels: M1ChannelSelectionWire?
+    fileprivate let points: [M1GraphicEQPointWire]?
+    fileprivate let bands: [M1GraphicEQPointWire]?
+    fileprivate let ir: M1ConvolutionIRReferenceWire?
+    fileprivate let filter: M1FilterSpecificationWire?
 
     init(_ node: M1ProcessingNode) {
         id = node.id
@@ -408,6 +418,7 @@ struct M1ProcessingNodeWire: Codable {
             points = nil
             bands = nil
             ir = nil
+            filter = nil
         case .preamp:
             isEnabled = node.isEnabled
             gainDB = node.gainDB
@@ -415,6 +426,7 @@ struct M1ProcessingNodeWire: Codable {
             points = nil
             bands = nil
             ir = nil
+            filter = nil
         case .graphicEQ:
             isEnabled = node.isEnabled
             gainDB = nil
@@ -422,6 +434,7 @@ struct M1ProcessingNodeWire: Codable {
             points = node.graphicEQPoints.map(M1GraphicEQPointWire.init)
             bands = nil
             ir = nil
+            filter = nil
         case .convolution:
             isEnabled = node.isEnabled
             gainDB = nil
@@ -429,13 +442,23 @@ struct M1ProcessingNodeWire: Codable {
             points = nil
             bands = nil
             ir = node.convolutionIR.map(M1ConvolutionIRReferenceWire.init)
+            filter = nil
+        case .filter:
+            isEnabled = node.isEnabled
+            gainDB = nil
+            channels = nil
+            points = nil
+            bands = nil
+            ir = nil
+            filter = node.filterSpecification.map(M1FilterSpecificationWire.init)
         }
     }
 
     func node(schemaVersion: Int) throws -> M1ProcessingNode {
         switch type {
         case M1ProcessingNodeKind.channels.rawValue:
-            guard let channels, gainDB == nil, points == nil, bands == nil, ir == nil else {
+            guard let channels, gainDB == nil, points == nil, bands == nil, ir == nil,
+                  filter == nil else {
                 throw M1ConfigurationCodecError.invalidJSON
             }
             let enabled: Bool
@@ -449,7 +472,7 @@ struct M1ProcessingNodeWire: Codable {
             return .channels(id: id, isEnabled: enabled, selection: try channels.selection())
         case M1ProcessingNodeKind.preamp.rawValue:
             guard let isEnabled, let gainDB, channels == nil, points == nil, bands == nil,
-                  ir == nil else {
+                  ir == nil, filter == nil else {
                 throw M1ConfigurationCodecError.invalidJSON
             }
             return M1ProcessingNode(
@@ -459,7 +482,7 @@ struct M1ProcessingNodeWire: Codable {
                 channels: .all
             )
         case M1ProcessingNodeKind.graphicEQ.rawValue:
-            guard let isEnabled, gainDB == nil, channels == nil, ir == nil else {
+            guard let isEnabled, gainDB == nil, channels == nil, ir == nil, filter == nil else {
                 throw M1ConfigurationCodecError.invalidJSON
             }
             if schemaVersion >= 6 {
@@ -491,7 +514,7 @@ struct M1ProcessingNodeWire: Codable {
             )
         case M1ProcessingNodeKind.convolution.rawValue:
             guard let isEnabled, let ir, gainDB == nil, channels == nil, points == nil,
-                  bands == nil else {
+                  bands == nil, filter == nil else {
                 throw M1ConfigurationCodecError.invalidJSON
             }
             return .convolution(
@@ -499,13 +522,26 @@ struct M1ProcessingNodeWire: Codable {
                 isEnabled: isEnabled,
                 ir: try ir.reference(schemaVersion: schemaVersion)
             )
+        case M1ProcessingNodeKind.filter.rawValue:
+            guard schemaVersion >= 9 else {
+                throw M1ConfigurationCodecError.unknownNodeType(type)
+            }
+            guard let isEnabled, let filter, gainDB == nil, channels == nil, points == nil,
+                  bands == nil, ir == nil else {
+                throw M1ConfigurationCodecError.invalidJSON
+            }
+            return .filter(
+                id: id,
+                isEnabled: isEnabled,
+                specification: try filter.specification()
+            )
         default:
             throw M1ConfigurationCodecError.unknownNodeType(type)
         }
     }
 }
 
-struct M1ConvolutionIRReferenceWire: Codable {
+private struct M1ConvolutionIRReferenceWire: Codable {
     let sourcePath: String?
     let storageID: UUID?
     let originalFileName: String?
@@ -557,7 +593,7 @@ struct M1ConvolutionIRReferenceWire: Codable {
     }
 }
 
-struct M1GraphicEQPointWire: Codable {
+private struct M1GraphicEQPointWire: Codable {
     let frequencyHz: Double
     let gainDB: Double
 
@@ -568,6 +604,73 @@ struct M1GraphicEQPointWire: Codable {
 
     var point: M1GraphicEQPoint {
         M1GraphicEQPoint(frequencyHz: frequencyHz, gainDB: gainDB)
+    }
+}
+
+private struct M1FilterWidthWire: Codable {
+    let kind: String
+    let value: Double
+
+    init(_ width: M1FilterWidth) {
+        switch width {
+        case .q(let value):
+            kind = "q"
+            self.value = value
+        case .bandwidthOctaves(let value):
+            kind = "bandwidthOctaves"
+            self.value = value
+        case .slopeDBPerOctave(let value):
+            kind = "slopeDBPerOctave"
+            self.value = value
+        }
+    }
+
+    func width() throws -> M1FilterWidth {
+        guard value.isFinite else {
+            throw M1ConfigurationCodecError.invalidJSON
+        }
+        switch kind {
+        case "q":
+            return .q(value)
+        case "bandwidthOctaves":
+            return .bandwidthOctaves(value)
+        case "slopeDBPerOctave":
+            return .slopeDBPerOctave(value)
+        default:
+            throw M1ConfigurationCodecError.invalidJSON
+        }
+    }
+}
+
+private struct M1FilterSpecificationWire: Codable {
+    let type: String
+    let frequencyHz: Double
+    let gainDB: Double
+    let width: M1FilterWidthWire
+    let cornerFrequency: Bool
+
+    init(_ specification: M1FilterSpecification) {
+        type = specification.type.rawValue
+        frequencyHz = specification.frequencyHz
+        gainDB = specification.gainDB
+        width = M1FilterWidthWire(specification.width)
+        cornerFrequency = specification.cornerFrequency
+    }
+
+    func specification() throws -> M1FilterSpecification {
+        guard let filterType = M1FilterType(rawValue: type),
+              frequencyHz.isFinite,
+              gainDB.isFinite
+        else {
+            throw M1ConfigurationCodecError.invalidJSON
+        }
+        return M1FilterSpecification(
+            type: filterType,
+            frequencyHz: frequencyHz,
+            gainDB: gainDB,
+            width: try width.width(),
+            cornerFrequency: cornerFrequency
+        )
     }
 }
 
@@ -645,7 +748,7 @@ struct M1PreampNodeWire: Codable {
     let type: String
     let isEnabled: Bool
     let gainDB: Double
-    let channels: M1ChannelSelectionWire
+    fileprivate let channels: M1ChannelSelectionWire
 
     init(_ node: M1PreampNode) {
         id = node.id
@@ -721,21 +824,12 @@ enum M1ConfigurationMigration {
                     )
                 )
             case .preamp:
-                if node.channels != .all, node.channels != currentScope {
-                    currentScope = node.channels
-                    let id = uniqueMigratedChannelsID(
-                        preampID: node.id,
-                        selection: currentScope,
-                        occupiedIDs: occupiedIDs
-                    )
-                    occupiedIDs.insert(id)
-                    result.append(
-                        .channels(
-                            id: id,
-                            selection: currentScope
-                        )
-                    )
-                }
+                appendScopeBarrierIfNeeded(
+                    node: node,
+                    result: &result,
+                    currentScope: &currentScope,
+                    occupiedIDs: &occupiedIDs
+                )
                 result.append(
                     M1ProcessingNode(
                         id: node.id,
@@ -745,16 +839,12 @@ enum M1ConfigurationMigration {
                     )
                 )
             case .graphicEQ:
-                if node.channels != .all, node.channels != currentScope {
-                    currentScope = node.channels
-                    let id = uniqueMigratedChannelsID(
-                        preampID: node.id,
-                        selection: currentScope,
-                        occupiedIDs: occupiedIDs
-                    )
-                    occupiedIDs.insert(id)
-                    result.append(.channels(id: id, selection: currentScope))
-                }
+                appendScopeBarrierIfNeeded(
+                    node: node,
+                    result: &result,
+                    currentScope: &currentScope,
+                    occupiedIDs: &occupiedIDs
+                )
                 result.append(
                     .graphicEQ(
                         id: node.id,
@@ -763,16 +853,12 @@ enum M1ConfigurationMigration {
                     )
                 )
             case .convolution:
-                if node.channels != .all, node.channels != currentScope {
-                    currentScope = node.channels
-                    let id = uniqueMigratedChannelsID(
-                        preampID: node.id,
-                        selection: currentScope,
-                        occupiedIDs: occupiedIDs
-                    )
-                    occupiedIDs.insert(id)
-                    result.append(.channels(id: id, selection: currentScope))
-                }
+                appendScopeBarrierIfNeeded(
+                    node: node,
+                    result: &result,
+                    currentScope: &currentScope,
+                    occupiedIDs: &occupiedIDs
+                )
                 result.append(
                     .convolution(
                         id: node.id,
@@ -780,9 +866,40 @@ enum M1ConfigurationMigration {
                         ir: node.convolutionIR!
                     )
                 )
+            case .filter:
+                appendScopeBarrierIfNeeded(
+                    node: node,
+                    result: &result,
+                    currentScope: &currentScope,
+                    occupiedIDs: &occupiedIDs
+                )
+                result.append(
+                    .filter(
+                        id: node.id,
+                        isEnabled: node.isEnabled,
+                        specification: node.filterSpecification!
+                    )
+                )
             }
         }
         return result
+    }
+
+    private static func appendScopeBarrierIfNeeded(
+        node: M1ProcessingNode,
+        result: inout [M1ProcessingNode],
+        currentScope: inout M1ChannelSelection,
+        occupiedIDs: inout Set<UUID>
+    ) {
+        guard node.channels != .all, node.channels != currentScope else { return }
+        currentScope = node.channels
+        let id = uniqueMigratedChannelsID(
+            preampID: node.id,
+            selection: currentScope,
+            occupiedIDs: occupiedIDs
+        )
+        occupiedIDs.insert(id)
+        result.append(.channels(id: id, selection: currentScope))
     }
 
     private static func uniqueMigratedChannelsID(
@@ -838,7 +955,7 @@ enum M1ConfigurationMigration {
     }
 }
 
-enum M1ChannelSelectionWire: Codable {
+private enum M1ChannelSelectionWire: Codable {
     case all
     case identifiers([String])
 

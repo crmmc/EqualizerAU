@@ -12,9 +12,11 @@ included_sources = %w[
   EqualizerAUM1/Configuration/M1ProcessingModel.swift
   EqualizerAUM1/Configuration/M1ConvolutionIR.swift
   EqualizerAUM1/Configuration/M1ProcessingBuilder.swift
+  EqualizerAUM1/Configuration/M1BiquadFilterDesign.swift
   EqualizerAUM1/Configuration/M1Configuration.swift
   EqualizerAUM1/Configuration/M1ConfigurationStore.swift
   EqualizerAUM1/Control/M1RetirementMaintenanceCoordinator.swift
+  EqualizerAUM1/Control/M1EqualizerAPOTextCodec.swift
   EqualizerAUM1/Audio/M1AudioRouteModel.swift
   EqualizerAUM1/Audio/M1AudioIOController.swift
   EqualizerAUM1/Control/M1RuntimeLeaseAccess.swift

@@ -15,6 +15,11 @@ enum M1ProcessingBuildError: Error, Equatable, Sendable {
     case invalidGraphicEQTaps(nodeID: UUID)
     case invalidConvolutionIRReference(nodeID: UUID)
     case convolutionStageCapacityExceeded
+    case invalidFilterSpecification(nodeID: UUID)
+    case invalidFilterFrequency(nodeID: UUID)
+    case invalidFilterGain(nodeID: UUID)
+    case filterGainNotApplicable(nodeID: UUID)
+    case invalidFilterWidth(nodeID: UUID)
     case stageCapacityExceeded(channel: M1ChannelIdentifier)
     case totalStageCapacityExceeded
 }
@@ -55,6 +60,7 @@ struct M1ProcessingBuildDiagnostics: Equatable, Sendable {
     let graphicEQResolution: [M1GraphicEQResolutionDiagnostic]
     let convolutionSources: [M1ConvolutionSourceDiagnostic]
     let convolutionBypasses: [M1ConvolutionBypassDiagnostic]
+    let filterBypasses: [M1FilterBypassDiagnostic]
 
     init(
         unresolvedChannels: [M1UnresolvedChannelDiagnostic],
@@ -62,7 +68,8 @@ struct M1ProcessingBuildDiagnostics: Equatable, Sendable {
         gainBoundaries: [M1GainBoundaryDiagnostic],
         graphicEQResolution: [M1GraphicEQResolutionDiagnostic] = [],
         convolutionSources: [M1ConvolutionSourceDiagnostic] = [],
-        convolutionBypasses: [M1ConvolutionBypassDiagnostic] = []
+        convolutionBypasses: [M1ConvolutionBypassDiagnostic] = [],
+        filterBypasses: [M1FilterBypassDiagnostic] = []
     ) {
         self.unresolvedChannels = unresolvedChannels
         self.clippingRiskChannels = clippingRiskChannels
@@ -70,6 +77,7 @@ struct M1ProcessingBuildDiagnostics: Equatable, Sendable {
         self.graphicEQResolution = graphicEQResolution
         self.convolutionSources = convolutionSources
         self.convolutionBypasses = convolutionBypasses
+        self.filterBypasses = filterBypasses
     }
 }
 
@@ -95,6 +103,13 @@ struct M1ConvolutionBypassDiagnostic: Equatable, Sendable {
     let reason: M1ConvolutionBypassReason
 }
 
+struct M1FilterBypassDiagnostic: Equatable, Sendable {
+    let nodeID: UUID
+    let frequencyHz: Double
+    let sampleRate: Double
+    let reason: M1FilterBypassReason
+}
+
 struct M1BiquadCoefficients: Equatable, Sendable {
     let b0: Double
     let b1: Double
@@ -117,14 +132,14 @@ struct M1CompiledPreampTargets: Equatable, Sendable {
 }
 
 enum M1ProcessingBuilder {
-    static let maximumStagesPerChannel = 512
-    static let maximumPreparedStageCount = 4_096
+    private static let maximumStagesPerChannel = 512
+    private static let maximumPreparedStageCount = 4_096
     static let maximumConvolutionStages = Int(EAUM1_MAX_CONVOLUTION_STAGES)
-    static let convolutionLatencyFrames = 0
+    private static let convolutionLatencyFrames = 0
     /// 48 kHz reference length; higher sample rates scale via `graphicEQTapCount(forSampleRate:)`.
     static let graphicEQTapCount = 16_384
-    static let graphicEQDesignLength = 32_768
-    static let graphicEQReferenceSampleRate = 48_000.0
+    private static let graphicEQDesignLength = 32_768
+    private static let graphicEQReferenceSampleRate = 48_000.0
     static let graphicEQMaximumResponseErrorDB = 0.75
     static let graphicEQPercentile99ResponseErrorDB = 0.1
 
@@ -176,12 +191,28 @@ enum M1ProcessingBuilder {
         var graphicEQResolutionDiagnostics: [M1GraphicEQResolutionDiagnostic] = []
         var convolutionSources: [M1ConvolutionSourceDiagnostic] = []
         var convolutionBypasses: [M1ConvolutionBypassDiagnostic] = []
+        var filterBypasses: [M1FilterBypassDiagnostic] = []
         var convolutionStageCount = 0
         var latencyByChannel = Array(repeating: 0, count: layout.channels.count)
         var reportedUnresolvedOwners: Set<UUID> = []
 
         var currentScope: M1ChannelSelection = .all
         var currentScopeNodeID: UUID?
+
+        func appendConvolutionStage(nodeID: UUID, taps: [Float], channelIndex: Int) throws {
+            appendPendingGainStage(
+                channelIndex: channelIndex,
+                pending: &pendingPreampGainsByChannel,
+                stages: &stagesByChannel
+            )
+            convolutionStageCount += 1
+            guard convolutionStageCount <= maximumConvolutionStages else {
+                throw M1ProcessingBuildError.convolutionStageCapacityExceeded
+            }
+            stagesByChannel[channelIndex].append(.convolution(nodeID: nodeID, taps: taps))
+            latencyByChannel[channelIndex] += convolutionLatencyFrames
+        }
+
         for node in nodes {
             try Task.checkCancellation()
             if node.kind == .channels {
@@ -263,17 +294,35 @@ enum M1ProcessingBuilder {
                     )
                 }
                 for index in selectedIndexes {
-                    appendPendingGainStage(
-                        channelIndex: index,
-                        pending: &pendingPreampGainsByChannel,
-                        stages: &stagesByChannel
-                    )
-                    convolutionStageCount += 1
-                    guard convolutionStageCount <= maximumConvolutionStages else {
-                        throw M1ProcessingBuildError.convolutionStageCapacityExceeded
+                    try appendConvolutionStage(nodeID: node.id, taps: taps, channelIndex: index)
+                }
+            case .filter:
+                guard !selectedIndexes.isEmpty else { continue }
+                guard let specification = node.filterSpecification else { continue }
+                switch M1BiquadFilterDesign.design(
+                    specification: specification,
+                    sampleRate: layout.sampleRate
+                ) {
+                case .coefficients(let coefficients):
+                    for index in selectedIndexes {
+                        appendPendingGainStage(
+                            channelIndex: index,
+                            pending: &pendingPreampGainsByChannel,
+                            stages: &stagesByChannel
+                        )
+                        stagesByChannel[index].append(
+                            .biquad(nodeID: node.id, bandIndex: 0, coefficients: coefficients)
+                        )
                     }
-                    stagesByChannel[index].append(.convolution(nodeID: node.id, taps: taps))
-                    latencyByChannel[index] += convolutionLatencyFrames
+                case .bypass(let reason):
+                    filterBypasses.append(
+                        M1FilterBypassDiagnostic(
+                            nodeID: node.id,
+                            frequencyHz: specification.frequencyHz,
+                            sampleRate: layout.sampleRate,
+                            reason: reason
+                        )
+                    )
                 }
             case .convolution:
                 guard !selectedIndexes.isEmpty else { continue }
@@ -334,20 +383,10 @@ enum M1ProcessingBuilder {
                     )
                 )
                 for (selectionOffset, index) in selectedIndexes.enumerated() {
-                    appendPendingGainStage(
-                        channelIndex: index,
-                        pending: &pendingPreampGainsByChannel,
-                        stages: &stagesByChannel
-                    )
                     let taps = effectiveChannels.count == 1
                         ? effectiveChannels[0]
                         : effectiveChannels[selectionOffset]
-                    convolutionStageCount += 1
-                    guard convolutionStageCount <= maximumConvolutionStages else {
-                        throw M1ProcessingBuildError.convolutionStageCapacityExceeded
-                    }
-                    stagesByChannel[index].append(.convolution(nodeID: node.id, taps: taps))
-                    latencyByChannel[index] += convolutionLatencyFrames
+                    try appendConvolutionStage(nodeID: node.id, taps: taps, channelIndex: index)
                 }
             }
         }
@@ -379,46 +418,16 @@ enum M1ProcessingBuilder {
                 clippingRiskChannels.append(channel.identifier)
             }
 
-            let target: Float
-            if totalGainDB > maximumFiniteGainDB {
-                target = Float.greatestFiniteMagnitude
+            let gain = floatTarget(totalGainDB: totalGainDB)
+            if let boundary = gain.boundary {
                 gainBoundaryDiagnostics.append(
                     M1GainBoundaryDiagnostic(
                         channel: channel.identifier,
-                        boundary: .maximumFinite
+                        boundary: boundary
                     )
                 )
-            } else if totalGainDB < minimumNormalGainDB {
-                target = 0
-                gainBoundaryDiagnostics.append(
-                    M1GainBoundaryDiagnostic(
-                        channel: channel.identifier,
-                        boundary: .zeroBelowMinimumNormal
-                    )
-                )
-            } else {
-                let converted = Float(pow(10, totalGainDB / 20))
-                if !converted.isFinite {
-                    target = Float.greatestFiniteMagnitude
-                    gainBoundaryDiagnostics.append(
-                        M1GainBoundaryDiagnostic(
-                            channel: channel.identifier,
-                            boundary: .maximumFinite
-                        )
-                    )
-                } else if converted != 0, !converted.isNormal {
-                    target = 0
-                    gainBoundaryDiagnostics.append(
-                        M1GainBoundaryDiagnostic(
-                            channel: channel.identifier,
-                            boundary: .zeroBelowMinimumNormal
-                        )
-                    )
-                } else {
-                    target = converted
-                }
             }
-            targets.append(target)
+            targets.append(gain.target)
         }
 
         return M1CompiledPreampTargets(
@@ -430,7 +439,8 @@ enum M1ProcessingBuilder {
                 gainBoundaries: gainBoundaryDiagnostics,
                 graphicEQResolution: graphicEQResolutionDiagnostics,
                 convolutionSources: convolutionSources,
-                convolutionBypasses: convolutionBypasses
+                convolutionBypasses: convolutionBypasses,
+                filterBypasses: filterBypasses
             ),
             processingLatencyFrames: latencyByChannel.max() ?? 0
         )
@@ -492,6 +502,12 @@ enum M1ProcessingBuilder {
                 else {
                     throw M1ProcessingBuildError.invalidConvolutionIRReference(nodeID: node.id)
                 }
+            }
+            if node.kind == .filter {
+                guard let specification = node.filterSpecification else {
+                    throw M1ProcessingBuildError.invalidFilterSpecification(nodeID: node.id)
+                }
+                try specification.validate(nodeID: node.id)
             }
 
             switch node.channels {
@@ -772,6 +788,7 @@ enum M1ProcessingBuilder {
         sampleRate: Double,
         sampleCount: Int = 257
     ) throws -> M1GraphicEQPreview {
+        let maximumFrequencyHz = min(M1GraphicEQContract.maximumFrequencyHz, sampleRate / 2)
         try validate(nodes: [.graphicEQ(points: points)])
         guard let taps = try compileGraphicEQTaps(
             nodeID: UUID(),
@@ -781,7 +798,7 @@ enum M1ProcessingBuilder {
             let frequencies = logarithmicGraphicEQFrequencies(
                 sampleRate: sampleRate,
                 sampleCount: sampleCount,
-                maximumFrequencyHz: min(M1GraphicEQContract.maximumFrequencyHz, sampleRate / 2)
+                maximumFrequencyHz: maximumFrequencyHz
             )
             return M1GraphicEQPreview(
                 frequenciesHz: frequencies,
@@ -797,7 +814,7 @@ enum M1ProcessingBuilder {
             points: points,
             sampleRate: sampleRate,
             sampleCount: sampleCount,
-            maximumFrequencyHz: min(M1GraphicEQContract.maximumFrequencyHz, sampleRate / 2)
+            maximumFrequencyHz: maximumFrequencyHz
         )
         return M1GraphicEQPreview(
             frequenciesHz: metrics.frequenciesHz,
@@ -935,6 +952,28 @@ enum M1ProcessingBuilder {
         return Array(taps[...lastNonzeroIndex])
     }
 
+    /// Converts a total dB value into a Float linear gain. Branch order is
+    /// load-bearing: the Float32 boundary tests pin exact adjacency via
+    /// nextUp/nextDown, so the ceiling and floor checks must stay in this order.
+    private static func floatTarget(
+        totalGainDB: Double
+    ) -> (target: Float, boundary: M1GainBoundary?) {
+        if totalGainDB > maximumFiniteGainDB {
+            return (Float.greatestFiniteMagnitude, .maximumFinite)
+        }
+        if totalGainDB < minimumNormalGainDB {
+            return (0, .zeroBelowMinimumNormal)
+        }
+        let converted = Float(pow(10, totalGainDB / 20))
+        if !converted.isFinite {
+            return (Float.greatestFiniteMagnitude, .maximumFinite)
+        }
+        if converted != 0, !converted.isNormal {
+            return (0, .zeroBelowMinimumNormal)
+        }
+        return (converted, nil)
+    }
+
     private static func appendPendingGainStage(
         channelIndex: Int,
         pending: inout [[(nodeID: UUID, gainDB: Double)]],
@@ -943,21 +982,7 @@ enum M1ProcessingBuilder {
         guard let first = pending[channelIndex].first else { return }
         let totalGainDB = pending[channelIndex].map { $0.gainDB }.sorted().reduce(0, +)
         pending[channelIndex].removeAll(keepingCapacity: true)
-        let linearGain: Float
-        if totalGainDB > maximumFiniteGainDB {
-            linearGain = Float.greatestFiniteMagnitude
-        } else if totalGainDB < minimumNormalGainDB {
-            linearGain = 0
-        } else {
-            let converted = Float(pow(10, totalGainDB / 20))
-            if !converted.isFinite {
-                linearGain = Float.greatestFiniteMagnitude
-            } else if converted != 0, !converted.isNormal {
-                linearGain = 0
-            } else {
-                linearGain = converted
-            }
-        }
+        let linearGain = floatTarget(totalGainDB: totalGainDB).target
         if linearGain != 1 {
             stages[channelIndex].append(
                 .gain(nodeID: first.nodeID, linearGain: Double(linearGain))

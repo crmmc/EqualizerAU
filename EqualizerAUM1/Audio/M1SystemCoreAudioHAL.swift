@@ -29,6 +29,10 @@ private struct M1HALPropertyAddress {
 }
 
 private struct M1HALPropertyReader {
+    private static func readbackFailureStatus(_ status: OSStatus) -> OSStatus {
+        status == noErr ? kAudio_ParamError : status
+    }
+
     func value<T: BitwiseCopyable>(
         objectID: AudioObjectID,
         address: M1HALPropertyAddress,
@@ -42,7 +46,7 @@ private struct M1HALPropertyReader {
         guard status == noErr, size == MemoryLayout<T>.size else {
             throw M1CoreAudioStatusError(
                 operation: operation,
-                status: status == noErr ? kAudio_ParamError : status
+                status: Self.readbackFailureStatus(status)
             )
         }
         return value
@@ -72,7 +76,7 @@ private struct M1HALPropertyReader {
         guard status == noErr, size == MemoryLayout<T>.size else {
             throw M1CoreAudioStatusError(
                 operation: operation,
-                status: status == noErr ? kAudio_ParamError : status
+                status: Self.readbackFailureStatus(status)
             )
         }
         return value
@@ -90,7 +94,7 @@ private struct M1HALPropertyReader {
         guard status == noErr, allowEmpty || size > 0 else {
             throw M1CoreAudioStatusError(
                 operation: operation,
-                status: status == noErr ? kAudio_ParamError : status
+                status: Self.readbackFailureStatus(status)
             )
         }
         if size == 0 { return Data() }
@@ -102,7 +106,7 @@ private struct M1HALPropertyReader {
         guard status == noErr, size <= result.count else {
             throw M1CoreAudioStatusError(
                 operation: operation,
-                status: status == noErr ? kAudio_ParamError : status
+                status: Self.readbackFailureStatus(status)
             )
         }
         result.count = Int(size)

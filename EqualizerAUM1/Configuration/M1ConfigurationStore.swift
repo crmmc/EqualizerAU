@@ -275,25 +275,32 @@ actor M1ConfigurationStore {
                     reason: .previousRecoveredButMainRebuildFailed
                 )
             case .uncertain:
-                uncertainCommit = previous
-                uncertainGeneration = 0
-                uncertainBootstrapOrigin = .previousRecovery
-                lastAcceptedGeneration = 0
-                return .uncertain(
-                    generation: 0,
-                    snapshot: previous.snapshot,
-                    origin: .previousRecovery
-                )
+                return recordBootstrapUncertainty(previous, origin: .previousRecovery)
             }
         }
 
-        let bothMissing: Bool
         if case .missing = mainResult, case .missing = previousResult {
-            bothMissing = true
+            let initial = M1ConfigurationSnapshot.initial(nodeID: initialNodeID)
+            guard let encoded = try? M1ConfigurationCodec.encode(initial) else {
+                return .recovery(
+                    editable: initial,
+                    runtime: .transparentRecovery,
+                    reason: .initialConfigurationWriteFailed
+                )
+            }
+            switch establish(encoded) {
+            case .succeeded:
+                return .loaded(initial)
+            case .failed:
+                return .recovery(
+                    editable: initial,
+                    runtime: .transparentRecovery,
+                    reason: .initialConfigurationWriteFailed
+                )
+            case .uncertain:
+                return recordBootstrapUncertainty(encoded, origin: .initialConfiguration)
+            }
         } else {
-            bothMissing = false
-        }
-        guard bothMissing else {
             let reason: M1ConfigurationRecoveryReason
             switch (mainResult, previousResult) {
             case (.failed, _):
@@ -309,35 +316,21 @@ actor M1ConfigurationStore {
                 reason: reason
             )
         }
+    }
 
-        let initial = M1ConfigurationSnapshot.initial(nodeID: initialNodeID)
-        guard let encoded = try? M1ConfigurationCodec.encode(initial) else {
-            return .recovery(
-                editable: initial,
-                runtime: .transparentRecovery,
-                reason: .initialConfigurationWriteFailed
-            )
-        }
-        switch establish(encoded) {
-        case .succeeded:
-            return .loaded(initial)
-        case .failed:
-            return .recovery(
-                editable: initial,
-                runtime: .transparentRecovery,
-                reason: .initialConfigurationWriteFailed
-            )
-        case .uncertain:
-            uncertainCommit = encoded
-            uncertainGeneration = 0
-            uncertainBootstrapOrigin = .initialConfiguration
-            lastAcceptedGeneration = 0
-            return .uncertain(
-                generation: 0,
-                snapshot: initial,
-                origin: .initialConfiguration
-            )
-        }
+    private func recordBootstrapUncertainty(
+        _ candidate: M1EncodedConfiguration,
+        origin: M1ConfigurationBootstrapUncertainOrigin
+    ) -> M1ConfigurationBootstrapResult {
+        uncertainCommit = candidate
+        uncertainGeneration = 0
+        uncertainBootstrapOrigin = origin
+        lastAcceptedGeneration = 0
+        return .uncertain(
+            generation: 0,
+            snapshot: candidate.snapshot,
+            origin: origin
+        )
     }
 
     func commit(

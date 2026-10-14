@@ -148,6 +148,12 @@ flowchart LR
   Undo 恢复，包括删除最后一个节点；
 - Paste 在首个选中节点之前插入，无选择时追加到末尾；粘贴节点使用新 UUID，插入后成为
   新选择；Option 拖拽复制采用相同的新身份语义；
+- 系统剪贴板没有应用私有节点数据时，Paste 回退解析剪贴板文本中的 EqualizerAPO `GraphicEQ:`
+  行（命令名大小写不敏感，其余行忽略），插入、选择和焦点语义与私有节点粘贴一致；每个可
+  解析行规范化为一个启用的图形 EQ 节点：增益夹紧到 `±24 dB`，丢弃 `20...20000 Hz` 域外频点，
+  按频率升序排序且同频只保留首个；归一化后无有效频点的行不产生节点，单行有效频点超过
+  `512` 时中止整次粘贴并显示可定位错误。该归一化仅作用于外部文本粘贴，不改变图形 EQ 编辑
+  对已有控制点的保留契约；文本框聚焦时 ⌘V 仍执行系统文本粘贴；
 - 允许删除最后一个节点并保存空处理链；空链保持透明，不自动补默认节点；
 - 顶部 Processing 控件右侧的 Add 菜单追加节点；Paste 可在首个选中节点前插入；新增节点
   不改变当前选择；
@@ -232,7 +238,23 @@ flowchart LR
 - schema 或全局 stage/tap/Prepared 容量错误仍整批拒绝，不得静默丢弃合法节点；
 - 展示该节点引入的处理延迟。
 
-### 7.6 配置管理
+### 7.6 滤波器
+
+- 支持经典参数滤波器八类：峰值、低通、高通、带通、低搁架、高搁架、陷波、全通，
+  参数语义与默认值遵循本地 EqualizerAPO 参考实现（搁架含转角/中心频点两种含义与
+  dB/oct 斜率参数）；
+- 参数域：中心频率 `1...20000 Hz`，增益 `-24...+24 dB`（仅增益类类型），Q、带宽倍频程
+  与搁架斜率取有限正值并有明确上下界；
+- 滤波器节点参与通道作用域、启用/停用、选择/焦点、Undo/Redo、复制粘贴与显式 Save，
+  契约与既有节点一致；
+- 系数按输出采样率在控制线程生成并校验稳定性；有效频率不低于奈奎斯特频率或系数被拒时，
+  该节点不产生处理阶段并显示归属该节点的诊断，不改写其启用状态；
+- 配置持久化滤波器的全部显式参数；schema 升版时旧配置无损加载；
+- 系统剪贴板没有应用私有节点数据时，Paste 回退解析 EqualizerAPO `Filter:` 行（类型别名
+  归一，与 `GraphicEQ:` 行可混排并保持行序）；非法或域外行丢弃但在可见报告中计数，
+  单次粘贴 `Filter:` 行数超过上限时中止整次粘贴并显示可定位错误。
+
+### 7.7 配置管理
 
 - 已保存配置是处理链持久状态的唯一来源，配置草稿不参与重启恢复或实时处理；
 - 未保存草稿只存在于当前应用会话，退出或崩溃后不恢复；
@@ -358,6 +380,7 @@ MVP 完成需满足：
 | M9 菜单栏与中英 i18n | 关闭窗口后 Dock 与菜单栏均驻留并恢复同一主窗口；精简菜单并支持中英切换 |
 | M10 Convolution 长度、computational bypass 与 long-IR 内核 | IR 不设文件时长/taps 配额且不做 SRC；Processing Off 停止 wet DSP；dense long IR 使用已测最优多级卷积 |
 | M11 Graphic EQ FIR 随采样率缩放 | 任意输出采样率下均衡频率分辨率不低于 48 kHz 基准，高采样率用户获得同等精度 |
+| M12 经典滤波器节点 | 用户可创建/编辑 EqualizerAPO 八类经典滤波器并直接粘贴 `Filter:` 参数预设，滤波器按参考语义参与实时处理链 |
 
 M0 已完成，详见 [`milestones/M0-native-route.md`](./milestones/M0-native-route.md)。M8、M9 已完成并关闭，
 验收证据分别见 [`milestones/M8-convolution-source-path.md`](./milestones/M8-convolution-source-path.md) 和
@@ -367,6 +390,8 @@ ADR-0018 computational bypass 和 ADR-0019 Float64 deadline-distributed long-IR 
 [`milestones/M10-convolution-ir-length.md`](./milestones/M10-convolution-ir-length.md)。
 M11 决策 [`ADR-0020`](./adr/0020-sample-rate-scaled-graphic-eq-fir.md) 已接受，实现与验收计划见
 [`milestones/M11-sample-rate-scaled-graphic-eq-fir.md`](./milestones/M11-sample-rate-scaled-graphic-eq-fir.md)。
+M12 决策 [`ADR-0021`](./adr/0021-classic-filter-node.md) 已接受，实现与验收证据见
+[`milestones/M12-classic-filter-node.md`](./milestones/M12-classic-filter-node.md)。
 
 ## 12. 待确认产品事项
 

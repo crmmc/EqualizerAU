@@ -1990,6 +1990,14 @@ static EAUM1Runtime *createRuntimeWithPrepared(
     EAUM1RuntimeDestroy(runtime);
 }
 
+- (void)testProcessRejectsNullRuntimeBeforeTouchingBuffers {
+    float sample = 0.25f;
+    EAUM1AudioBuffer buffer = {.samples = &sample, .channelCount = 1};
+    XCTAssertEqual(EAUM1RuntimeProcess(nullptr, &buffer, 1, 1), EAUM1StatusInvalidArgument);
+    XCTAssertEqual(sample, 0.25f);
+    XCTAssertEqual(EAUM1RuntimeProcess(nullptr, nullptr, 0, 0), EAUM1StatusInvalidArgument);
+}
+
 - (void)testPreparedDescriptionCapacityAndStageValidationBranches {
     EAUM1PreparedState *prepared = nullptr;
     const EAUM1PreparedStage unitGain = {

@@ -438,7 +438,6 @@ actor M1AudioRouteResourceController {
                     token: ownership.token,
                     persistentUID: persistentUID
                 )
-                pendingTapTokens.removeValue(forKey: objectID)
             }
         }
     }
