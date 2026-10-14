@@ -376,6 +376,30 @@ final class M1FilterEditingTests: XCTestCase {
         XCTAssertThrowsError(try M1ConfigurationCodec.decode(Data(v9JSONWithLoudness.utf8)))
     }
 
+    func testDelayAndLoudnessNodesNormalizeThroughSessionConstruction() throws {
+        let session = M1EditingSession(nodes: [
+            .delay(specification: .init(value: 10, unit: .milliseconds)),
+            .loudness(specification: .init(referenceVolumeDB: -20, strength: 1)),
+        ])
+        XCTAssertEqual(session.nodes.map(\.kind), [.delay, .loudness])
+        XCTAssertEqual(session.nodes[0].delaySpecification, .init(value: 10, unit: .milliseconds))
+        XCTAssertEqual(session.nodes[1].loudnessSpecification, .defaultSpecification())
+    }
+
+    func testDelayAndLoudnessSpecificationHelpersAndValidation() throws {
+        let delay = M1DelaySpecification.defaultSpecification()
+        XCTAssertEqual(delay.withValue(25).value, 25)
+        XCTAssertEqual(delay.withUnit(.samples).unit, .samples)
+        XCTAssertEqual(delay.samples(atSampleRate: 48_000)!, 480, accuracy: 0.001)
+        XCTAssertEqual(M1DelaySpecification(value: 100, unit: .samples).samples(atSampleRate: 96_000)!, 100)
+        XCTAssertNil(delay.samples(atSampleRate: 0))
+
+        let loudness = M1LoudnessSpecification.defaultSpecification()
+        XCTAssertEqual(loudness.withReferenceVolumeDB(-40).referenceVolumeDB, -40)
+        XCTAssertEqual(loudness.withStrength(0.25).strength, 0.25)
+        XCTAssertEqual(M1LoudnessContract.defaultReferenceVolumeDB, -20)
+    }
+
     private var testID = UUID()
     private var otherID = UUID()
 }

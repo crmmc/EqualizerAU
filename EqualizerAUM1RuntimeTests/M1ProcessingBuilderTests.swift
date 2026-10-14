@@ -1078,6 +1078,14 @@ final class M1ProcessingBuilderTests: XCTestCase {
             XCTAssertEqual(fraction, 0)
         }
 
+        // Route the compiled delay stages through the V4 native factory so the
+        // delay descriptor assembly is exercised end to end.
+        let prepared = try M1RuntimePreparedStateFactory.create(
+            stagesByChannel: exact.stagesByChannel
+        )
+        XCTAssertNotNil(prepared)
+        EAUM1PreparedStateDestroy(prepared)
+
         let fractional = try M1ProcessingBuilder.build(
             nodes: [.delay(specification: .init(value: 10.01, unit: .milliseconds))],
             layout: stereoLayout()

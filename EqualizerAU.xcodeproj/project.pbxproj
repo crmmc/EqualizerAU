@@ -114,6 +114,8 @@
 		D10000000000000000000051 /* M1EqualLoudnessCurve.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000041 /* M1EqualLoudnessCurve.swift */; };
 		D10000000000000000000052 /* M1EqualLoudnessCurve.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000041 /* M1EqualLoudnessCurve.swift */; };
 		D10000000000000000000053 /* M1EqualLoudnessCurveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000042 /* M1EqualLoudnessCurveTests.swift */; };
+		D10000000000000000000054 /* M1OutputVolumeObserver.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000043 /* M1OutputVolumeObserver.swift */; };
+		D10000000000000000000055 /* M1OutputVolumeObserver.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000043 /* M1OutputVolumeObserver.swift */; };
 		D10000000000000000000044 /* M1EqualizerAPOTextCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000035 /* M1EqualizerAPOTextCodec.swift */; };
 		D10000000000000000000045 /* M1EqualizerAPOTextCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000035 /* M1EqualizerAPOTextCodec.swift */; };
 		D10000000000000000000046 /* M1BiquadFilterDesignTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000036 /* M1BiquadFilterDesignTests.swift */; };
@@ -225,6 +227,7 @@
 		D20000000000000000000034 /* M1BiquadFilterDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1BiquadFilterDesign.swift; sourceTree = "<group>"; };
 		D20000000000000000000041 /* M1EqualLoudnessCurve.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1EqualLoudnessCurve.swift; sourceTree = "<group>"; };
 		D20000000000000000000042 /* M1EqualLoudnessCurveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1EqualLoudnessCurveTests.swift; sourceTree = "<group>"; };
+		D20000000000000000000043 /* M1OutputVolumeObserver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1OutputVolumeObserver.swift; sourceTree = "<group>"; };
 		D20000000000000000000035 /* M1EqualizerAPOTextCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1EqualizerAPOTextCodec.swift; sourceTree = "<group>"; };
 		D20000000000000000000036 /* M1BiquadFilterDesignTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1BiquadFilterDesignTests.swift; sourceTree = "<group>"; };
 		D20000000000000000000037 /* M1EqualizerAPOTextCodecTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1EqualizerAPOTextCodecTests.swift; sourceTree = "<group>"; };
@@ -532,6 +535,7 @@
 				D20000000000000000000026 /* M1ProductController.swift */,
 				D20000000000000000000028 /* M1EditingSession.swift */,
 				D20000000000000000000035 /* M1EqualizerAPOTextCodec.swift */,
+				D20000000000000000000043 /* M1OutputVolumeObserver.swift */,
 			);
 			path = Control;
 			sourceTree = "<group>";
@@ -979,6 +983,7 @@
 				D10000000000000000000042 /* M1BiquadFilterDesign.swift in Sources */,
 				D10000000000000000000044 /* M1EqualizerAPOTextCodec.swift in Sources */,
 				D10000000000000000000051 /* M1EqualLoudnessCurve.swift in Sources */,
+				D10000000000000000000054 /* M1OutputVolumeObserver.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1025,6 +1030,7 @@
 				D10000000000000000000048 /* M1FilterEditingTests.swift in Sources */,
 				D10000000000000000000052 /* M1EqualLoudnessCurve.swift in Sources */,
 				D10000000000000000000053 /* M1EqualLoudnessCurveTests.swift in Sources */,
+				D10000000000000000000055 /* M1OutputVolumeObserver.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

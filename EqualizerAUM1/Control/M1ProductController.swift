@@ -63,6 +63,10 @@ protocol M1ProductAudioControlling: Sendable {
     func outputLayout() async -> M1OutputLayoutSnapshot?
     func discoverOutputLayout() async -> M1OutputLayoutSnapshot?
     func prepare(configuration: M1ConfigurationSnapshot) async throws -> M1AudioConfigurationPreparation
+    func prepare(
+        configuration: M1ConfigurationSnapshot,
+        loudnessVolumeDB: Double?
+    ) async throws -> M1AudioConfigurationPreparation
     func publish(
         preparation: M1AudioConfigurationPreparation,
         configurationGeneration: UInt64
@@ -79,6 +83,13 @@ protocol M1ProductAudioControlling: Sendable {
 }
 
 extension M1ProductAudioControlling {
+    func prepare(
+        configuration: M1ConfigurationSnapshot,
+        loudnessVolumeDB: Double?
+    ) async throws -> M1AudioConfigurationPreparation {
+        try await prepare(configuration: configuration)
+    }
+
     func start(configuration: M1ConfigurationSnapshot, mode: M1AudioRouteStartMode) async throws {
         try await start(configuration: configuration)
     }
@@ -415,14 +426,25 @@ actor M1ProductController {
     private var isSystemSleeping = false
     private var pendingRecoveryReason: M1AudioRecoveryReason?
 
+    /// ADR-0023 environment input: the observed output volume (1 dB steps).
+    private var loudnessVolumeDB: Double?
+    private var loudnessRepublishTask: Task<Void, Never>?
+    private var volumeObserver: M1OutputVolumeObserver?
+    private let observesOutputVolume: Bool
+    private let loudnessDebounceNanoseconds: UInt64
+
     init(
         store: any M1ConfigurationStoring,
         audio: any M1ProductAudioControlling,
-        recoveryTiming: M1AudioRecoveryTiming = .production
+        recoveryTiming: M1AudioRecoveryTiming = .production,
+        observesOutputVolume: Bool = true,
+        loudnessDebounceNanoseconds: UInt64 = 300_000_000
     ) {
         self.store = store
         self.audio = audio
         self.recoveryTiming = recoveryTiming
+        self.observesOutputVolume = observesOutputVolume
+        self.loudnessDebounceNanoseconds = loudnessDebounceNanoseconds
     }
 
     func bootstrap(initialNodeID: UUID = UUID()) async {
@@ -436,6 +458,14 @@ actor M1ProductController {
         defer {
             acceptedOperations -= 1
             bootstrapInProgress = false
+        }
+        if observesOutputVolume, volumeObserver == nil {
+            let observer = M1OutputVolumeObserver { [weak self] reading in
+                guard let self else { return }
+                Task { await self.handleOutputVolumeReading(reading) }
+            }
+            volumeObserver = observer
+            observer.start()
         }
         let result = await store.bootstrap(initialNodeID: initialNodeID)
         switch result {
@@ -800,7 +830,7 @@ actor M1ProductController {
         try requireReadyForPersistence()
         try await withPersistenceSlot {
             let captured = draft
-            let preparation = try await audio.prepare(configuration: captured)
+            let preparation = try await prepareAudio(captured)
             if audioState == .stopped { availableLayout = preparation.layout }
             try Task.checkCancellation()
             try await persist(
@@ -810,6 +840,75 @@ actor M1ProductController {
                 mode: requiresRepair ? .repair : .save
             )
         }
+    }
+
+    /// ADR-0023 environment-driven rebuild: volume events quantize to 1 dB,
+    /// debounce for 300 ms, then rebuild from the *saved* configuration and
+    /// republish through the ordinary publication path. Draft, Undo, the
+    /// configuration generation and persistence state are untouched; when the
+    /// audio route is stopped the reading is only remembered for the next start.
+    func handleOutputVolumeReading(_ reading: M1OutputVolumeReading) async {
+        guard let quantized = M1OutputVolumeMath.quantizedDecibels(reading.decibels) else {
+            return
+        }
+        guard quantized != loudnessVolumeDB else { return }
+        loudnessVolumeDB = quantized
+        guard saved.containsEnabledLoudnessNode else { return }
+        let debounceNanoseconds = loudnessDebounceNanoseconds
+        loudnessRepublishTask?.cancel()
+        loudnessRepublishTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: debounceNanoseconds)
+            guard !Task.isCancelled else { return }
+            await self?.republishForLoudness()
+        }
+    }
+
+    private func republishForLoudness() async {
+        guard bootstrapped,
+              !terminating,
+              !persistenceInFlight,
+              !effectsUpdateInFlight,
+              audioState == .running,
+              saved.containsEnabledLoudnessNode,
+              let volumeDB = loudnessVolumeDB
+        else { return }
+        let snapshot = saved
+        do {
+            let preparation = try await prepareAudio(snapshot)
+            // Re-validate after suspension: a user save, route change or stop
+            // may have raced the rebuild; stale preparations are dropped.
+            guard audioState == .running,
+                  !persistenceInFlight,
+                  saved == snapshot,
+                  let generation = activeConfigurationGeneration
+            else { return }
+            let publication = try await audio.publish(
+                preparation: preparation,
+                configurationGeneration: generation
+            )
+            guard audioState == .running else { return }
+            if let publication {
+                if publication.disposition == .active {
+                    activeDiagnostics = publication.diagnostics
+                } else {
+                    expectedDiagnostics = publication.diagnostics
+                    expectedConfigurationGeneration = generation
+                }
+            }
+        } catch is CancellationError {
+        } catch {
+            // Environment-driven rebuilds never surface as user-facing save
+            // errors; the next volume event retries with fresh state.
+        }
+    }
+
+    private func prepareAudio(
+        _ configuration: M1ConfigurationSnapshot
+    ) async throws -> M1AudioConfigurationPreparation {
+        try await audio.prepare(
+            configuration: configuration,
+            loudnessVolumeDB: loudnessVolumeDB
+        )
     }
 
     func setEffectsEnabled(_ enabled: Bool) async throws {
@@ -1297,7 +1396,7 @@ actor M1ProductController {
             if case .succeeded = result, let application = uncertainApplication {
                 let preparation: M1AudioConfigurationPreparation
                 do {
-                    preparation = try await audio.prepare(configuration: application.snapshot)
+                    preparation = try await prepareAudio(application.snapshot)
                 } catch {
                     uncertainApplication = nil
                     persistence = .savedPendingStart
@@ -1328,7 +1427,7 @@ actor M1ProductController {
             throw M1ProductControllerError.commandUnavailable
         }
         try await withPersistenceSlot {
-            let preparation = try await audio.prepare(configuration: saved)
+            let preparation = try await prepareAudio(saved)
             guard preparation.layout != nil else { return }
             let application = PendingApplication(
                 generation: commitGeneration,
@@ -1620,7 +1719,7 @@ actor M1ProductController {
                     if enabled {
                         processingTransition = .preparing
                         guard await waitForEarlierRuntimeApplication() else { continue }
-                        let preparation = try await audio.prepare(configuration: runtimeBaseline)
+                        let preparation = try await prepareAudio(runtimeBaseline)
                         if pendingEffectsIntent != nil {
                             expectedDiagnostics = nil
                             processingTransition = .idle

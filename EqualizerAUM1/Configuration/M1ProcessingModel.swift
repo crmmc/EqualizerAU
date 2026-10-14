@@ -569,6 +569,14 @@ struct M1ProcessingNode: Identifiable, Equatable, Sendable {
 
 typealias M1PreampNode = M1ProcessingNode
 
+extension M1ConfigurationSnapshot {
+    /// ADR-0023: environment-driven rebuilds only make sense when the saved
+    /// configuration actually carries an enabled loudness node.
+    var containsEnabledLoudnessNode: Bool {
+        nodes.contains { $0.kind == .loudness && $0.isEnabled }
+    }
+}
+
 enum M1ProcessingScopeResolver {
     static func effectiveSelections(
         nodes: [M1ProcessingNode]

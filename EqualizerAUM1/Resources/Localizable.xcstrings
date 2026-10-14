@@ -625,6 +625,26 @@
         }
       }
     },
+    "Delay": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "延迟"
+          }
+        }
+      }
+    },
+    "Delay bypassed · %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "延迟已旁路 · %@"
+          }
+        }
+      }
+    },
     "Delete": {
       "localizations": {
         "zh-Hans": {
@@ -1239,6 +1259,16 @@
         }
       }
     },
+    "Loudness": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "响度校正"
+          }
+        }
+      }
+    },
     "Low shelf": {
       "localizations": {
         "zh-Hans": {
@@ -1661,6 +1691,16 @@
         }
       }
     },
+    "Reference volume": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "参考音量"
+          }
+        }
+      }
+    },
     "Rendered frames: %llu": {
       "localizations": {
         "zh-Hans": {
@@ -1971,6 +2011,16 @@
         }
       }
     },
+    "Strength": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "补偿强度"
+          }
+        }
+      }
+    },
     "System audio capture permission is required": {
       "localizations": {
         "zh-Hans": {
@@ -2171,6 +2221,16 @@
         }
       }
     },
+    "delay exceeds the 1000 ms budget": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "延迟超出 1000 毫秒预算"
+          }
+        }
+      }
+    },
     "empty WAV": {
       "localizations": {
         "zh-Hans": {
@@ -2237,6 +2297,26 @@
         }
       }
     },
+    "invalid output sample rate": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "输出采样率无效"
+          }
+        }
+      }
+    },
+    "ms": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "毫秒"
+          }
+        }
+      }
+    },
     "oct": {
       "localizations": {
         "zh-Hans": {
@@ -2259,6 +2339,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "采样率不匹配：源文件 %lld Hz，输出 %lld Hz"
+          }
+        }
+      }
+    },
+    "samples": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "采样点"
           }
         }
       }

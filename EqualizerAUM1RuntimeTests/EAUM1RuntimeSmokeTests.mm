@@ -2341,8 +2341,7 @@ static EAUM1Runtime *createRuntimeWithPrepared(
     EAUM1RuntimeDestroy(runtime);
 }
 
-- (void)testDelayPublicationWithDifferentParametersRestartsCold {
-    const uint64_t liveBefore = EAUM1TestHooks::livePreparedCount();
+- (void)testDelayPublicationWithDifferentParametersRestartsCold {    const uint64_t liveBefore = EAUM1TestHooks::livePreparedCount();
     const EAUM1PreparedDelay delay = {.integerDelay = 20, .fraction = 0.0f};
     const EAUM1PreparedStage stage = {
         .kind = EAUM1PreparedStageDelay,
@@ -2385,6 +2384,154 @@ static EAUM1Runtime *createRuntimeWithPrepared(
     );
     EAUM1RuntimeDestroy(runtime);
     XCTAssertEqual(EAUM1TestHooks::livePreparedCount(), liveBefore);
+}
+
+- (void)testV4MixesGainBiquadConvolutionAndDelayAcrossChannels {
+    const float taps[] = {0.5f, 0.25f};
+    const EAUM1PreparedConvolution convolutions[] = {
+        {.tapCount = 2, .taps = taps},
+        {.tapCount = 2, .taps = taps},
+    };
+    const EAUM1PreparedDelay delays[] = {
+        {.integerDelay = 4, .fraction = 0.0f},
+    };
+    const EAUM1PreparedStage stages[] = {
+        {.kind = EAUM1PreparedStageGain, .channelIndex = 0, .b0 = 2.0},
+        {.kind = EAUM1PreparedStageConvolution, .channelIndex = 0, .b0 = 0.0},
+        {.kind = EAUM1PreparedStageDelay, .channelIndex = 0, .b0 = 0.0},
+        {.kind = EAUM1PreparedStageBiquad, .channelIndex = 1, .b0 = 1.0},
+        {.kind = EAUM1PreparedStageConvolution, .channelIndex = 1, .b0 = 1.0},
+    };
+    const EAUM1PreparedDescriptionV4 description = {
+        .channelCount = 2,
+        .stageCount = 5,
+        .stages = stages,
+        .convolutionCount = 2,
+        .convolutions = convolutions,
+        .delayCount = 1,
+        .delays = delays,
+    };
+    EAUM1PreparedState *prepared = nullptr;
+    XCTAssertEqual(EAUM1PreparedStateCreateV4(&description, &prepared), EAUM1StatusOK);
+    EAUM1Runtime *runtime = createRuntimeWithPrepared(&prepared, 2, 16, 1000.0);
+
+    std::vector<float> samples(8 * 2, 1.0f);
+    EAUM1AudioBuffer buffer = {.samples = samples.data(), .channelCount = 2};
+    XCTAssertEqual(EAUM1RuntimeProcess(runtime, &buffer, 1, 8), EAUM1StatusOK);
+    XCTAssertEqual(samples[0], 0.0f);
+    XCTAssertEqualWithAccuracy(samples[1], 0.5f, 1e-6f);
+    XCTAssertEqual(samples[4 * 2], 1.0f);
+    XCTAssertEqualWithAccuracy(samples[4 * 2 + 1], 0.75f, 1e-6f);
+    EAUM1RuntimeDestroy(runtime);
+}
+
+- (void)testV4RejectsNullArraysBadTapsAndConvolutionOverflow {
+    const float taps[] = {0.5f};
+    const EAUM1PreparedDelay delay = {.integerDelay = 2, .fraction = 0.0f};
+    const EAUM1PreparedStage delayStage = {
+        .kind = EAUM1PreparedStageDelay,
+        .channelIndex = 0,
+        .b0 = 0.0,
+    };
+    EAUM1PreparedState *prepared = nullptr;
+    EAUM1PreparedDescriptionV4 description = {
+        .channelCount = 1,
+        .stageCount = 1,
+        .stages = &delayStage,
+        .convolutionCount = 0,
+        .convolutions = nullptr,
+        .delayCount = 1,
+        .delays = &delay,
+    };
+    description.stages = nullptr;
+    XCTAssertEqual(EAUM1PreparedStateCreateV4(&description, &prepared), EAUM1StatusInvalidArgument);
+    description.stages = &delayStage;
+
+    const EAUM1PreparedConvolution single = {.tapCount = 1, .taps = taps};
+    description.convolutionCount = 1;
+    description.convolutions = nullptr;
+    XCTAssertEqual(EAUM1PreparedStateCreateV4(&description, &prepared), EAUM1StatusInvalidArgument);
+    description.convolutions = &single;
+
+    description.delayCount = 1;
+    description.delays = nullptr;
+    XCTAssertEqual(EAUM1PreparedStateCreateV4(&description, &prepared), EAUM1StatusInvalidArgument);
+    description.delays = &delay;
+
+    const float nonFiniteTap = NAN;
+    const EAUM1PreparedConvolution invalid = {.tapCount = 1, .taps = &nonFiniteTap};
+    const EAUM1PreparedStage gainStage = {
+        .kind = EAUM1PreparedStageGain,
+        .channelIndex = 0,
+        .b0 = 1.0,
+    };
+    EAUM1PreparedDescriptionV4 invalidTapsDescription = {
+        .channelCount = 1,
+        .stageCount = 1,
+        .stages = &gainStage,
+        .convolutionCount = 1,
+        .convolutions = &invalid,
+        .delayCount = 0,
+        .delays = nullptr,
+    };
+    XCTAssertEqual(
+        EAUM1PreparedStateCreateV4(&invalidTapsDescription, &prepared),
+        EAUM1StatusInvalidArgument
+    );
+
+    EAUM1PreparedConvolution many[EAUM1_MAX_CONVOLUTION_STAGES + 1];
+    for (uint32_t index = 0; index < EAUM1_MAX_CONVOLUTION_STAGES + 1; ++index) {
+        many[index] = {.tapCount = 1, .taps = taps};
+    }
+    EAUM1PreparedDescriptionV4 overflowDescription = {
+        .channelCount = 1,
+        .stageCount = 1,
+        .stages = &gainStage,
+        .convolutionCount = EAUM1_MAX_CONVOLUTION_STAGES + 1,
+        .convolutions = many,
+        .delayCount = 0,
+        .delays = nullptr,
+    };
+    XCTAssertEqual(
+        EAUM1PreparedStateCreateV4(&overflowDescription, &prepared),
+        EAUM1StatusCapacityExceeded
+    );
+
+    const EAUM1PreparedStage convolutionOutOfRange = {
+        .kind = EAUM1PreparedStageConvolution,
+        .channelIndex = 0,
+        .b0 = 2.0,
+    };
+    EAUM1PreparedDescriptionV4 outOfRangeDescription = {
+        .channelCount = 1,
+        .stageCount = 1,
+        .stages = &convolutionOutOfRange,
+        .convolutionCount = 1,
+        .convolutions = &single,
+        .delayCount = 0,
+        .delays = nullptr,
+    };
+    XCTAssertEqual(
+        EAUM1PreparedStateCreateV4(&outOfRangeDescription, &prepared),
+        EAUM1StatusInvalidArgument
+    );
+    const EAUM1PreparedConvolution unreferenced[] = {
+        {.tapCount = 1, .taps = taps},
+        {.tapCount = 1, .taps = taps},
+    };
+    EAUM1PreparedDescriptionV4 unreferencedDescription = {
+        .channelCount = 1,
+        .stageCount = 1,
+        .stages = &gainStage,
+        .convolutionCount = 2,
+        .convolutions = unreferenced,
+        .delayCount = 0,
+        .delays = nullptr,
+    };
+    XCTAssertEqual(
+        EAUM1PreparedStateCreateV4(&unreferencedDescription, &prepared),
+        EAUM1StatusInvalidArgument
+    );
 }
 
 @end
