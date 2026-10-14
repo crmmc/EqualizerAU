@@ -907,16 +907,7 @@ actor M1ProductController {
         let currentState = Self.productAudioState(await audio.state())
         audioState = currentState
         guard currentState != .running else { return }
-        publicationTask?.cancel()
-        publicationTask = nil
-        pendingApplication = nil
-        layout = nil
-        activeDiagnostics = nil
-        expectedDiagnostics = nil
-        activeConfigurationGeneration = nil
-        expectedConfigurationGeneration = nil
-        realtimeDiagnostics = nil
-        appliedEffectsEnabled = nil
+        clearAudioProjection()
         if currentState == .stopped {
             persistence = draft == saved ? .savedPendingStart : .modified
         }
