@@ -112,6 +112,8 @@ enum M1ConfigurationCodec {
             snapshot = try decodeCurrentWire(data, schemaVersion: 7)
         case 8:
             snapshot = try decodeCurrentWire(data, schemaVersion: 8)
+        case 9:
+            snapshot = try decodeCurrentWire(data, schemaVersion: 9)
         case M1ConfigurationSnapshot.schemaVersion:
             try M1JSONShapeValidator.validateConfiguration(
                 data,

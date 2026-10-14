@@ -153,6 +153,27 @@ final class M1FilterEditingTests: XCTestCase {
         XCTAssertEqual(encoded.snapshot.nodes[0].gainDB, -3)
     }
 
+    func testSchemaV9ConfigurationWithConvolutionStillDecodes() throws {
+        // Regression guard (M13): the decode switch enumerates historical
+        // schema versions individually; a literal v9 document must keep
+        // loading after the current version moved to v10.
+        let v9JSON = """
+        {
+          "schemaVersion": 9,
+          "effectsEnabled": false,
+          "nodes": [
+            {"id": "\(testID.uuidString)", "type": "convolution", "isEnabled": true,
+             "ir": {"sourcePath": "/tmp/ir.wav"}},
+            {"id": "\(otherID.uuidString)", "type": "preamp", "isEnabled": false, "gainDB": -8}
+          ]
+        }
+        """
+        let encoded = try M1ConfigurationCodec.decode(Data(v9JSON.utf8))
+        XCTAssertEqual(encoded.snapshot.nodes.map(\.kind), [.convolution, .preamp])
+        XCTAssertEqual(encoded.snapshot.nodes[1].gainDB, -8)
+        XCTAssertFalse(encoded.snapshot.effectsEnabled)
+    }
+
     func testSchemaV8DocumentWithFilterNodeIsRejected() throws {
         let v8JSONWithFilter = """
         {
@@ -321,7 +342,9 @@ final class M1FilterEditingTests: XCTestCase {
           ]
         }
         """
-        XCTAssertThrowsError(try M1ConfigurationCodec.decode(Data(v9JSONWithDelay.utf8)))
+        XCTAssertThrowsError(try M1ConfigurationCodec.decode(Data(v9JSONWithDelay.utf8))) { error in
+            XCTAssertEqual(error as? M1ConfigurationCodecError, .invalidJSON)
+        }
     }
 
     // MARK: - Loudness nodes (M13)
@@ -373,7 +396,9 @@ final class M1FilterEditingTests: XCTestCase {
           ]
         }
         """
-        XCTAssertThrowsError(try M1ConfigurationCodec.decode(Data(v9JSONWithLoudness.utf8)))
+        XCTAssertThrowsError(try M1ConfigurationCodec.decode(Data(v9JSONWithLoudness.utf8))) { error in
+            XCTAssertEqual(error as? M1ConfigurationCodecError, .invalidJSON)
+        }
     }
 
     func testDelayAndLoudnessNodesNormalizeThroughSessionConstruction() throws {
