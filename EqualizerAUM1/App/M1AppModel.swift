@@ -290,11 +290,13 @@ final class M1AppModel: ObservableObject {
         performEdit { await self.controller.selectAllNodes() }
     }
     func moveFocus(by offset: Int, extending: Bool) {
-        let selector = extending
-            ? (offset < 0
-                ? #selector(NSText.moveUpAndModifySelection(_:))
-                : #selector(NSText.moveDownAndModifySelection(_:)))
-            : (offset < 0 ? #selector(NSText.moveUp(_:)) : #selector(NSText.moveDown(_:)))
+        let selector: Selector
+        switch (extending, offset < 0) {
+        case (true, true): selector = #selector(NSText.moveUpAndModifySelection(_:))
+        case (true, false): selector = #selector(NSText.moveDownAndModifySelection(_:))
+        case (false, true): selector = #selector(NSText.moveUp(_:))
+        case (false, false): selector = #selector(NSText.moveDown(_:))
+        }
         if routeTextCommand(selector) { return }
         performEdit { await self.controller.moveSelectionFocus(by: offset, extending: extending) }
     }

@@ -1144,23 +1144,24 @@ private struct M1EditorView: View {
         M1ProcessingScopeResolver.effectiveSelections(nodes: model.snapshot.draft.nodes)
     }
 
+    private func gestureMarker(for nodeID: UUID) -> (Bool) -> Void {
+        { editing in
+            if editing { model.beginGesture(nodeID) }
+            else { model.endGesture(nodeID) }
+        }
+    }
+
     private func preampEditor(_ node: M1ProcessingNode) -> some View {
         HStack(spacing: 8) {
             M1GainKnob(
                 gainDB: node.gainDB,
                 onChange: { model.setGain($0, id: node.id) },
-                onEditingChanged: {
-                    if $0 { model.beginGesture(node.id) }
-                    else { model.endGesture(node.id) }
-                }
+                onEditingChanged: gestureMarker(for: node.id)
             )
             M1GainTextField(
                 gainDB: node.gainDB,
                 onChange: { model.setGain($0, id: node.id) },
-                onEditingChanged: {
-                    if $0 { model.beginGesture(node.id) }
-                    else { model.endGesture(node.id) }
-                }
+                onEditingChanged: gestureMarker(for: node.id)
             )
             .textFieldStyle(.roundedBorder)
             .monospacedDigit()
@@ -1367,10 +1368,7 @@ private struct M1EditorView: View {
                             id: node.id
                         )
                     },
-                    onEditingChanged: {
-                        if $0 { model.beginGesture(node.id) }
-                        else { model.endGesture(node.id) }
-                    }
+                    onEditingChanged: gestureMarker(for: node.id)
                 )
                 .frame(width: 72)
                 Text("Hz").foregroundStyle(.secondary)
@@ -1387,10 +1385,7 @@ private struct M1EditorView: View {
                                 id: node.id
                             )
                         },
-                        onEditingChanged: {
-                            if $0 { model.beginGesture(node.id) }
-                            else { model.endGesture(node.id) }
-                        }
+                        onEditingChanged: gestureMarker(for: node.id)
                     )
                     .frame(width: 64)
                     Text("dB").foregroundStyle(.secondary)
@@ -1457,10 +1452,7 @@ private struct M1EditorView: View {
                     id: node.id
                 )
             },
-            onEditingChanged: {
-                if $0 { model.beginGesture(node.id) }
-                else { model.endGesture(node.id) }
-            }
+            onEditingChanged: gestureMarker(for: node.id)
         )
         .frame(width: 64)
 
@@ -1554,39 +1546,13 @@ private struct M1EditorView: View {
                         .foregroundStyle(.secondary)
                 }
                 ForEach(available, id: \.self) { identifier in
-                    Toggle(
-                        channelDisplayName(identifier),
-                        isOn: Binding(
-                            get: { selectedIdentifiers(node.channels).contains(identifier) },
-                            set: { selected in
-                                model.setChannels(
-                                    updatedChannels(node.channels, identifier: identifier, selected: selected),
-                                    id: node.id
-                                )
-                            }
-                        )
-                    )
+                    channelToggle(identifier: identifier, node: node)
                 }
                 if !unavailable.isEmpty {
                     Divider()
                     Section("Unavailable in Current Output") {
                         ForEach(unavailable, id: \.self) { identifier in
-                            Toggle(
-                                channelDisplayName(identifier),
-                                isOn: Binding(
-                                    get: { selectedIdentifiers(node.channels).contains(identifier) },
-                                    set: { selected in
-                                        model.setChannels(
-                                            updatedChannels(
-                                                node.channels,
-                                                identifier: identifier,
-                                                selected: selected
-                                            ),
-                                            id: node.id
-                                        )
-                                    }
-                                )
-                            )
+                            channelToggle(identifier: identifier, node: node)
                         }
                     }
                 }
@@ -1595,6 +1561,24 @@ private struct M1EditorView: View {
             }
             .fixedSize()
         }
+    }
+
+    private func channelToggle(
+        identifier: M1ChannelIdentifier,
+        node: M1ProcessingNode
+    ) -> some View {
+        Toggle(
+            channelDisplayName(identifier),
+            isOn: Binding(
+                get: { selectedIdentifiers(node.channels).contains(identifier) },
+                set: { selected in
+                    model.setChannels(
+                        updatedChannels(node.channels, identifier: identifier, selected: selected),
+                        id: node.id
+                    )
+                }
+            )
+        )
     }
 
     private func rowBackground(for id: UUID) -> some View {
@@ -1796,6 +1780,33 @@ private enum M1GraphicEQPlot {
         let position = (M1GraphicEQContract.maximumGainDB - gainDB) / range
         return height * CGFloat(min(max(position, 0), 1))
     }
+
+    static func frequency(at fraction: Double) -> Double {
+        exp(
+            log(M1GraphicEQContract.minimumFrequencyHz)
+                + (log(M1GraphicEQContract.maximumFrequencyHz)
+                    - log(M1GraphicEQContract.minimumFrequencyHz)) * fraction
+        )
+    }
+
+    static func curvePath(points: [M1GraphicEQPoint], sampleCount: Int, in size: CGSize) -> Path {
+        let processingPoints = M1ProcessingBuilder.graphicEQProcessingPoints(points)
+        var path = Path()
+        for index in 0...sampleCount {
+            let frequencyHz = frequency(at: Double(index) / Double(sampleCount))
+            let gainDB = M1ProcessingBuilder.graphicEQGainDB(
+                frequencyHz: frequencyHz,
+                points: processingPoints
+            )
+            let position = CGPoint(
+                x: x(for: frequencyHz, width: size.width),
+                y: y(for: gainDB, height: size.height)
+            )
+            if index == 0 { path.move(to: position) }
+            else { path.addLine(to: position) }
+        }
+        return path
+    }
 }
 
 private struct M1GraphicEQMiniCurve: View {
@@ -1803,26 +1814,7 @@ private struct M1GraphicEQMiniCurve: View {
 
     var body: some View {
         Canvas { context, size in
-            let processingPoints = M1ProcessingBuilder.graphicEQProcessingPoints(points)
-            var path = Path()
-            for index in 0...64 {
-                let fraction = Double(index) / 64
-                let frequency = exp(
-                    log(M1GraphicEQContract.minimumFrequencyHz)
-                        + (log(M1GraphicEQContract.maximumFrequencyHz)
-                            - log(M1GraphicEQContract.minimumFrequencyHz)) * fraction
-                )
-                let gain = M1ProcessingBuilder.graphicEQGainDB(
-                    frequencyHz: frequency,
-                    points: processingPoints
-                )
-                let position = CGPoint(
-                    x: M1GraphicEQPlot.x(for: frequency, width: size.width),
-                    y: M1GraphicEQPlot.y(for: gain, height: size.height)
-                )
-                if index == 0 { path.move(to: position) }
-                else { path.addLine(to: position) }
-            }
+            let path = M1GraphicEQPlot.curvePath(points: points, sampleCount: 64, in: size)
             context.stroke(path, with: .color(.accentColor), lineWidth: 2)
         }
     }
@@ -2125,26 +2117,7 @@ private struct M1GraphicEQEditor: View {
     }
 
     private func drawTargetCurve(context: inout GraphicsContext, size: CGSize) {
-        var path = Path()
-        let processingPoints = M1ProcessingBuilder.graphicEQProcessingPoints(modelPoints)
-        for index in 0...256 {
-            let fraction = Double(index) / 256
-            let frequency = exp(
-                log(M1GraphicEQContract.minimumFrequencyHz)
-                    + (log(M1GraphicEQContract.maximumFrequencyHz)
-                        - log(M1GraphicEQContract.minimumFrequencyHz)) * fraction
-            )
-            let gain = M1ProcessingBuilder.graphicEQGainDB(
-                frequencyHz: frequency,
-                points: processingPoints
-            )
-            let position = CGPoint(
-                x: M1GraphicEQPlot.x(for: frequency, width: size.width),
-                y: M1GraphicEQPlot.y(for: gain, height: size.height)
-            )
-            if index == 0 { path.move(to: position) }
-            else { path.addLine(to: position) }
-        }
+        let path = M1GraphicEQPlot.curvePath(points: modelPoints, sampleCount: 256, in: size)
         context.stroke(path, with: .color(.accentColor), lineWidth: 2)
     }
 
