@@ -1,5 +1,6 @@
 #include "EAUM1Runtime.h"
 #include "EAUM1Convolution.hpp"
+#include "EAUM1DelayStage.hpp"
 
 #include <array>
 #include <atomic>
@@ -18,18 +19,21 @@ std::atomic<uint64_t> preparedLiveCount{0};
 
 using PreparedConvolutionKernel = eaum1::PreparedConvolutionKernel;
 using RuntimeConvolution = eaum1::RuntimeConvolution;
+using RuntimeDelayLine = eaum1::RuntimeDelayLine;
 
 struct RuntimeStage {
     EAUM1PreparedStage definition{};
     double state1 = 0.0;
     double state2 = 0.0;
     uint32_t convolutionIndex = 0;
+    uint32_t delayIndex = 0;
 };
 
 struct ExecutionSlot {
     std::vector<RuntimeStage> stages;
     std::vector<uint32_t> channelOffsets;
     std::vector<RuntimeConvolution> convolutions;
+    std::vector<RuntimeDelayLine> delays;
     uint32_t stageCount = 0;
 
     explicit ExecutionSlot(uint32_t channelCount)
@@ -45,18 +49,21 @@ struct EAUM1PreparedState {
     std::vector<EAUM1PreparedStage> stages;
     std::vector<uint32_t> channelOffsets;
     std::vector<std::shared_ptr<const PreparedConvolutionKernel>> convolutions;
+    std::vector<EAUM1PreparedDelay> delays;
 
     EAUM1PreparedState(
         uint32_t channels,
         std::vector<EAUM1PreparedStage> preparedStages,
         std::vector<uint32_t> offsets,
-        std::vector<std::shared_ptr<const PreparedConvolutionKernel>> preparedConvolutions = {}
+        std::vector<std::shared_ptr<const PreparedConvolutionKernel>> preparedConvolutions = {},
+        std::vector<EAUM1PreparedDelay> preparedDelays = {}
     )
         : channelCount(channels),
           publicationGeneration(0),
           stages(std::move(preparedStages)),
           channelOffsets(std::move(offsets)),
-          convolutions(std::move(preparedConvolutions)) {
+          convolutions(std::move(preparedConvolutions)),
+          delays(std::move(preparedDelays)) {
         preparedLiveCount.fetch_add(1, std::memory_order_relaxed);
     }
 
@@ -164,7 +171,7 @@ bool isStableBiquad(const EAUM1PreparedStage &stage) {
         && 1.0 - stage.a1 + stage.a2 > 0.0;
 }
 
-bool convolutionDescriptorIndex(
+bool stageDescriptorIndex(
     const EAUM1PreparedStage &stage,
     uint32_t convolutionCount,
     uint32_t *indexOut
@@ -259,18 +266,27 @@ EAUM1Status copyPreparedToSlot(
     ExecutionSlot *slot
 ) {
     std::vector<RuntimeConvolution> convolutions;
+    std::vector<RuntimeDelayLine> delayLines;
     uint32_t convolutionStageCount = 0;
+    uint32_t delayStageCount = 0;
     for (const EAUM1PreparedStage &stage : prepared->stages) {
         if (stage.kind == EAUM1PreparedStageConvolution) {
             ++convolutionStageCount;
+        } else if (stage.kind == EAUM1PreparedStageDelay) {
+            ++delayStageCount;
         }
     }
     try {
         convolutions.reserve(convolutionStageCount);
+        delayLines.reserve(delayStageCount);
         for (const EAUM1PreparedStage &stage : prepared->stages) {
             if (stage.kind == EAUM1PreparedStageConvolution) {
                 const uint32_t descriptorIndex = static_cast<uint32_t>(stage.b0);
                 convolutions.emplace_back(prepared->convolutions[descriptorIndex]);
+            } else if (stage.kind == EAUM1PreparedStageDelay) {
+                const uint32_t descriptorIndex = static_cast<uint32_t>(stage.b0);
+                const EAUM1PreparedDelay &delay = prepared->delays[descriptorIndex];
+                delayLines.emplace_back(delay.integerDelay, delay.fraction);
             }
         }
     } catch (const std::length_error &) {
@@ -283,19 +299,24 @@ EAUM1Status copyPreparedToSlot(
 
     slot->stageCount = static_cast<uint32_t>(prepared->stages.size());
     uint32_t convolutionIndex = 0;
+    uint32_t delayIndex = 0;
     for (uint32_t index = 0; index < slot->stageCount; ++index) {
         slot->stages[index].definition = prepared->stages[index];
         slot->stages[index].state1 = 0.0;
         slot->stages[index].state2 = 0.0;
         slot->stages[index].convolutionIndex = convolutionIndex;
+        slot->stages[index].delayIndex = delayIndex;
         if (prepared->stages[index].kind == EAUM1PreparedStageConvolution) {
             ++convolutionIndex;
+        } else if (prepared->stages[index].kind == EAUM1PreparedStageDelay) {
+            ++delayIndex;
         }
     }
     for (uint32_t index = 0; index <= prepared->channelCount; ++index) {
         slot->channelOffsets[index] = prepared->channelOffsets[index];
     }
     slot->convolutions = std::move(convolutions);
+    slot->delays = std::move(delayLines);
     return EAUM1StatusOK;
 }
 
@@ -321,19 +342,27 @@ bool executionPlanMatches(
     }
     std::array<bool, EAUM1_MAX_CONVOLUTION_STAGES> comparedDescriptors{};
     uint32_t convolutionIndex = 0;
+    uint32_t delayIndex = 0;
     for (const EAUM1PreparedStage &stage : prepared->stages) {
-        if (stage.kind != EAUM1PreparedStageConvolution) {
-            continue;
-        }
-        const uint32_t descriptorIndex = static_cast<uint32_t>(stage.b0);
-        const RuntimeConvolution &right = slot.convolutions[convolutionIndex++];
-        if (comparedDescriptors[descriptorIndex]) {
-            continue;
-        }
-        comparedDescriptors[descriptorIndex] = true;
-        if (prepared->convolutions[descriptorIndex]->taps
-            != right.kernelOwner()->taps) {
-            return false;
+        if (stage.kind == EAUM1PreparedStageConvolution) {
+            const uint32_t descriptorIndex = static_cast<uint32_t>(stage.b0);
+            const RuntimeConvolution &right = slot.convolutions[convolutionIndex++];
+            if (comparedDescriptors[descriptorIndex]) {
+                continue;
+            }
+            comparedDescriptors[descriptorIndex] = true;
+            if (prepared->convolutions[descriptorIndex]->taps
+                != right.kernelOwner()->taps) {
+                return false;
+            }
+        } else if (stage.kind == EAUM1PreparedStageDelay) {
+            const EAUM1PreparedDelay &left =
+                prepared->delays[static_cast<uint32_t>(stage.b0)];
+            const RuntimeDelayLine &right = slot.delays[delayIndex++];
+            if (left.integerDelay != right.integerDelay()
+                || left.fraction != right.fraction()) {
+                return false;
+            }
         }
     }
     return true;
@@ -360,6 +389,7 @@ void rebaseEquivalentKernels(
 
 void clearExecutionSlot(ExecutionSlot *slot) {
     slot->convolutions.clear();
+    slot->delays.clear();
     slot->stageCount = 0;
 }
 
@@ -479,6 +509,12 @@ float processChainSample(
                 &slot->convolutions[stage.convolutionIndex],
                 normalizedFloatSample(value)
             ));
+            continue;
+        }
+
+        if (definition.kind == EAUM1PreparedStageDelay) {
+            processed = true;
+            value = slot->delays[stage.delayIndex].process(value);
             continue;
         }
 
@@ -930,7 +966,7 @@ EAUM1Status EAUM1PreparedStateCreateV3(
 
         if (stage.kind == EAUM1PreparedStageConvolution) {
             uint32_t descriptorIndex = 0;
-            if (!convolutionDescriptorIndex(
+            if (!stageDescriptorIndex(
                     stage,
                     description->convolutionCount,
                     &descriptorIndex
@@ -997,6 +1033,156 @@ EAUM1Status EAUM1PreparedStateCreateV3(
 
 void EAUM1PreparedStateDestroy(EAUM1PreparedState *prepared) {
     delete prepared;
+}
+
+EAUM1Status EAUM1PreparedStateCreateV4(
+    const EAUM1PreparedDescriptionV4 *description,
+    EAUM1PreparedState **preparedOut
+) {
+    if (preparedOut == nullptr) {
+        return EAUM1StatusInvalidArgument;
+    }
+    *preparedOut = nullptr;
+    if (description == nullptr
+        || description->channelCount == 0
+        || description->stageCount > EAUM1_MAX_PREPARED_STAGE_COUNT
+        || (description->stageCount != 0 && description->stages == nullptr)
+        || (description->convolutionCount != 0 && description->convolutions == nullptr)
+        || (description->delayCount != 0 && description->delays == nullptr)) {
+        return EAUM1StatusInvalidArgument;
+    }
+    if (description->convolutionCount > EAUM1_MAX_CONVOLUTION_STAGES
+        || description->delayCount > EAUM1_MAX_DELAY_STAGES) {
+        return EAUM1StatusCapacityExceeded;
+    }
+    for (uint32_t index = 0; index < description->convolutionCount; ++index) {
+        const EAUM1PreparedConvolution &convolution = description->convolutions[index];
+        if (convolution.tapCount == 0 || convolution.taps == nullptr) {
+            return EAUM1StatusInvalidArgument;
+        }
+        for (uint32_t tap = 0; tap < convolution.tapCount; ++tap) {
+            const float value = convolution.taps[tap];
+            if (value != 0.0f && (!std::isfinite(value) || !std::isnormal(value))) {
+                return EAUM1StatusInvalidArgument;
+            }
+        }
+    }
+    for (uint32_t index = 0; index < description->delayCount; ++index) {
+        const EAUM1PreparedDelay &delay = description->delays[index];
+        if (!std::isfinite(delay.fraction)
+            || delay.fraction < 0.0f
+            || delay.fraction >= 1.0f
+            || delay.integerDelay > EAUM1_MAX_DELAY_SAMPLES
+            || (delay.integerDelay == 0 && delay.fraction == 0.0f)) {
+            return EAUM1StatusInvalidArgument;
+        }
+    }
+
+    ChannelStageOrdering ordering;
+    uint32_t convolutionStageCount = 0;
+    uint32_t delayStageCount = 0;
+    std::array<bool, EAUM1_MAX_CONVOLUTION_STAGES> referencedConvolutions{};
+    std::array<bool, EAUM1_MAX_DELAY_STAGES> referencedDelays{};
+    for (uint32_t index = 0; index < description->stageCount; ++index) {
+        const EAUM1PreparedStage &stage = description->stages[index];
+        const EAUM1Status orderingStatus = ordering.advance(
+            stage.channelIndex,
+            description->channelCount,
+            index
+        );
+        if (orderingStatus != EAUM1StatusOK) {
+            return orderingStatus;
+        }
+
+        if (stage.kind == EAUM1PreparedStageConvolution) {
+            uint32_t descriptorIndex = 0;
+            if (!stageDescriptorIndex(
+                    stage,
+                    description->convolutionCount,
+                    &descriptorIndex
+                )) {
+                return EAUM1StatusInvalidArgument;
+            }
+            ++convolutionStageCount;
+            if (convolutionStageCount > EAUM1_MAX_CONVOLUTION_STAGES) {
+                return EAUM1StatusCapacityExceeded;
+            }
+            referencedConvolutions[descriptorIndex] = true;
+        } else if (stage.kind == EAUM1PreparedStageDelay) {
+            uint32_t descriptorIndex = 0;
+            if (!stageDescriptorIndex(
+                    stage,
+                    description->delayCount,
+                    &descriptorIndex
+                )) {
+                return EAUM1StatusInvalidArgument;
+            }
+            ++delayStageCount;
+            if (delayStageCount > EAUM1_MAX_DELAY_STAGES) {
+                return EAUM1StatusCapacityExceeded;
+            }
+            referencedDelays[descriptorIndex] = true;
+        } else if (!validateStage(stage)) {
+            return EAUM1StatusInvalidArgument;
+        }
+    }
+    for (uint32_t index = 0; index < description->convolutionCount; ++index) {
+        if (!referencedConvolutions[index]) {
+            return EAUM1StatusInvalidArgument;
+        }
+    }
+    for (uint32_t index = 0; index < description->delayCount; ++index) {
+        if (!referencedDelays[index]) {
+            return EAUM1StatusInvalidArgument;
+        }
+    }
+
+    try {
+        std::vector<std::shared_ptr<const PreparedConvolutionKernel>> convolutions;
+        convolutions.reserve(description->convolutionCount);
+        for (uint32_t index = 0; index < description->convolutionCount; ++index) {
+            const EAUM1PreparedConvolution &source = description->convolutions[index];
+            std::shared_ptr<const PreparedConvolutionKernel> kernel;
+            for (const auto &existing : convolutions) {
+                if (eaum1::kernelTapsEqual(*existing, source.taps, source.tapCount)) {
+                    kernel = existing;
+                    break;
+                }
+            }
+            if (kernel == nullptr) {
+                kernel = std::make_shared<PreparedConvolutionKernel>(
+                    source.taps,
+                    source.tapCount
+                );
+            }
+            convolutions.push_back(std::move(kernel));
+        }
+
+        std::vector<EAUM1PreparedStage> stages;
+        if (description->stageCount != 0) {
+            stages.assign(description->stages, description->stages + description->stageCount);
+        }
+        std::vector<EAUM1PreparedDelay> delays(
+            description->delays,
+            description->delays + description->delayCount
+        );
+        std::vector<uint32_t> offsets = makeChannelOffsets(stages, description->channelCount);
+        EAUM1PreparedState *prepared = new EAUM1PreparedState(
+            description->channelCount,
+            std::move(stages),
+            std::move(offsets),
+            std::move(convolutions),
+            std::move(delays)
+        );
+        *preparedOut = prepared;
+        return EAUM1StatusOK;
+    } catch (const std::length_error &) {
+        return EAUM1StatusCapacityExceeded;
+    } catch (const std::bad_alloc &) {
+        return EAUM1StatusOutOfMemory;
+    } catch (...) {
+        return EAUM1StatusUnsupported;
+    }
 }
 
 EAUM1Status EAUM1RuntimeCreate(

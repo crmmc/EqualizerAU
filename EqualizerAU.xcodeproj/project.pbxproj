@@ -267,6 +267,7 @@
 		D2000000000000000000002C /* M1SystemAudioLifecycleMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1SystemAudioLifecycleMonitor.swift; sourceTree = "<group>"; };
 		D2000000000000000000002D /* Accelerate.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Accelerate.framework; path = System/Library/Frameworks/Accelerate.framework; sourceTree = SDKROOT; };
 		D2000000000000000000002E /* EAUM1Convolution.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = EAUM1Convolution.hpp; sourceTree = "<group>"; };
+		D20000000000000000000040 /* EAUM1DelayStage.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = EAUM1DelayStage.hpp; sourceTree = "<group>"; };
 		D2000000000000000000002B /* M1ConvolutionIRTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1ConvolutionIRTests.swift; sourceTree = "<group>"; };
 		F20000000000000000000001 /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		F20000000000000000000002 /* InfoPlist.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = InfoPlist.xcstrings; sourceTree = "<group>"; };
@@ -567,6 +568,7 @@
 			children = (
 				D20000000000000000000002 /* EAUM1Runtime.cpp */,
 				D2000000000000000000002E /* EAUM1Convolution.hpp */,
+				D20000000000000000000040 /* EAUM1DelayStage.hpp */,
 			);
 			path = src;
 			sourceTree = "<group>";

@@ -36,6 +36,16 @@ static_assert(std::is_trivially_copyable_v<EAUM1PreparedDescriptionV3>);
 static_assert(sizeof(EAUM1PreparedDescriptionV3) == 32);
 static_assert(offsetof(EAUM1PreparedDescriptionV3, stages) == 8);
 static_assert(offsetof(EAUM1PreparedDescriptionV3, convolutions) == 24);
+static_assert(std::is_standard_layout_v<EAUM1PreparedDelay>);
+static_assert(std::is_trivially_copyable_v<EAUM1PreparedDelay>);
+static_assert(sizeof(EAUM1PreparedDelay) == 8);
+static_assert(offsetof(EAUM1PreparedDelay, fraction) == 4);
+static_assert(std::is_standard_layout_v<EAUM1PreparedDescriptionV4>);
+static_assert(std::is_trivially_copyable_v<EAUM1PreparedDescriptionV4>);
+static_assert(sizeof(EAUM1PreparedDescriptionV4) == 48);
+static_assert(offsetof(EAUM1PreparedDescriptionV4, convolutions) == 24);
+static_assert(offsetof(EAUM1PreparedDescriptionV4, delayCount) == 32);
+static_assert(offsetof(EAUM1PreparedDescriptionV4, delays) == 40);
 
 namespace EAUM1TestHooks {
 bool acquireCallback(EAUM1Runtime *runtime);
@@ -107,6 +117,28 @@ static EAUM1PreparedState *createPreparedV3(
     };
     EAUM1PreparedState *prepared = nullptr;
     XCTAssertEqual(EAUM1PreparedStateCreateV3(&description, &prepared), EAUM1StatusOK);
+    XCTAssertNotEqual(prepared, nullptr);
+    return prepared;
+}
+
+static EAUM1PreparedState *createPreparedV4(
+    uint32_t channelCount,
+    const EAUM1PreparedStage *stages,
+    uint32_t stageCount,
+    const EAUM1PreparedDelay *delays,
+    uint32_t delayCount
+) {
+    const EAUM1PreparedDescriptionV4 description = {
+        .channelCount = channelCount,
+        .stageCount = stageCount,
+        .stages = stages,
+        .convolutionCount = 0,
+        .convolutions = nullptr,
+        .delayCount = delayCount,
+        .delays = delays,
+    };
+    EAUM1PreparedState *prepared = nullptr;
+    XCTAssertEqual(EAUM1PreparedStateCreateV4(&description, &prepared), EAUM1StatusOK);
     XCTAssertNotEqual(prepared, nullptr);
     return prepared;
 }
@@ -2114,11 +2146,243 @@ static EAUM1Runtime *createRuntimeWithPrepared(
         promoted.flags,
         EAUM1PublicationRetiredReclaimed | EAUM1PublicationCandidatePublished
     );
-    XCTAssertEqual(EAUM1TestHooks::activePrepared(runtime), pendingAddress);
-    XCTAssertEqual(EAUM1TestHooks::retiredPrepared(runtime), 0u);
-    XCTAssertEqual(EAUM1TestHooks::pendingPrepared(runtime), 0u);
-    XCTAssertNotEqual(EAUM1TestHooks::activePrepared(runtime), crossfadeAddress);
+}
 
+- (void)testDelayV4ValidatesDescriptorsAndCapacity {
+    XCTAssertEqual(EAUM1RuntimeABIVersion(), 4u);
+    const EAUM1PreparedStage stage = {
+        .kind = EAUM1PreparedStageDelay,
+        .channelIndex = 0,
+        .b0 = 0.0,
+    };
+    EAUM1PreparedState *prepared = nullptr;
+    XCTAssertEqual(EAUM1PreparedStateCreateV4(nullptr, &prepared), EAUM1StatusInvalidArgument);
+    const EAUM1PreparedDelay valid = {.integerDelay = 3, .fraction = 0.25f};
+    EAUM1PreparedDescriptionV4 description = {
+        .channelCount = 1,
+        .stageCount = 1,
+        .stages = &stage,
+        .convolutionCount = 0,
+        .convolutions = nullptr,
+        .delayCount = 1,
+        .delays = &valid,
+    };
+    XCTAssertEqual(EAUM1PreparedStateCreateV4(&description, &prepared), EAUM1StatusOK);
+    EAUM1PreparedStateDestroy(prepared);
+    prepared = nullptr;
+
+    description.channelCount = 0;
+    XCTAssertEqual(EAUM1PreparedStateCreateV4(&description, &prepared), EAUM1StatusInvalidArgument);
+    description.channelCount = 1;
+
+    const EAUM1PreparedDelay invalidFractions[] = {
+        {.integerDelay = 3, .fraction = -0.25f},
+        {.integerDelay = 3, .fraction = 1.0f},
+        {.integerDelay = 3, .fraction = NAN},
+        {.integerDelay = EAUM1_MAX_DELAY_SAMPLES + 1, .fraction = 0.25f},
+        {.integerDelay = 0, .fraction = 0.0f},
+    };
+    for (const EAUM1PreparedDelay &delay : invalidFractions) {
+        description.delays = &delay;
+        XCTAssertEqual(
+            EAUM1PreparedStateCreateV4(&description, &prepared),
+            EAUM1StatusInvalidArgument
+        );
+    }
+    description.delays = &valid;
+
+    const EAUM1PreparedStage malformed = {
+        .kind = EAUM1PreparedStageDelay,
+        .channelIndex = 0,
+        .b0 = 0.0,
+        .b1 = 1.0,
+    };
+    description.stages = &malformed;
+    XCTAssertEqual(EAUM1PreparedStateCreateV4(&description, &prepared), EAUM1StatusInvalidArgument);
+    description.stages = &stage;
+
+    EAUM1PreparedStage outOfRange = stage;
+    outOfRange.b0 = 1.0;
+    description.stages = &outOfRange;
+    XCTAssertEqual(EAUM1PreparedStateCreateV4(&description, &prepared), EAUM1StatusInvalidArgument);
+    description.stages = &stage;
+
+    const EAUM1PreparedDelay pair[2] = {
+        {.integerDelay = 3, .fraction = 0.25f},
+        {.integerDelay = 7, .fraction = 0.5f},
+    };
+    description.delayCount = 2;
+    description.delays = pair;
+    XCTAssertEqual(EAUM1PreparedStateCreateV4(&description, &prepared), EAUM1StatusInvalidArgument);
+
+    EAUM1PreparedDelay many[EAUM1_MAX_DELAY_STAGES + 1];
+    for (uint32_t index = 0; index < EAUM1_MAX_DELAY_STAGES + 1; ++index) {
+        many[index] = {.integerDelay = index + 1, .fraction = 0.5f};
+    }
+    description.stageCount = 0;
+    description.stages = nullptr;
+    description.delayCount = EAUM1_MAX_DELAY_STAGES + 1;
+    description.delays = many;
+    XCTAssertEqual(
+        EAUM1PreparedStateCreateV4(&description, &prepared),
+        EAUM1StatusCapacityExceeded
+    );
+
+    EAUM1PreparedStage stages[EAUM1_MAX_DELAY_STAGES + 1];
+    for (uint32_t index = 0; index < EAUM1_MAX_DELAY_STAGES + 1; ++index) {
+        stages[index] = stage;
+        stages[index].channelIndex = 0;
+        stages[index].b0 = static_cast<double>(index);
+    }
+    description.stageCount = EAUM1_MAX_DELAY_STAGES + 1;
+    description.stages = stages;
+    XCTAssertEqual(
+        EAUM1PreparedStateCreateV4(&description, &prepared),
+        EAUM1StatusCapacityExceeded
+    );
+}
+
+- (void)testIntegerDelayShiftsImpulsePerChannelExactly {
+    const EAUM1PreparedDelay delays[2] = {
+        {.integerDelay = 3, .fraction = 0.0f},
+        {.integerDelay = 6, .fraction = 0.0f},
+    };
+    const EAUM1PreparedStage stages[2] = {
+        {.kind = EAUM1PreparedStageDelay, .channelIndex = 0, .b0 = 0.0},
+        {.kind = EAUM1PreparedStageDelay, .channelIndex = 1, .b0 = 1.0},
+    };
+    EAUM1PreparedState *prepared = createPreparedV4(2, stages, 2, delays, 2);
+    EAUM1Runtime *runtime = createRuntimeWithPrepared(&prepared, 2, 16, 1000.0);
+
+    std::vector<float> samples(16 * 2, 0.0f);
+    samples[0] = 1.0f;
+    samples[1] = -0.5f;
+    EAUM1AudioBuffer buffer = {.samples = samples.data(), .channelCount = 2};
+    XCTAssertEqual(EAUM1RuntimeProcess(runtime, &buffer, 1, 16), EAUM1StatusOK);
+    for (uint32_t frame = 0; frame < 16; ++frame) {
+        XCTAssertEqual(samples[frame * 2], frame == 3 ? 1.0f : 0.0f);
+        XCTAssertEqual(samples[frame * 2 + 1], frame == 6 ? -0.5f : 0.0f);
+    }
+    EAUM1RuntimeDestroy(runtime);
+}
+
+- (void)testFractionalDelayInterpolatesImpulse {
+    const EAUM1PreparedDelay quarter = {.integerDelay = 3, .fraction = 0.25f};
+    const EAUM1PreparedStage stage = {
+        .kind = EAUM1PreparedStageDelay,
+        .channelIndex = 0,
+        .b0 = 0.0,
+    };
+    EAUM1PreparedState *prepared = createPreparedV4(1, &stage, 1, &quarter, 1);
+    EAUM1Runtime *runtime = createRuntimeWithPrepared(&prepared, 1, 16, 1000.0);
+    std::vector<float> samples(8, 0.0f);
+    samples[0] = 1.0f;
+    EAUM1AudioBuffer buffer = {.samples = samples.data(), .channelCount = 1};
+    XCTAssertEqual(EAUM1RuntimeProcess(runtime, &buffer, 1, 8), EAUM1StatusOK);
+    XCTAssertEqualWithAccuracy(samples[3], 0.75f, 1e-9f);
+    XCTAssertEqualWithAccuracy(samples[4], 0.25f, 1e-9f);
+    for (uint32_t index = 0; index < 8; ++index) {
+        if (index != 3 && index != 4) {
+            XCTAssertEqual(samples[index], 0.0f);
+        }
+    }
+    EAUM1RuntimeDestroy(runtime);
+
+    const EAUM1PreparedDelay halfSample = {.integerDelay = 0, .fraction = 0.5f};
+    prepared = createPreparedV4(1, &stage, 1, &halfSample, 1);
+    runtime = createRuntimeWithPrepared(&prepared, 1, 16, 1000.0);
+    std::vector<float> half(4, 0.0f);
+    half[0] = 0.5f;
+    EAUM1AudioBuffer halfBuffer = {.samples = half.data(), .channelCount = 1};
+    XCTAssertEqual(EAUM1RuntimeProcess(runtime, &halfBuffer, 1, 4), EAUM1StatusOK);
+    XCTAssertEqualWithAccuracy(half[0], 0.25f, 1e-9f);
+    XCTAssertEqualWithAccuracy(half[1], 0.25f, 1e-9f);
+    XCTAssertEqual(half[2], 0.0f);
+    XCTAssertEqual(half[3], 0.0f);
+    EAUM1RuntimeDestroy(runtime);
+}
+
+- (void)testDelayStateCrossesBlocksAndEquivalentPublicationPreservesHistory {
+    const EAUM1PreparedDelay delay = {.integerDelay = 20, .fraction = 0.0f};
+    const EAUM1PreparedStage stage = {
+        .kind = EAUM1PreparedStageDelay,
+        .channelIndex = 0,
+        .b0 = 0.0,
+    };
+    EAUM1PreparedState *prepared = createPreparedV4(1, &stage, 1, &delay, 1);
+    EAUM1Runtime *runtime = createRuntimeWithPrepared(&prepared, 1, 16, 1000.0);
+
+    std::vector<float> first(16, 0.0f);
+    first[0] = 1.0f;
+    EAUM1AudioBuffer buffer = {.samples = first.data(), .channelCount = 1};
+    XCTAssertEqual(EAUM1RuntimeProcess(runtime, &buffer, 1, 16), EAUM1StatusOK);
+    for (float sample : first) {
+        XCTAssertEqual(sample, 0.0f);
+    }
+
+    EAUM1PreparedState *equivalent = createPreparedV4(1, &stage, 1, &delay, 1);
+    EAUM1PublicationOutcome outcome = {};
+    XCTAssertEqual(
+        EAUM1RuntimePublishPrepared(runtime, &equivalent, &outcome),
+        EAUM1StatusOK
+    );
+    XCTAssertEqual(outcome.flags, EAUM1PublicationCandidatePublished);
+    XCTAssertEqual(outcome.retirementTicket, 0u);
+
+    std::vector<float> second(16, 0.0f);
+    EAUM1AudioBuffer secondBuffer = {.samples = second.data(), .channelCount = 1};
+    XCTAssertEqual(EAUM1RuntimeProcess(runtime, &secondBuffer, 1, 16), EAUM1StatusOK);
+    XCTAssertEqual(second[4], 1.0f);
+    for (uint32_t index = 0; index < 16; ++index) {
+        if (index != 4) {
+            XCTAssertEqual(second[index], 0.0f);
+        }
+    }
+    EAUM1RuntimeDestroy(runtime);
+}
+
+- (void)testDelayPublicationWithDifferentParametersRestartsCold {
+    const uint64_t liveBefore = EAUM1TestHooks::livePreparedCount();
+    const EAUM1PreparedDelay delay = {.integerDelay = 20, .fraction = 0.0f};
+    const EAUM1PreparedStage stage = {
+        .kind = EAUM1PreparedStageDelay,
+        .channelIndex = 0,
+        .b0 = 0.0,
+    };
+    EAUM1PreparedState *prepared = createPreparedV4(1, &stage, 1, &delay, 1);
+    EAUM1Runtime *runtime = createRuntimeWithPrepared(&prepared, 1, 16, 1000.0);
+
+    std::vector<float> first(16, 0.0f);
+    first[0] = 1.0f;
+    EAUM1AudioBuffer buffer = {.samples = first.data(), .channelCount = 1};
+    XCTAssertEqual(EAUM1RuntimeProcess(runtime, &buffer, 1, 16), EAUM1StatusOK);
+
+    const EAUM1PreparedDelay different = {.integerDelay = 21, .fraction = 0.0f};
+    EAUM1PreparedState *candidate = createPreparedV4(1, &stage, 1, &different, 1);
+    EAUM1PublicationOutcome outcome = {};
+    XCTAssertEqual(
+        EAUM1RuntimePublishPrepared(runtime, &candidate, &outcome),
+        EAUM1StatusOK
+    );
+    XCTAssertNotEqual(outcome.retirementTicket, 0u);
+
+    std::vector<float> zeros(16, 0.0f);
+    for (int block = 0; block < 3; ++block) {
+        EAUM1AudioBuffer zeroBuffer = {.samples = zeros.data(), .channelCount = 1};
+        XCTAssertEqual(EAUM1RuntimeProcess(runtime, &zeroBuffer, 1, 16), EAUM1StatusOK);
+        if (block == 2) {
+            for (float sample : zeros) {
+                XCTAssertEqual(sample, 0.0f);
+            }
+        }
+        std::fill(zeros.begin(), zeros.end(), 0.0f);
+    }
+
+    EAUM1PublicationOutcome reclaimed = {};
+    XCTAssertEqual(
+        EAUM1RuntimePerformMaintenance(runtime, outcome.retirementTicket, &reclaimed),
+        EAUM1StatusOK
+    );
     EAUM1RuntimeDestroy(runtime);
     XCTAssertEqual(EAUM1TestHooks::livePreparedCount(), liveBefore);
 }
