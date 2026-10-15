@@ -50,11 +50,11 @@ EqualizerAU 是一款独立运行的 macOS 全局音频处理工具。它通过�
 
 ### 安装
 
-1. 从同一个 Release 下载 `EqualizerAU-0.1.0-arm64-preview.zip` 及其 `.sha256` 文件。
+1. 从同一个 Release 下载 `EqualizerAU-0.2.0-arm64-preview.zip` 及其 `.sha256` 文件。
 2. 验证归档完整性：
 
    ```bash
-   shasum -a 256 -c EqualizerAU-0.1.0-arm64-preview.zip.sha256
+   shasum -a 256 -c EqualizerAU-0.2.0-arm64-preview.zip.sha256
    ```
 
 3. 解压 ZIP，将 `EqualizerAU.app` 移到 `/Applications`。
