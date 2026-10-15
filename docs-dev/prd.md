@@ -306,7 +306,7 @@ flowchart LR
 
 - 菜单入口"导入EqualizerAPO配置…"选择配置文件后先整体校验，全程不触碰草稿与已保存
   配置；硬校验失败（文件不可读、无任何可识别指令、含 Include 展开后超 4 MiB、单行
-  GraphicEQ 超 512 点、Filter 行数超 512、节点总数超 1024、生成草稿超 4 MiB）直接
+  GraphicEQ 超 512 点、Filter 行数超 512、节点总数超 64、生成草稿超 4 MiB）直接
   报错，不进入预览；
 - 预览弹窗在应用前展示：导入摘要（将创建的节点数按类型统计、停用节点数）与逐项问题
   清单（文件、行号、指令、原因），无问题时仍显示摘要；含多个 `Device:` 段时显著
@@ -315,7 +315,7 @@ flowchart LR
   Undo，必要时自动补 Channels(all) 守卫保持源作用域语义）、取消；
 - 映射范围与降级矩阵以 ADR-0024 为准：Preamp、Filter（停用行导入为停用节点）、
   GraphicEQ、Delay、Channel、Convolution 六类映射为既有节点；Include 跟随加载
-  （同一文件只加载一次，循环与重复包含逐项可见报告、深度上限 8）；Copy、IIR 裸系数、Device、Stage、If 块、Eval、VSTPlugin、
+  （同一文件只加载一次，循环与重复包含逐项可见报告、深度上限 3 层）；Copy、IIR 裸系数、Device、Stage、If 块、Eval、VSTPlugin、
   LoudnessCorrection 跳过并逐项报告；REW 导出头部等非指令行静默忽略；
 - 应用后新导入节点成为当前选择；导入结果仅为配置草稿，EqualizerAPO 文本不与原生
   JSON 并列为可写事实来源；导出为后续独立兼容目标。

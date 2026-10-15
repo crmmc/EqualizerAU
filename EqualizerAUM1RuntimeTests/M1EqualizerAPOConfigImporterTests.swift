@@ -272,16 +272,18 @@ final class M1EqualizerAPOConfigImporterTests: XCTestCase {
     }
 
     func testIncludeBeyondDepthBudgetFailsWithoutLoadingDeepestFile() throws {
+        // Main (0) → f0 (1) → f1 (2) → f2 (3); f2's include exceeds the
+        // three-level budget, so f3 is never loaded.
         var files: [String: String] = [:]
-        for depth in 0...8 {
+        for depth in 0...2 {
             files["/fake/config/f\(depth).txt"] = "Include: f\(depth + 1).txt\n"
         }
-        files["/fake/config/f9.txt"] = "Filter: ON NO Fc 50 Hz\n"
+        files["/fake/config/f3.txt"] = "Filter: ON NO Fc 50 Hz\n"
         let plan = try makePlan("Include: f0.txt\n", files: files)
         XCTAssertTrue(plan.nodes.isEmpty)
         XCTAssertEqual(plan.issues.count, 1)
         XCTAssertEqual(plan.issues[0].category, .includeFailure)
-        XCTAssertEqual(plan.fileNames.count, 9)
+        XCTAssertEqual(plan.fileNames.count, 4)
     }
 
     func testUnreadableIncludeIsReportedAndParsingContinues() throws {

@@ -95,12 +95,14 @@ struct M1DiskConfigFileReader: M1ConfigFileReading {
 
 enum M1EqualizerAPOConfigImporter {
     static let maximumTotalBytes = 4 * 1024 * 1024
-    static let maximumIncludeDepth = 8
+    /// Main file plus at most three levels of `Include:` (user decision,
+    /// 2026-10-15): the flat single-level chain model does not adapt deep
+    /// include graphs.
+    static let maximumIncludeDepth = 3
     static let maximumPreampDB = 100.0
-    /// Whole-plan node budget; the product model is a flat single-level chain,
-    /// so pathological deep include graphs abort instead of adapting (M14
-    /// decision, ADR-0024).
-    static let maximumNodeCount = 1024
+    /// Whole-plan node budget (user decision, 2026-10-15): pathological
+    /// include graphs abort instead of adapting.
+    static let maximumNodeCount = 64
 
     /// Commands that would map to nodes but are skipped when they carry
     /// inline backtick expressions.
