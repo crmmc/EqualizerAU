@@ -8,7 +8,7 @@ verify_dir="$release_dir/verify"
 app="$derived/Build/Products/Release/M1/EqualizerAU.app"
 binary="$app/Contents/MacOS/EqualizerAU"
 expected_identifier=com.ruimingchen.EqualizerAU
-expected_version=${EXPECTED_VERSION:-0.2.0}
+expected_version=${EXPECTED_VERSION:-0.2.1}
 expected_build=${EXPECTED_BUILD:-1}
 expected_minimum_system=${EXPECTED_MINIMUM_SYSTEM:-14.2}
 
