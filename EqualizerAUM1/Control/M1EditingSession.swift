@@ -598,6 +598,46 @@ struct M1EditingSession: Sendable {
         selectInserted(inserted)
     }
 
+    /// M14 config import, "replace existing" landing: the whole draft chain
+    /// is swapped for the imported nodes as a single undoable step.
+    mutating func importReplacing(
+        _ importedNodes: [M1ProcessingNode],
+        effectsEnabled: Bool
+    ) throws {
+        guard !importedNodes.isEmpty else { return }
+        let inserted = importedNodes.map { node in node.copied(id: UUID()) }
+        try replaceNodes(inserted, effectsEnabled: effectsEnabled)
+        selectInserted(inserted)
+    }
+
+    /// M14 config import, "append at end" landing. When the imported block
+    /// starts without its own `Channel:` line and the existing chain tail
+    /// scopes a subset, a Channels(all) guard is prepended so the block keeps
+    /// its source implicit-all semantics.
+    mutating func importAppending(
+        _ importedNodes: [M1ProcessingNode],
+        effectsEnabled: Bool
+    ) throws {
+        guard !importedNodes.isEmpty else { return }
+        var inserted = importedNodes.map { node in node.copied(id: UUID()) }
+        if inserted.first?.kind != .channels, tailSelection(of: nodes) != .all {
+            inserted.insert(.channels(id: UUID(), selection: .all), at: 0)
+        }
+        var candidate = nodes
+        candidate.append(contentsOf: inserted)
+        try replaceNodes(candidate, effectsEnabled: effectsEnabled)
+        selectInserted(inserted)
+    }
+
+    /// The channel selection a node appended at the very end would inherit.
+    private func tailSelection(of chain: [M1ProcessingNode]) -> M1ChannelSelection {
+        var current = M1ChannelSelection.all
+        for node in chain where node.kind == .channels && node.isEnabled {
+            current = node.channels
+        }
+        return current
+    }
+
     mutating func undo(effectsEnabled: Bool) throws {
         guard let record = undoStack.popLast() else { return }
         let current = try makeRecord(nodes)

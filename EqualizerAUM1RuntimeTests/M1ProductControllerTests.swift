@@ -36,6 +36,189 @@ final class M1ProductControllerTests: XCTestCase {
         XCTAssertEqual(commitCount, 1)
     }
 
+    private struct ImportReaderFake: M1ConfigFileReading {
+        let files: [String: String]
+        func readText(at url: URL) throws -> String {
+            guard let text = files[url.path] else { throw CocoaError(.fileNoSuchFile) }
+            return text
+        }
+    }
+
+    @MainActor
+    func testImportParksPlanForPreviewWithoutTouchingDraft() async {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        await fixture.controller.importEqualizerAPOConfiguration(
+            from: URL(fileURLWithPath: "/mig/config.txt"),
+            reader: ImportReaderFake(files: [
+                "/mig/config.txt": """
+                Preamp: -6 dB
+                Copy: L=L+0.5*R
+                Filter: ON PK Fc 50 Hz Gain -3.0 dB Q 10.00
+                """,
+            ])
+        )
+        let snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(snapshot.draft.nodes.count, 1)
+        guard let plan = snapshot.pendingImport else {
+            return XCTFail("expected parked import plan")
+        }
+        XCTAssertEqual(plan.nodes.map(\.kind), [.preamp, .filter])
+        XCTAssertEqual(plan.issues.map(\.category), [.unsupportedCommand])
+        XCTAssertEqual(snapshot.persistence, .clean)
+    }
+
+    @MainActor
+    func testImportHardFailuresSetVisibleErrorAndKeepDraft() async {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        await fixture.controller.importEqualizerAPOConfiguration(
+            from: URL(fileURLWithPath: "/mig/config.txt"),
+            reader: ImportReaderFake(files: ["/mig/config.txt": "not a config\n"])
+        )
+        var snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(snapshot.visibleError, .importedConfigNoCommands)
+        XCTAssertNil(snapshot.pendingImport)
+        await fixture.controller.importEqualizerAPOConfiguration(
+            from: URL(fileURLWithPath: "/mig/missing.txt"),
+            reader: ImportReaderFake(files: [:])
+        )
+        snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(snapshot.visibleError, .importedConfigUnreadable("/mig/missing.txt"))
+        XCTAssertEqual(snapshot.draft.nodes.count, 1)
+    }
+
+    @MainActor
+    func testApplyImportReplaceSwapsDraftAndUndoRestoresUnsavedEdits() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.setGainDB(id: fixture.nodeID, gainDB: 6)
+        await fixture.controller.importEqualizerAPOConfiguration(
+            from: URL(fileURLWithPath: "/mig/config.txt"),
+            reader: ImportReaderFake(files: ["/mig/config.txt": "Preamp: -3 dB\n"])
+        )
+        try await fixture.controller.applyImport(.replaceExisting)
+        var snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(snapshot.draft.nodes.count, 1)
+        XCTAssertEqual(snapshot.draft.nodes[0].gainDB, -3)
+        XCTAssertEqual(snapshot.persistence, .modified)
+        try await fixture.controller.undo()
+        snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(snapshot.draft.nodes.count, 1)
+        XCTAssertEqual(snapshot.draft.nodes[0].gainDB, 6)
+    }
+
+    @MainActor
+    func testApplyImportAppendAddsScopeGuardForScopedTail() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.addChannels(
+            nodeID: fixture.secondNodeID,
+            selection: .identifiers([M1ChannelIdentifier("L")!])
+        )
+        await fixture.controller.importEqualizerAPOConfiguration(
+            from: URL(fileURLWithPath: "/mig/config.txt"),
+            reader: ImportReaderFake(files: ["/mig/config.txt": "Preamp: -3 dB\n"])
+        )
+        try await fixture.controller.applyImport(.appendAtEnd)
+        let snapshot = await fixture.controller.snapshot()
+        // Existing chain (preamp + Channels) + all-scope guard + imported node.
+        XCTAssertEqual(snapshot.draft.nodes.count, 4)
+        XCTAssertEqual(snapshot.draft.nodes[2].kind, .channels)
+        XCTAssertEqual(snapshot.draft.nodes[2].channels, .all)
+        XCTAssertEqual(snapshot.draft.nodes[3].kind, .preamp)
+        XCTAssertEqual(snapshot.persistence, .modified)
+    }
+
+    @MainActor
+    func testImportLimitErrorsMapToVisibleErrors() async {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+
+        struct ThrowingReader: M1ConfigFileReading {
+            func readText(at url: URL) throws -> String {
+                throw M1EqualizerAPOConfigImporterError.totalSizeLimitExceeded(
+                    bytes: 5_000_000,
+                    maximum: M1EqualizerAPOConfigImporter.maximumTotalBytes
+                )
+            }
+        }
+        await fixture.controller.importEqualizerAPOConfiguration(
+            from: URL(fileURLWithPath: "/mig/big.txt"),
+            reader: ThrowingReader()
+        )
+        var snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(
+            snapshot.visibleError,
+            .importedConfigTooLarge(
+                bytes: 5_000_000,
+                maximum: M1EqualizerAPOConfigImporter.maximumTotalBytes
+            )
+        )
+
+        var graphicEQLine = "GraphicEQ: "
+        for index in 0..<(M1GraphicEQContract.maximumPointCount + 1) {
+            graphicEQLine += index == 0 ? "\(20 + index) 0" : "; \(20 + index) 0"
+        }
+        await fixture.controller.importEqualizerAPOConfiguration(
+            from: URL(fileURLWithPath: "/mig/geq.txt"),
+            reader: ImportReaderFake(files: ["/mig/geq.txt": graphicEQLine + "\n"])
+        )
+        snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(
+            snapshot.visibleError,
+            .importedGraphicEQPointLimitExceeded(
+                count: M1GraphicEQContract.maximumPointCount + 1,
+                maximum: M1GraphicEQContract.maximumPointCount
+            )
+        )
+
+        let maximum = M1EqualizerAPOTextCodec.maximumFilterLines
+        var filterLines = ""
+        for index in 1...(maximum + 1) {
+            filterLines += "Filter \(index): ON PK Fc 100 Hz Gain 1 dB Q 1\n"
+        }
+        await fixture.controller.importEqualizerAPOConfiguration(
+            from: URL(fileURLWithPath: "/mig/filters.txt"),
+            reader: ImportReaderFake(files: ["/mig/filters.txt": filterLines])
+        )
+        snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(
+            snapshot.visibleError,
+            .importedFilterLineLimitExceeded(count: maximum + 1, maximum: maximum)
+        )
+
+        let nodeMaximum = M1EqualizerAPOConfigImporter.maximumNodeCount
+        var nodeLines = ""
+        for _ in 1...(nodeMaximum + 1) {
+            nodeLines += "Preamp: -3 dB\n"
+        }
+        await fixture.controller.importEqualizerAPOConfiguration(
+            from: URL(fileURLWithPath: "/mig/nodes.txt"),
+            reader: ImportReaderFake(files: ["/mig/nodes.txt": nodeLines])
+        )
+        snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(
+            snapshot.visibleError,
+            .importedNodeLimitExceeded(count: nodeMaximum + 1, maximum: nodeMaximum)
+        )
+    }
+
+    @MainActor
+    func testCancelImportClearsPlanWithoutTouchingDraft() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        await fixture.controller.importEqualizerAPOConfiguration(
+            from: URL(fileURLWithPath: "/mig/config.txt"),
+            reader: ImportReaderFake(files: ["/mig/config.txt": "Preamp: -3 dB\n"])
+        )
+        await fixture.controller.cancelImport()
+        let snapshot = await fixture.controller.snapshot()
+        XCTAssertNil(snapshot.pendingImport)
+        XCTAssertEqual(snapshot.draft.nodes.count, 1)
+        XCTAssertEqual(snapshot.persistence, .clean)
+    }
+
     func testApplicationLanguageRawValuesRemainStable() {
         XCTAssertEqual(
             M1ApplicationLanguage.allCases.map(\.rawValue),

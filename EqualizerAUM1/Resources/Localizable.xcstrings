@@ -2402,6 +2402,236 @@
           }
         }
       }
+    },
+    "Import EqualizerAPO Configuration…": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导入EqualizerAPO配置…"
+          }
+        }
+      }
+    },
+    "Import EqualizerAPO Configuration": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导入EqualizerAPO配置"
+          }
+        }
+      }
+    },
+    "The import will create %lld nodes (%lld disabled).": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将创建 %lld 个节点（%lld 个停用）。"
+          }
+        }
+      }
+    },
+    "×%lld": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "×%lld"
+          }
+        }
+      }
+    },
+    "This configuration contains multiple Device sections; every section was imported. Delete the ones you do not need after importing.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该配置包含多个 Device 段；所有段均已导入。导入后请删除不需要的段。"
+          }
+        }
+      }
+    },
+    "No issues were found in this file.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件中未发现问题。"
+          }
+        }
+      }
+    },
+    "no equivalent node; skipped": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无等价节点；已跳过"
+          }
+        }
+      }
+    },
+    "conditional block skipped (%lld lines)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "条件块已跳过（%lld 行）"
+          }
+        }
+      }
+    },
+    "expression not evaluated; skipped": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "表达式未求值；已跳过"
+          }
+        }
+      }
+    },
+    "device/stage gating not applied": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "设备/阶段门控未生效"
+          }
+        }
+      }
+    },
+    "line could not be parsed": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该行无法解析"
+          }
+        }
+      }
+    },
+    "Windows path kept as-is; repoint after import": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Windows 路径按原样保留；导入后请重新指定"
+          }
+        }
+      }
+    },
+    "format may be unsupported (WAV only)": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "格式可能不受支持（仅支持 WAV）"
+          }
+        }
+      }
+    },
+    "included file could not be loaded": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "被包含文件无法加载"
+          }
+        }
+      }
+    },
+    "Append at End": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "追加到末尾"
+          }
+        }
+      }
+    },
+    "Replace Existing": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "覆盖现有"
+          }
+        }
+      }
+    },
+    "The selected file could not be read: %@": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法读取所选文件：%@"
+          }
+        }
+      }
+    },
+    "The selected file contains no recognizable EqualizerAPO commands; nothing was imported.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "所选文件不含可识别的 EqualizerAPO 指令；未导入任何内容。"
+          }
+        }
+      }
+    },
+    "The selected configuration expands to %lld bytes, above the %lld-byte limit; nothing was imported.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "所选配置展开后为 %lld 字节，超出 %lld 字节上限；未导入任何内容。"
+          }
+        }
+      }
+    },
+    "The file has a GraphicEQ line with %lld points, above the %lld-point limit; nothing was imported.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件中某 GraphicEQ 行有 %lld 个频点，超出 %lld 点上限；未导入任何内容。"
+          }
+        }
+      }
+    },
+    "The file has %lld Filter lines, above the %lld-line limit; nothing was imported.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件中 Filter 行数达 %lld 行，超出 %lld 行上限；未导入任何内容。"
+          }
+        }
+      }
+    },
+    "The file imports to %lld nodes in total, above the %lld-node import limit; nothing was imported.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件导入后共 %lld 个节点，超出 %lld 个节点的导入上限；未导入任何内容。"
+          }
+        }
+      }
+    },
+    "already included once; duplicate skipped": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该文件已包含过；跳过重复包含"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

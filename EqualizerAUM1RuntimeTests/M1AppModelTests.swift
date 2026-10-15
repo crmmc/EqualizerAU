@@ -127,6 +127,38 @@ final class M1AppModelTests: XCTestCase {
         XCTAssertTrue(fixture.model.snapshot.draft.nodes.isEmpty)
     }
 
+    func testImportEqualizerAPOConfigurationParksAppliesAndCancels() async throws {
+        let fixture = makeAppModelFixture()
+        fixture.model.bootstrap()
+        await fixture.model.waitUntilIdle()
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("m14-model-\(UUID().uuidString).txt")
+        try "Preamp: -3 dB\n".write(to: url, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        fixture.model.importEqualizerAPOConfiguration(from: url)
+        await fixture.model.waitUntilIdle()
+        var snapshot = fixture.model.snapshot
+        XCTAssertEqual(snapshot.pendingImport?.nodes.map(\.kind), [.preamp])
+
+        fixture.model.cancelImport()
+        await fixture.model.waitUntilIdle()
+        snapshot = fixture.model.snapshot
+        XCTAssertNil(snapshot.pendingImport)
+        XCTAssertEqual(snapshot.draft.nodes.count, 1)
+        XCTAssertEqual(snapshot.persistence, .clean)
+
+        fixture.model.importEqualizerAPOConfiguration(from: url)
+        await fixture.model.waitUntilIdle()
+        fixture.model.applyImport(.replaceExisting)
+        await fixture.model.waitUntilIdle()
+        snapshot = fixture.model.snapshot
+        XCTAssertNil(snapshot.pendingImport)
+        XCTAssertEqual(snapshot.draft.nodes.count, 1)
+        XCTAssertEqual(snapshot.draft.nodes[0].gainDB, -3)
+        XCTAssertEqual(snapshot.persistence, .modified)
+    }
+
     func testPasteGraphicEQTextCreatesSelectedGraphicEQNode() async throws {
         let fixture = makeAppModelFixture()
         fixture.model.bootstrap()

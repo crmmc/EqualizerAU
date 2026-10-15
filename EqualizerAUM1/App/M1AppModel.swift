@@ -42,6 +42,18 @@ extension M1PresentationMessage {
             "The pasted text has \(count) Filter lines, above the \(maximum)-line limit; nothing was inserted."
         case let .pastedTextPartialImport(report):
             "Pasted text imported \(report.graphicEQLineCount + report.filterLineCount) node(s); ignored \(report.ignoredLineCount) line(s) and \(report.ignoredParameterCount) parameter(s)."
+        case let .importedConfigUnreadable(path):
+            "The selected file could not be read: \(path)"
+        case .importedConfigNoCommands:
+            "The selected file contains no recognizable EqualizerAPO commands; nothing was imported."
+        case let .importedConfigTooLarge(bytes, maximum):
+            "The selected configuration expands to \(bytes) bytes, above the \(maximum)-byte limit; nothing was imported."
+        case let .importedGraphicEQPointLimitExceeded(count, maximum):
+            "The file has a GraphicEQ line with \(count) points, above the \(maximum)-point limit; nothing was imported."
+        case let .importedFilterLineLimitExceeded(count, maximum):
+            "The file has \(count) Filter lines, above the \(maximum)-line limit; nothing was imported."
+        case let .importedNodeLimitExceeded(count, maximum):
+            "The file imports to \(count) nodes in total, above the \(maximum)-node import limit; nothing was imported."
         case .terminationCancelled:
             "Termination cancelled"
         case let .technical(reason):
@@ -85,6 +97,36 @@ extension M1PresentationMessage {
         case let .pastedTextPartialImport(report):
             String(
                 localized: "Pasted text imported \(report.graphicEQLineCount + report.filterLineCount) node(s); ignored \(report.ignoredLineCount) line(s) and \(report.ignoredParameterCount) parameter(s).",
+                locale: locale
+            )
+        case let .importedConfigUnreadable(path):
+            String(
+                localized: "The selected file could not be read: \(path)",
+                locale: locale
+            )
+        case .importedConfigNoCommands:
+            String(
+                localized: "The selected file contains no recognizable EqualizerAPO commands; nothing was imported.",
+                locale: locale
+            )
+        case let .importedConfigTooLarge(bytes, maximum):
+            String(
+                localized: "The selected configuration expands to \(bytes) bytes, above the \(maximum)-byte limit; nothing was imported.",
+                locale: locale
+            )
+        case let .importedGraphicEQPointLimitExceeded(count, maximum):
+            String(
+                localized: "The file has a GraphicEQ line with \(count) points, above the \(maximum)-point limit; nothing was imported.",
+                locale: locale
+            )
+        case let .importedFilterLineLimitExceeded(count, maximum):
+            String(
+                localized: "The file has \(count) Filter lines, above the \(maximum)-line limit; nothing was imported.",
+                locale: locale
+            )
+        case let .importedNodeLimitExceeded(count, maximum):
+            String(
+                localized: "The file imports to \(count) nodes in total, above the \(maximum)-node import limit; nothing was imported.",
                 locale: locale
             )
         case .terminationCancelled:
@@ -145,7 +187,8 @@ final class M1AppModel: ObservableObject {
         canUseSelection: false,
         hasUnsavedNodes: false,
         hasUnsavedEffects: false,
-        visibleError: nil
+        visibleError: nil,
+        pendingImport: nil
     )
 
     let controller: M1ProductController
@@ -348,6 +391,15 @@ final class M1AppModel: ObservableObject {
     func paste() {
         if routeTextCommand(#selector(NSText.paste(_:))) { return }
         performEdit { try await self.controller.paste(from: self.pasteboard) }
+    }
+    func importEqualizerAPOConfiguration(from url: URL) {
+        performEdit { await self.controller.importEqualizerAPOConfiguration(from: url) }
+    }
+    func applyImport(_ mode: M1ImportApplicationMode) {
+        performEdit { try await self.controller.applyImport(mode) }
+    }
+    func cancelImport() {
+        perform { await self.controller.cancelImport() }
     }
     func moveSelection(to index: Int, operation: M1NodeDragOperation) {
         performEdit {

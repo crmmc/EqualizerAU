@@ -682,6 +682,75 @@ final class M1EditingSessionTests: XCTestCase {
         }
     }
 
+    func testImportReplacingSwapsWholeChainAsOneUndoStep() throws {
+        var session = M1EditingSession(nodes: nodes(3))
+        session.select(ids[1], mode: .replacing)
+        let imported: [M1ProcessingNode] = [
+            M1ProcessingNode(id: UUID(), isEnabled: true, gainDB: -6, channels: .all),
+            .filter(),
+        ]
+        try session.importReplacing(imported, effectsEnabled: true)
+        XCTAssertEqual(session.nodes.count, 2)
+        XCTAssertEqual(session.nodes[0].gainDB, -6)
+        XCTAssertEqual(Set(session.orderedSelection), Set(session.nodes.map(\.id)))
+        try session.undo(effectsEnabled: true)
+        XCTAssertEqual(session.nodes.count, 3)
+        XCTAssertEqual(session.nodes.map(\.id), ids[0...2].map { $0 })
+    }
+
+    func testImportAppendingAddsScopeGuardWhenChainTailIsScoped() throws {
+        let scopedChain = nodes(1) + [
+            .channels(id: ids[1], selection: .identifiers([M1ChannelIdentifier("L")!])),
+        ]
+        var session = M1EditingSession(nodes: scopedChain)
+        try session.importAppending(
+            [M1ProcessingNode(id: UUID(), isEnabled: true, gainDB: -3, channels: .all)],
+            effectsEnabled: true
+        )
+        XCTAssertEqual(session.nodes.map(\.kind), [.preamp, .channels, .channels, .preamp])
+        XCTAssertEqual(session.nodes[2].channels, .all)
+        XCTAssertEqual(session.nodes[3].gainDB, -3)
+        XCTAssertEqual(
+            Set(session.orderedSelection),
+            Set(session.nodes[2...].map(\.id))
+        )
+        try session.undo(effectsEnabled: true)
+        XCTAssertEqual(session.nodes.count, 2)
+        try session.redo(effectsEnabled: true)
+        XCTAssertEqual(session.nodes.count, 4)
+    }
+
+    func testImportAppendingToAllScopedTailIsPureAppend() throws {
+        var session = M1EditingSession(nodes: nodes(2))
+        try session.importAppending(
+            [M1ProcessingNode(id: UUID(), isEnabled: true, gainDB: -3, channels: .all)],
+            effectsEnabled: true
+        )
+        XCTAssertEqual(session.nodes.map(\.kind), [.preamp, .preamp, .preamp])
+        XCTAssertEqual(session.nodes[2].gainDB, -3)
+    }
+
+    func testImportAppendingWithExplicitLeadingChannelNodeSkipsGuard() throws {
+        let scopedChain = nodes(1) + [
+            .channels(id: ids[1], selection: .identifiers([M1ChannelIdentifier("L")!])),
+        ]
+        var session = M1EditingSession(nodes: scopedChain)
+        try session.importAppending(
+            [.channels(selection: .all)],
+            effectsEnabled: true
+        )
+        XCTAssertEqual(session.nodes.map(\.kind), [.preamp, .channels, .channels])
+    }
+
+    func testImportWithEmptyNodeListIsANoOp() throws {
+        var session = M1EditingSession(nodes: nodes(2))
+        try session.importReplacing([], effectsEnabled: true)
+        try session.importAppending([], effectsEnabled: true)
+        XCTAssertEqual(session.nodes.count, 2)
+        try session.undo(effectsEnabled: true)
+        XCTAssertEqual(session.nodes.count, 2)
+    }
+
     private func convolutionIR(
         storageID: UUID,
         fileName: String = "Room IR.wav"

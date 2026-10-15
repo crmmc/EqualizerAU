@@ -40,6 +40,19 @@ enum M1SystemWAVPicker {
     }
 }
 
+/// M14 config import picker: EqualizerAPO configuration files carry no fixed
+/// extension, so any single file is selectable.
+enum M1SystemConfigFilePicker {
+    @MainActor
+    static func select() -> URL? {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+}
+
 enum M1SystemDiagnosticsPresenter {
     @MainActor
     static func present(_ text: String) {
