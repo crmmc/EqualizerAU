@@ -302,6 +302,23 @@ flowchart LR
 - 输出设备音量不可观察或不可换算为分贝时静默降级为无补偿（曲线冻结，ADR-0023 记录的
   有意取舍：M13 不为该低频故障面增加诊断 UI）。
 
+### 7.10 EqualizerAPO 配置导入
+
+- 菜单入口"导入EqualizerAPO配置…"选择配置文件后先整体校验，全程不触碰草稿与已保存
+  配置；硬校验失败（文件不可读、无任何可识别指令、含 Include 展开后超 4 MiB、单行
+  GraphicEQ 超 512 点、生成草稿超 4 MiB）直接报错，不进入预览；
+- 预览弹窗在应用前展示：导入摘要（将创建的节点数按类型统计、停用节点数）与逐项问题
+  清单（文件、行号、指令、原因），无问题时仍显示摘要；含多个 `Device:` 段时显著
+  警告"全部段均已导入"；
+- 最终由用户三选一：覆盖现有（整链草稿替换为一步 Undo）、末尾追加（链尾追加为一步
+  Undo，必要时自动补 Channels(all) 守卫保持源作用域语义）、取消；
+- 映射范围与降级矩阵以 ADR-0024 为准：Preamp、Filter（停用行导入为停用节点）、
+  GraphicEQ、Delay、Channel、Convolution 六类映射为既有节点；Include 跟随加载
+  （循环防护、深度上限 8）；Copy、IIR 裸系数、Device、Stage、If 块、Eval、VSTPlugin、
+  LoudnessCorrection 跳过并逐项报告；REW 导出头部等非指令行静默忽略；
+- 应用后新导入节点成为当前选择；导入结果仅为配置草稿，EqualizerAPO 文本不与原生
+  JSON 并列为可写事实来源；导出为后续独立兼容目标。
+
 ## 8. 界面需求
 
 ### 8.1 设计原则
@@ -403,6 +420,7 @@ MVP 完成需满足：
 | M11 Graphic EQ FIR 随采样率缩放 | 任意输出采样率下均衡频率分辨率不低于 48 kHz 基准，高采样率用户获得同等精度 |
 | M12 经典滤波器节点 | 用户可创建/编辑 EqualizerAPO 八类经典滤波器并直接粘贴 `Filter:` 参数预设，滤波器按参考语义参与实时处理链 |
 | M13 延迟与响度校正节点 | 用户可用分数采样级延迟对齐声道；小音量听音获得随输出音量自动跟随的等响曲线补偿，切换无爆音且不触碰草稿与 Save 语义 |
+| M14 EqualizerAPO 配置导入 | 用户可把 Windows EqualizerAPO 配置文件（含 Include 链）导入为原生草稿：先校验、弹窗逐项呈现问题，再选择覆盖现有、末尾追加或取消 |
 
 M0 已完成，详见 [`milestones/M0-native-route.md`](./milestones/M0-native-route.md)。M8、M9 已完成并关闭，
 验收证据分别见 [`milestones/M8-convolution-source-path.md`](./milestones/M8-convolution-source-path.md) 和
@@ -416,9 +434,10 @@ M12 决策 [`ADR-0021`](./adr/0021-classic-filter-node.md) 已接受，实现与
 [`milestones/M12-classic-filter-node.md`](./milestones/M12-classic-filter-node.md)。
 M13 决策 [`ADR-0022`](./adr/0022-delay-node.md) 与 [`ADR-0023`](./adr/0023-loudness-correction-node.md)
 已接受，实现与验收计划见 [`milestones/M13-delay-loudness.md`](./milestones/M13-delay-loudness.md)。
+M14 决策 [`ADR-0024`](./adr/0024-eqapo-config-import.md) 已接受，实现与验收计划见
+[`milestones/M14-eqapo-config-import.md`](./milestones/M14-eqapo-config-import.md)。
 
 ## 12. 待确认产品事项
 
 - MVP 是否允许选择非默认输出设备；
-- EqualizerAPO 配置导入范围；
 - 是否需要登录启动。

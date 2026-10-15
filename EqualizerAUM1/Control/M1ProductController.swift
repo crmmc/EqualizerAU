@@ -235,8 +235,18 @@ enum M1PresentationMessage: Equatable, Sendable {
     case pastedGraphicEQPointLimitExceeded(count: Int, maximum: Int)
     case pastedFilterLineLimitExceeded(count: Int, maximum: Int)
     case pastedTextPartialImport(M1APOTextPasteReport)
+    case importedConfigUnreadable(String)
+    case importedConfigNoCommands
+    case importedConfigTooLarge(bytes: Int, maximum: Int)
+    case importedGraphicEQPointLimitExceeded(count: Int, maximum: Int)
     case terminationCancelled
     case technical(String)
+}
+
+/// M14 config import landing choice from the preview dialog.
+enum M1ImportApplicationMode {
+    case replaceExisting
+    case appendAtEnd
 }
 
 enum M1ProductPersistenceState: Equatable, Sendable {
@@ -294,6 +304,8 @@ struct M1ProductSnapshot: Equatable, Sendable {
     let hasUnsavedNodes: Bool
     let hasUnsavedEffects: Bool
     let visibleError: M1PresentationMessage?
+    /// Parked M14 import plan waiting for the preview dialog decision.
+    let pendingImport: M1APOConfigImportPlan?
 
     var processingEnabled: Bool {
         audio == .running
@@ -401,6 +413,7 @@ actor M1ProductController {
     private var appliedEffectsEnabled: Bool?
     private var processingTransition: M1ProcessingTransition = .idle
     private var visibleError: M1PresentationMessage?
+    private var pendingImportPlan: M1APOConfigImportPlan?
     private var effectsOperationError: M1PresentationMessage?
     private var commitGeneration: UInt64 = 0
     private var draftRevision: UInt64 = 0
@@ -533,7 +546,8 @@ actor M1ProductController {
                 && !editingSession.selectedNodeIDs.isEmpty,
             hasUnsavedNodes: requiresRepair || draft.nodes != saved.nodes,
             hasUnsavedEffects: draft.effectsEnabled != saved.effectsEnabled,
-            visibleError: visibleError
+            visibleError: visibleError,
+            pendingImport: pendingImportPlan
         )
     }
 
@@ -820,6 +834,59 @@ actor M1ProductController {
         try await updateEditingSession { session, effectsEnabled in
             try session.paste(pastedNodes, newIDs: ids, effectsEnabled: effectsEnabled)
         }
+    }
+
+    /// M14 config import step 1: parse the picked file into a dry-run plan.
+    /// Hard validation failures surface as visible errors without touching
+    /// the draft; success parks the plan for the preview dialog (PRD R1–R3).
+    func importEqualizerAPOConfiguration(
+        from url: URL,
+        reader: any M1ConfigFileReading = M1DiskConfigFileReader()
+    ) async {
+        guard snapshot().canEdit else {
+            visibleError = .editorChangeCouldNotApply
+            return
+        }
+        do {
+            let plan = try await Task.detached {
+                try M1EqualizerAPOConfigImporter.makePlan(mainFile: url) { target in
+                    try reader.readText(at: target)
+                }
+            }.value
+            pendingImportPlan = plan
+        } catch let error as M1EqualizerAPOConfigImporterError {
+            switch error {
+            case .fileUnreadable(let path):
+                visibleError = .importedConfigUnreadable(path)
+            case .noRecognizedCommands:
+                visibleError = .importedConfigNoCommands
+            case .totalSizeLimitExceeded(let bytes, let maximum):
+                visibleError = .importedConfigTooLarge(bytes: bytes, maximum: maximum)
+            case .graphicEQPointLimitExceeded(let count, let maximum):
+                visibleError = .importedGraphicEQPointLimitExceeded(count: count, maximum: maximum)
+            }
+        } catch {
+            visibleError = .technical(String(describing: error))
+        }
+    }
+
+    /// M14 config import step 2: apply the parked plan to the draft.
+    func applyImport(_ mode: M1ImportApplicationMode) async throws {
+        guard let plan = pendingImportPlan else { return }
+        pendingImportPlan = nil
+        try await updateEditingSession { session, effectsEnabled in
+            switch mode {
+            case .replaceExisting:
+                try session.importReplacing(plan.nodes, effectsEnabled: effectsEnabled)
+            case .appendAtEnd:
+                try session.importAppending(plan.nodes, effectsEnabled: effectsEnabled)
+            }
+        }
+    }
+
+    /// M14 config import: dismiss the preview without touching the draft.
+    func cancelImport() {
+        pendingImportPlan = nil
     }
 
     func reportCommandError(_ message: String) {

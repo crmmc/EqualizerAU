@@ -97,6 +97,7 @@ approved_dynamic_text = {
     "filterTypeTitle(specification.type", "filterWidthUnit(specification.width",
     "delayUnitLabel(specification.unit",
     "titleKey",
+    "kindName(kind", "sourceLabel(issue", "reason(issue.category",
 }
 dynamic_text = set(re.findall(r'\bText\((?!")([^\n]+?)\)', app_source))
 if dynamic_text != approved_dynamic_text:

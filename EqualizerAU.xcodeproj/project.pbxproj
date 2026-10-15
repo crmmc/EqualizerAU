@@ -122,6 +122,9 @@
 		D10000000000000000000045 /* M1EqualizerAPOTextCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000035 /* M1EqualizerAPOTextCodec.swift */; };
 		D10000000000000000000046 /* M1BiquadFilterDesignTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000036 /* M1BiquadFilterDesignTests.swift */; };
 		D10000000000000000000047 /* M1EqualizerAPOTextCodecTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000037 /* M1EqualizerAPOTextCodecTests.swift */; };
+		D10000000000000000000058 /* M1EqualizerAPOConfigImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000045 /* M1EqualizerAPOConfigImporter.swift */; };
+		D10000000000000000000059 /* M1EqualizerAPOConfigImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000045 /* M1EqualizerAPOConfigImporter.swift */; };
+		D1000000000000000000005A /* M1EqualizerAPOConfigImporterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000046 /* M1EqualizerAPOConfigImporterTests.swift */; };
 		D10000000000000000000048 /* M1FilterEditingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000038 /* M1FilterEditingTests.swift */; };
 		D10000000000000000000039 /* Accelerate.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002D /* Accelerate.framework */; };
 		D1000000000000000000003A /* Accelerate.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D2000000000000000000002D /* Accelerate.framework */; };
@@ -231,6 +234,8 @@
 		D20000000000000000000042 /* M1EqualLoudnessCurveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1EqualLoudnessCurveTests.swift; sourceTree = "<group>"; };
 		D20000000000000000000043 /* M1OutputVolumeObserver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1OutputVolumeObserver.swift; sourceTree = "<group>"; };
 		D20000000000000000000044 /* M1OutputVolumeMath.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1OutputVolumeMath.swift; sourceTree = "<group>"; };
+		D20000000000000000000045 /* M1EqualizerAPOConfigImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1EqualizerAPOConfigImporter.swift; sourceTree = "<group>"; };
+		D20000000000000000000046 /* M1EqualizerAPOConfigImporterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1EqualizerAPOConfigImporterTests.swift; sourceTree = "<group>"; };
 		D20000000000000000000035 /* M1EqualizerAPOTextCodec.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1EqualizerAPOTextCodec.swift; sourceTree = "<group>"; };
 		D20000000000000000000036 /* M1BiquadFilterDesignTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1BiquadFilterDesignTests.swift; sourceTree = "<group>"; };
 		D20000000000000000000037 /* M1EqualizerAPOTextCodecTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = M1EqualizerAPOTextCodecTests.swift; sourceTree = "<group>"; };
@@ -526,6 +531,7 @@
 				D20000000000000000000023 /* M1ConfigurationStore.swift */,
 				D20000000000000000000034 /* M1BiquadFilterDesign.swift */,
 				D20000000000000000000041 /* M1EqualLoudnessCurve.swift */,
+				D20000000000000000000045 /* M1EqualizerAPOConfigImporter.swift */,
 			);
 			path = Configuration;
 			sourceTree = "<group>";
@@ -610,6 +616,7 @@
 				D20000000000000000000037 /* M1EqualizerAPOTextCodecTests.swift */,
 				D20000000000000000000038 /* M1FilterEditingTests.swift */,
 				E20000000000000000000001 /* M1EditingPerformanceTests.swift */,
+				D20000000000000000000046 /* M1EqualizerAPOConfigImporterTests.swift */,
 			);
 			path = EqualizerAUM1RuntimeTests;
 			sourceTree = "<group>";
@@ -989,6 +996,7 @@
 				D10000000000000000000051 /* M1EqualLoudnessCurve.swift in Sources */,
 				D10000000000000000000054 /* M1OutputVolumeObserver.swift in Sources */,
 				D10000000000000000000056 /* M1OutputVolumeMath.swift in Sources */,
+				D10000000000000000000058 /* M1EqualizerAPOConfigImporter.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1037,6 +1045,8 @@
 				D10000000000000000000053 /* M1EqualLoudnessCurveTests.swift in Sources */,
 				D10000000000000000000055 /* M1OutputVolumeObserver.swift in Sources */,
 				D10000000000000000000057 /* M1OutputVolumeMath.swift in Sources */,
+				D10000000000000000000059 /* M1EqualizerAPOConfigImporter.swift in Sources */,
+				D1000000000000000000005A /* M1EqualizerAPOConfigImporterTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

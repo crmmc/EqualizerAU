@@ -563,6 +563,16 @@ struct EqualizerAUM1App: App {
                 .background {
                     M1EditorWindowReader { appDelegate.registerEditorWindow($0) }
                 }
+                .sheet(
+                    isPresented: Binding(
+                        get: { model.snapshot.pendingImport != nil },
+                        set: { shown in if !shown { model.cancelImport() } }
+                    )
+                ) {
+                    if let plan = model.snapshot.pendingImport {
+                        M1ImportPreviewSheet(model: model, plan: plan)
+                    }
+                }
         }
         .windowResizability(.contentMinSize)
         .defaultSize(width: 1180, height: 520)
@@ -633,6 +643,12 @@ struct EqualizerAUM1App: App {
                         !(canPerformTextAction(#selector(NSText.deleteBackward(_:)))
                             ?? model.snapshot.canEdit)
                     )
+                Button("Import EqualizerAPO Configuration…") {
+                    if let url = M1SystemConfigFilePicker.select() {
+                        model.importEqualizerAPOConfiguration(from: url)
+                    }
+                }
+                    .disabled(!model.snapshot.canEdit)
                 Divider()
                 Menu("Processor Selection") {
                     Button("Move Focus Up") { model.moveFocus(by: -1, extending: false) }
@@ -2741,5 +2757,131 @@ private struct M1NodeDropDelegate: DropDelegate {
     private func destination(for info: DropInfo) -> Int {
         guard let rowIndex else { return endDestination }
         return info.location.y < rowHeight / 2 ? rowIndex : rowIndex + 1
+    }
+}
+
+/// M14 dry-run import preview: summary, per-item issues, and the landing
+/// choice (replace / append / cancel) before anything touches the draft.
+private struct M1ImportPreviewSheet: View {
+    let model: M1AppModel
+    let plan: M1APOConfigImportPlan
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Import EqualizerAPO Configuration")
+                .font(.headline)
+            Text(
+                String(
+                    localized: "The import will create \(plan.nodes.count) nodes (\(plan.disabledFilterCount) disabled).",
+                    locale: m1ApplicationLocale
+                )
+            )
+            ForEach(orderedKindCounts, id: \.0) { kind, count in
+                HStack(spacing: 6) {
+                    Text(kindName(kind))
+                    Text("×\(count)")
+                }
+                .foregroundStyle(.secondary)
+            }
+            if plan.hasMultipleDeviceSections {
+                Text(
+                    String(
+                        localized: "This configuration contains multiple Device sections; every section was imported. Delete the ones you do not need after importing.",
+                        locale: m1ApplicationLocale
+                    )
+                )
+                    .foregroundStyle(.orange)
+            }
+            Divider()
+            if plan.issues.isEmpty {
+                Text(
+                    String(
+                        localized: "No issues were found in this file.",
+                        locale: m1ApplicationLocale
+                    )
+                )
+                    .foregroundStyle(.secondary)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(plan.issues.enumerated()), id: \.offset) { _, issue in
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Text(sourceLabel(issue) + "  " + issue.command)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                Text(reason(issue.category))
+                                    .font(.caption)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { model.cancelImport() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Append at End") { model.applyImport(.appendAtEnd) }
+                Button("Replace Existing") { model.applyImport(.replaceExisting) }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(16)
+        .frame(width: 560, height: 430)
+    }
+
+    private var orderedKindCounts: [(M1ProcessingNodeKind, Int)] {
+        let order: [M1ProcessingNodeKind] = [
+            .channels, .preamp, .graphicEQ, .filter, .convolution, .delay, .loudness,
+        ]
+        return order.compactMap { kind in
+            plan.nodeCountByKind[kind].map { (kind, $0) }
+        }
+    }
+
+    private func sourceLabel(_ issue: M1APOImportIssue) -> String {
+        let fileName = issue.fileIndex < plan.fileNames.count
+            ? plan.fileNames[issue.fileIndex]
+            : "?"
+        return "\(fileName):\(issue.lineNumber)"
+    }
+
+    private func reason(_ category: M1APOImportIssueCategory) -> String {
+        switch category {
+        case .unsupportedCommand:
+            return String(localized: "no equivalent node; skipped", locale: m1ApplicationLocale)
+        case .conditionalBlock(let lineCount):
+            return String(
+                localized: "conditional block skipped (\(lineCount) lines)",
+                locale: m1ApplicationLocale
+            )
+        case .expression:
+            return String(localized: "expression not evaluated; skipped", locale: m1ApplicationLocale)
+        case .deviceGate:
+            return String(localized: "device/stage gating not applied", locale: m1ApplicationLocale)
+        case .invalidLine:
+            return String(localized: "line could not be parsed", locale: m1ApplicationLocale)
+        case .convolutionPath:
+            return String(
+                localized: "Windows path kept as-is; repoint after import",
+                locale: m1ApplicationLocale
+            )
+        case .convolutionFormat:
+            return String(localized: "format may be unsupported (WAV only)", locale: m1ApplicationLocale)
+        case .includeFailure:
+            return String(localized: "included file could not be loaded", locale: m1ApplicationLocale)
+        }
+    }
+
+    private func kindName(_ kind: M1ProcessingNodeKind) -> String {
+        switch kind {
+        case .channels: return String(localized: "Channels", locale: m1ApplicationLocale)
+        case .preamp: return String(localized: "Preamp", locale: m1ApplicationLocale)
+        case .graphicEQ: return String(localized: "Graphic EQ", locale: m1ApplicationLocale)
+        case .convolution: return String(localized: "Convolution", locale: m1ApplicationLocale)
+        case .filter: return String(localized: "Filter", locale: m1ApplicationLocale)
+        case .delay: return String(localized: "Delay", locale: m1ApplicationLocale)
+        case .loudness: return String(localized: "Loudness", locale: m1ApplicationLocale)
+        }
     }
 }

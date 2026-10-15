@@ -103,12 +103,14 @@ enum M1EqualizerAPOTextCodec {
             .firstMatch(in: command, range: range) != nil
     }
 
-    private enum FilterLineParseOutcome {
+    enum FilterLineParseOutcome {
         case node(M1FilterSpecification, ignoredParameterCount: Int)
         case ignored
     }
 
-    private static func parseFilterLine(_ line: String) throws -> FilterLineParseOutcome {
+    /// Parses one `Filter: ON <type> …` line. Internal for reuse by the
+    /// M14 config importer (single parsing source of truth).
+    static func parseFilterLine(_ line: String) throws -> FilterLineParseOutcome {
         guard let separator = line.firstIndex(of: ":") else { return .ignored }
         var parameters = String(line[line.index(after: separator)...])
         if !parameters.contains(".") {
