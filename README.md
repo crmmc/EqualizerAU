@@ -2,7 +2,7 @@
 
 <p align="center"><strong>让 macOS 系统音频，按你的方式工作。</strong></p>
 
-<p align="center">原生、全局、无需虚拟音频驱动。用前置放大、图形均衡器和卷积构建自己的音频处理链。</p>
+<p align="center">原生、全局、无需虚拟音频驱动。用前置放大、图形均衡器、滤波器、卷积、延迟和响度补偿构建自己的音频处理链。</p>
 
 <p align="center"><a href="#立即使用">立即使用</a> · <a href="#开发者">开发者指南</a> · <a href="#文档">项目文档</a></p>
 
@@ -22,8 +22,10 @@ EqualizerAU 是一款独立运行的 macOS 全局音频处理工具。它通过�
 
 - 用**前置放大**调整整体增益。
 - 用**任意点图形均衡器**编辑响应曲线，并编译为随采样率缩放的最小相位 FIR（≤48 kHz 为 16,384 taps，高采样率保持同等频率分辨率）。
-- ⌘V 直接粘贴 EqualizerAPO `GraphicEQ:` 文本（如 AutoEQ 结果）快速创建图形均衡器节点。
+- 用**经典参数滤波器**（峰值、低/高通、带通、低/高搁架、陷波、全通）按 EqualizerAPO 语义塑形频响。
+- ⌘V 直接粘贴 EqualizerAPO `GraphicEQ:` 或 `Filter:` 文本（如 AutoEQ 预设）快速创建对应节点。
 - 从外部 WAV 文件加载**卷积脉冲响应**，无需复制到 App 内部。
+- 用**延迟**节点做分数采样级的声道对齐，或加**响度补偿**让小音量听音自动保持频率平衡。
 - 按声道组织、排序、复制和启用处理器节点。
 - 从 Dock 或菜单栏控制音频处理，并即时切换 English/简体中文。
 - 在 realtime callback 之外准备完整处理链，避免 callback 读取文件。
@@ -46,7 +48,7 @@ EqualizerAU 是一款独立运行的 macOS 全局音频处理工具。它通过�
 
 ## 立即使用
 
-> EqualizerAU 当前是面向 macOS 14.2 及以上版本的 Apple Silicon 技术预览版。预构建版本采用 ad-hoc 签名且未经 Apple 公证。公开 Release 创建后，这里会加入正式下载链接。
+> EqualizerAU 当前是面向 macOS 14.2 及以上版本的 Apple Silicon 技术预览版。预构建版本采用 ad-hoc 签名且未经 Apple 公证。最新版本见 [Releases](https://github.com/crmmc/EqualizerAU/releases)。
 
 ### 安装
 
@@ -65,7 +67,7 @@ EqualizerAU 是一款独立运行的 macOS 全局音频处理工具。它通过�
 
 ### 创建第一条处理链
 
-1. 选择**添加**，加入前置放大、图形均衡器或卷积节点。
+1. 选择**添加**，加入前置放大、图形均衡器、滤波器、延迟、响度补偿或卷积节点。
 2. 调整参数和节点顺序。
 3. 选择**保存**，应用并持久化完整配置。
 4. 使用菜单栏或主窗口切换**音频处理**。
@@ -77,6 +79,8 @@ EqualizerAU 是一款独立运行的 macOS 全局音频处理工具。它通过�
 
 - 仅支持 Apple Silicon 和当前默认输出设备，不支持 Intel Mac 或手动选择输出设备。
 - 图形均衡器最多支持 512 个控制点，增益范围为 −24 至 +24 dB。
+- 滤波器节点中心频率 1–20000 Hz，增益类参数 ±24 dB；有效频率触及奈奎斯特极限或系数不稳定时旁路该节点并显示诊断。
+- 延迟节点预算 1000 ms（采样点单位为 192000 采样）；响度补偿在音量回到参考值时不产生处理阶段，音量不可观测时冻结当前补偿。
 - 卷积支持采样率 8–768 kHz 的 RIFF/WAVE PCM 8/16/24/32-bit 或 Float32，不限制文件时长或 taps；源采样率必须与当前输出匹配，超过 30 秒时显示性能下降警告，末尾精确零值不进入 Runtime kernel。
 - 图形均衡器和卷积合计最多使用 8 个 convolution channel instances，但不设置单 kernel 或所有实例总 taps 上限。
 - system tap 与输出设备之间没有 realtime sample-rate conversion；格式不兼容时无法启动音频处理。
@@ -84,7 +88,7 @@ EqualizerAU 是一款独立运行的 macOS 全局音频处理工具。它通过�
   computational bypass 和 [`ADR-0019`](docs-dev/adr/0019-float64-deadline-distributed-convolution.md) 多级卷积
   已完成产品实现、自动化、Release 候选和用户真实音频验收；M10 已完成并关闭。
 - 发布物由 GitHub Actions 在 tag 推送后自动构建并以 ad-hoc 签名发布，每个 ZIP 附带 `.sha256` 校验文件。
-- 尚未实现 EqualizerAPO 配置文件导入、登录时启动和自动更新。
+- 尚未实现 EqualizerAPO 完整配置文件导入（目前支持 `GraphicEQ:`/`Filter:` 行文本粘贴）、登录时启动和自动更新。
 
 </details>
 
@@ -149,4 +153,4 @@ EqualizerAU 使用 [GPL-3.0-or-later](LICENSE) 许可证发布。
 
 项目中的最小相位图形均衡器设计、对数频率插值和兼容 CSV 工作流包含派生自 [EqualizerAPO](THIRD_PARTY_NOTICES.md#equalizerapo) 的工作。EqualizerAPO 由 Jonas Thedering 创建，并以 GPL-2.0-or-later 发布。
 
-双二阶滤波器公式参考了 Robert Bristow-Johnson 的 *Audio EQ Cookbook*。完整版权、许可证与代码来源说明请参阅 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+双二阶滤波器公式参考了 Robert Bristow-Johnson 的 *Audio EQ Cookbook*；响度校正的等响曲线数学基于 ISO 226:2003 标准的 Suzuki–Takeshima（2004）解析拟合。完整版权、许可证与代码来源说明请参阅 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
