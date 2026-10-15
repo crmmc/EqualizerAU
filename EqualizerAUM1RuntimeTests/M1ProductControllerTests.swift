@@ -209,6 +209,197 @@ final class M1ProductControllerTests: XCTestCase {
         XCTAssertEqual(publishedGenerations, [1])
     }
 
+    // MARK: - Loudness volume tracking (M13)
+
+    func testVolumeReadingRepublishesSavedChainWithoutTouchingDraftOrGeneration() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        try await fixture.controller.addLoudness(nodeID: UUID())
+        try await fixture.controller.save()
+        let draftBefore = await fixture.controller.snapshot().draft
+        let commitCount = await fixture.store.commits.count
+
+        await fixture.controller.handleOutputVolumeReading(
+            M1OutputVolumeReading(decibels: -35.4, usesApproximateConversion: false)
+        )
+        try await waitForPublishCount(2, on: fixture.audio)
+
+        let publishedGenerations = await fixture.audio.publishedGenerations
+        XCTAssertEqual(publishedGenerations, [1, 1])
+        let preparedVolumes = await fixture.audio.preparedLoudnessVolumes
+        XCTAssertEqual(preparedVolumes, [nil, -35])
+        let commitsAfter = await fixture.store.commits.count
+        XCTAssertEqual(commitsAfter, commitCount)
+        let snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(snapshot.draft, draftBefore)
+        XCTAssertEqual(snapshot.persistence, .clean)
+    }
+
+    func testVolumeReadingWithoutEnabledLoudnessNodeDoesNotRepublish() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        try await fixture.controller.save()
+
+        await fixture.controller.handleOutputVolumeReading(
+            M1OutputVolumeReading(decibels: -35.4, usesApproximateConversion: false)
+        )
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        let publishedGenerations = await fixture.audio.publishedGenerations
+        XCTAssertEqual(publishedGenerations, [1])
+    }
+
+    func testQuantizedDuplicateReadingsDoNotRepublishAgain() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        try await fixture.controller.addLoudness(nodeID: UUID())
+        try await fixture.controller.save()
+
+        await fixture.controller.handleOutputVolumeReading(
+            M1OutputVolumeReading(decibels: -20.2, usesApproximateConversion: false)
+        )
+        try await waitForPublishCount(2, on: fixture.audio)
+        await fixture.controller.handleOutputVolumeReading(
+            M1OutputVolumeReading(decibels: -20.4, usesApproximateConversion: false)
+        )
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        let publishedGenerations = await fixture.audio.publishedGenerations
+        XCTAssertEqual(publishedGenerations, [1, 1])
+    }
+
+    func testVolumeReadingWhileStoppedIsRememberedForTheNextPreparation() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.addLoudness(nodeID: UUID())
+        try await fixture.controller.save()
+
+        await fixture.controller.handleOutputVolumeReading(
+            M1OutputVolumeReading(decibels: -30.4, usesApproximateConversion: true)
+        )
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let stoppedGenerations = await fixture.audio.publishedGenerations
+        XCTAssertTrue(stoppedGenerations.isEmpty)
+
+        try await fixture.controller.start()
+        try await fixture.controller.setGainDB(id: fixture.nodeID, gainDB: 3)
+        try await fixture.controller.save()
+
+        let preparedVolumes = await fixture.audio.preparedLoudnessVolumes
+        XCTAssertEqual(preparedVolumes.last, -30)
+    }
+
+    func testOutputVolumeMathApproximatesAndQuantizes() {
+        XCTAssertEqual(M1OutputVolumeMath.approximateDecibels(fromScalar: 0), -120)
+        XCTAssertEqual(M1OutputVolumeMath.approximateDecibels(fromScalar: 0.5)!, -6.02, accuracy: 0.01)
+        XCTAssertNil(M1OutputVolumeMath.approximateDecibels(fromScalar: .nan))
+        XCTAssertEqual(M1OutputVolumeMath.quantizedDecibels(-35.4), -35)
+        XCTAssertEqual(M1OutputVolumeMath.quantizedDecibels(-35.5), -36)
+        XCTAssertNil(M1OutputVolumeMath.quantizedDecibels(.nan))
+    }
+
+    func testVolumeRepublishFailureIsSwallowedAndRetriedOnNextReading() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        try await fixture.controller.addLoudness(nodeID: UUID())
+        try await fixture.controller.save()
+
+        await fixture.audio.setPreparationFailure(true)
+        await fixture.controller.handleOutputVolumeReading(
+            M1OutputVolumeReading(decibels: -35.4, usesApproximateConversion: false)
+        )
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let failedGenerations = await fixture.audio.publishedGenerations
+        XCTAssertEqual(failedGenerations.count, 1)
+
+        await fixture.audio.setPreparationFailure(false)
+        await fixture.controller.handleOutputVolumeReading(
+            M1OutputVolumeReading(decibels: -36.4, usesApproximateConversion: false)
+        )
+        try await waitForPublishCount(2, on: fixture.audio)
+    }
+
+    func testVolumeRepublishIsDroppedWhenAudioStopsDuringTheRebuild() async throws {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+        try await fixture.controller.start()
+        try await fixture.controller.addLoudness(nodeID: UUID())
+        try await fixture.controller.save()
+
+        // Suspend the volume rebuild inside prepare, stop the audio while it
+        // hangs, then let it resume: the stale rebuild must be dropped instead
+        // of publishing over the stopped route.
+        let gate = ProductTestGate()
+        await fixture.audio.setPreparationGate(gate)
+        await fixture.controller.handleOutputVolumeReading(
+            M1OutputVolumeReading(decibels: -35.4, usesApproximateConversion: false)
+        )
+        await waitUntil { await fixture.audio.preparedLoudnessVolumes.count == 2 }
+
+        try await fixture.controller.stop()
+
+        await gate.open()
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let publishedGenerations = await fixture.audio.publishedGenerations
+        XCTAssertEqual(publishedGenerations.count, 1)
+        await fixture.audio.setPreparationGate(nil)
+    }
+
+    func testVolumeReadingDuringRepairModeDoesNotRepublish() async throws {
+        // Repair mode runs the transparent recovery baseline, not the editable
+        // snapshot; an environment-driven rebuild from the editable nodes must
+        // not swap the running chain. The reading is only remembered and flows
+        // through the next user-driven preparation (the repair save).
+        let nodeID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
+        var editable = M1ConfigurationSnapshot.initial(nodeID: nodeID)
+        editable.nodes.append(.loudness())
+        let store = ProductStoreFake(bootstrapResult: .recovery(
+            editable: editable,
+            runtime: .transparentRecovery,
+            reason: .initialConfigurationWriteFailed
+        ))
+        let audio = ProductAudioFake()
+        let controller = M1ProductController(
+            store: store,
+            audio: audio,
+            observesOutputVolume: false,
+            loudnessDebounceNanoseconds: 0
+        )
+        await controller.bootstrap(initialNodeID: nodeID)
+        try await controller.start()
+        let started = await audio.startedConfigurations
+        XCTAssertEqual(started, [.transparentRecovery])
+
+        await controller.handleOutputVolumeReading(
+            M1OutputVolumeReading(decibels: -35.4, usesApproximateConversion: false)
+        )
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        let suppressed = await audio.preparedLoudnessVolumes
+        XCTAssertEqual(suppressed, [])
+
+        try await controller.save()
+        let preparedAfterRepair = await audio.preparedLoudnessVolumes
+        XCTAssertEqual(preparedAfterRepair, [-35])
+    }
+
+    private func waitForPublishCount(
+        _ count: Int,
+        on audio: ProductAudioFake,
+        attempts: Int = 200
+    ) async throws {
+        for _ in 0..<attempts {
+            if await audio.publishedGenerations.count >= count { return }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let actual = await audio.publishedGenerations.count
+        XCTFail("timed out waiting for \(count) publications, got \(actual)")
+    }
+
     func testPublishFailureLeavesSavedConfigurationPendingRestart() async throws {
         let fixture = makeFixture()
         await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
@@ -2464,7 +2655,9 @@ private func makeFixture(
         controller: M1ProductController(
             store: store,
             audio: audio,
-            recoveryTiming: recoveryTiming
+            recoveryTiming: recoveryTiming,
+            observesOutputVolume: false,
+            loudnessDebounceNanoseconds: 0
         )
     )
 }
@@ -2535,6 +2728,7 @@ private actor ProductAudioFake: M1ProductAudioControlling {
     var formatRecoveryStops: [M1MonitoredOutputIdentity] = []
     var publishedGenerations: [UInt64] = []
     var publishedStagesByChannel: [[[M1CompiledProcessingStage]]] = []
+    var preparedLoudnessVolumes: [Double?] = []
     private var startCountWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
     private var running = false
     private var startCancellationRequested = false
@@ -2658,6 +2852,14 @@ private actor ProductAudioFake: M1ProductAudioControlling {
             compiled: compiled,
             bridgeGeneration: running ? 1 : nil
         )
+    }
+
+    func prepare(
+        configuration: M1ConfigurationSnapshot,
+        loudnessVolumeDB: Double?
+    ) async throws -> M1AudioConfigurationPreparation {
+        preparedLoudnessVolumes.append(loudnessVolumeDB)
+        return try await prepare(configuration: configuration)
     }
 
     func publish(

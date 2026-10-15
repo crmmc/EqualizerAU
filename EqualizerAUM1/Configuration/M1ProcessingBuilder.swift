@@ -20,6 +20,13 @@ enum M1ProcessingBuildError: Error, Equatable, Sendable {
     case invalidFilterGain(nodeID: UUID)
     case filterGainNotApplicable(nodeID: UUID)
     case invalidFilterWidth(nodeID: UUID)
+    case invalidDelayValue(nodeID: UUID)
+    case delayExceedsBudget(nodeID: UUID)
+    case invalidDelaySampleRate(nodeID: UUID)
+    case delayStageCapacityExceeded
+    case invalidLoudnessSpecification(nodeID: UUID)
+    case invalidLoudnessReferenceVolume(nodeID: UUID)
+    case invalidLoudnessStrength(nodeID: UUID)
     case stageCapacityExceeded(channel: M1ChannelIdentifier)
     case totalStageCapacityExceeded
 }
@@ -61,6 +68,7 @@ struct M1ProcessingBuildDiagnostics: Equatable, Sendable {
     let convolutionSources: [M1ConvolutionSourceDiagnostic]
     let convolutionBypasses: [M1ConvolutionBypassDiagnostic]
     let filterBypasses: [M1FilterBypassDiagnostic]
+    let delayBypasses: [M1DelayBypassDiagnostic]
 
     init(
         unresolvedChannels: [M1UnresolvedChannelDiagnostic],
@@ -69,7 +77,8 @@ struct M1ProcessingBuildDiagnostics: Equatable, Sendable {
         graphicEQResolution: [M1GraphicEQResolutionDiagnostic] = [],
         convolutionSources: [M1ConvolutionSourceDiagnostic] = [],
         convolutionBypasses: [M1ConvolutionBypassDiagnostic] = [],
-        filterBypasses: [M1FilterBypassDiagnostic] = []
+        filterBypasses: [M1FilterBypassDiagnostic] = [],
+        delayBypasses: [M1DelayBypassDiagnostic] = []
     ) {
         self.unresolvedChannels = unresolvedChannels
         self.clippingRiskChannels = clippingRiskChannels
@@ -78,6 +87,7 @@ struct M1ProcessingBuildDiagnostics: Equatable, Sendable {
         self.convolutionSources = convolutionSources
         self.convolutionBypasses = convolutionBypasses
         self.filterBypasses = filterBypasses
+        self.delayBypasses = delayBypasses
     }
 }
 
@@ -110,6 +120,19 @@ struct M1FilterBypassDiagnostic: Equatable, Sendable {
     let reason: M1FilterBypassReason
 }
 
+struct M1DelayBypassDiagnostic: Equatable, Sendable {
+    let nodeID: UUID
+    let value: Double
+    let unit: M1DelayUnit
+    let sampleRate: Double
+    let reason: M1DelayBypassReason
+}
+
+enum M1DelayBypassReason: Equatable, Sendable {
+    case exceedsBudget
+    case invalidSampleRate
+}
+
 struct M1BiquadCoefficients: Equatable, Sendable {
     let b0: Double
     let b1: Double
@@ -122,6 +145,7 @@ enum M1CompiledProcessingStage: Equatable, Sendable {
     case gain(nodeID: UUID, linearGain: Double)
     case biquad(nodeID: UUID, bandIndex: Int, coefficients: M1BiquadCoefficients)
     case convolution(nodeID: UUID, taps: [Float])
+    case delay(nodeID: UUID, integerDelay: UInt32, fraction: Float)
 }
 
 struct M1CompiledPreampTargets: Equatable, Sendable {
@@ -135,6 +159,7 @@ enum M1ProcessingBuilder {
     private static let maximumStagesPerChannel = 512
     private static let maximumPreparedStageCount = 4_096
     static let maximumConvolutionStages = Int(EAUM1_MAX_CONVOLUTION_STAGES)
+    static let maximumDelayStages = Int(EAUM1_MAX_DELAY_STAGES)
     private static let convolutionLatencyFrames = 0
     /// 48 kHz reference length; higher sample rates scale via `graphicEQTapCount(forSampleRate:)`.
     static let graphicEQTapCount = 16_384
@@ -171,7 +196,8 @@ enum M1ProcessingBuilder {
     static func build(
         nodes: [M1ProcessingNode],
         layout: M1OutputLayoutSnapshot,
-        irLoader: any M1ConvolutionIRLoading = M1ConvolutionIRStore()
+        irLoader: any M1ConvolutionIRLoading = M1ConvolutionIRStore(),
+        loudnessVolumeDB: Double? = nil
     ) throws -> M1CompiledPreampTargets {
         try validate(nodes: nodes)
 
@@ -192,7 +218,9 @@ enum M1ProcessingBuilder {
         var convolutionSources: [M1ConvolutionSourceDiagnostic] = []
         var convolutionBypasses: [M1ConvolutionBypassDiagnostic] = []
         var filterBypasses: [M1FilterBypassDiagnostic] = []
+        var delayBypasses: [M1DelayBypassDiagnostic] = []
         var convolutionStageCount = 0
+        var delayStageCount = 0
         var latencyByChannel = Array(repeating: 0, count: layout.channels.count)
         var reportedUnresolvedOwners: Set<UUID> = []
 
@@ -324,6 +352,73 @@ enum M1ProcessingBuilder {
                         )
                     )
                 }
+            case .delay:
+                guard !selectedIndexes.isEmpty else { continue }
+                guard let specification = node.delaySpecification else { continue }
+                let totalSamples = specification.samples(atSampleRate: layout.sampleRate)
+                if let totalSamples,
+                   totalSamples > 0,
+                   totalSamples <= Double(M1DelayContract.maximumSamples) {
+                    var integerDelay = UInt32(totalSamples.rounded(.down))
+                    var fraction = Float(totalSamples - Double(integerDelay))
+                    if fraction >= 1 {
+                        integerDelay += 1
+                        fraction = 0
+                    }
+                    // A subnormal total (hand-edited config only; the UI floor
+                    // is 0.01) can collapse to (0, 0), which the runtime ABI
+                    // rejects — bypass the node instead of failing prepare.
+                    guard integerDelay != 0 || fraction != 0 else { continue }
+                    for index in selectedIndexes {
+                        delayStageCount += 1
+                        guard delayStageCount <= maximumDelayStages else {
+                            throw M1ProcessingBuildError.delayStageCapacityExceeded
+                        }
+                        appendPendingGainStage(
+                            channelIndex: index,
+                            pending: &pendingPreampGainsByChannel,
+                            stages: &stagesByChannel
+                        )
+                        stagesByChannel[index].append(
+                            .delay(
+                                nodeID: node.id,
+                                integerDelay: integerDelay,
+                                fraction: fraction
+                            )
+                        )
+                    }
+                } else {
+                    delayBypasses.append(
+                        M1DelayBypassDiagnostic(
+                            nodeID: node.id,
+                            value: specification.value,
+                            unit: specification.unit,
+                            sampleRate: layout.sampleRate,
+                            reason: totalSamples == nil ? .invalidSampleRate : .exceedsBudget
+                        )
+                    )
+                }
+            case .loudness:
+                guard !selectedIndexes.isEmpty else { continue }
+                guard let specification = node.loudnessSpecification else { continue }
+                let currentVolumeDB = loudnessVolumeDB ?? specification.referenceVolumeDB
+                let volumeStepDB = M1LoudnessContract.referenceVolumeStepDB
+                let rawDeltaDB = currentVolumeDB - specification.referenceVolumeDB
+                let volumeDeltaDB = (rawDeltaDB / volumeStepDB).rounded() * volumeStepDB
+                guard let targetGainDB = M1EqualLoudnessCurve.compensationTargetGainDB(
+                    referencePhon: M1EqualLoudnessCurve.assumedReferencePhon,
+                    currentPhon: M1EqualLoudnessCurve.assumedReferencePhon + volumeDeltaDB,
+                    strength: specification.strength
+                ) else { continue }
+                guard let taps = try compileMinimumPhaseTaps(
+                    nodeID: node.id,
+                    sampleRate: layout.sampleRate,
+                    designLength: graphicEQDesignLength(forSampleRate: layout.sampleRate),
+                    targetGainDB: targetGainDB
+                ) else { continue }
+                for index in selectedIndexes {
+                    try appendConvolutionStage(nodeID: node.id, taps: taps, channelIndex: index)
+                }
             case .convolution:
                 guard !selectedIndexes.isEmpty else { continue }
                 let reference = node.convolutionIR!
@@ -440,7 +535,8 @@ enum M1ProcessingBuilder {
                 graphicEQResolution: graphicEQResolutionDiagnostics,
                 convolutionSources: convolutionSources,
                 convolutionBypasses: convolutionBypasses,
-                filterBypasses: filterBypasses
+                filterBypasses: filterBypasses,
+                delayBypasses: delayBypasses
             ),
             processingLatencyFrames: latencyByChannel.max() ?? 0
         )
@@ -506,6 +602,18 @@ enum M1ProcessingBuilder {
             if node.kind == .filter {
                 guard let specification = node.filterSpecification else {
                     throw M1ProcessingBuildError.invalidFilterSpecification(nodeID: node.id)
+                }
+                try specification.validate(nodeID: node.id)
+            }
+            if node.kind == .delay {
+                guard let specification = node.delaySpecification else {
+                    throw M1ProcessingBuildError.invalidDelayValue(nodeID: node.id)
+                }
+                try specification.validate(nodeID: node.id)
+            }
+            if node.kind == .loudness {
+                guard let specification = node.loudnessSpecification else {
+                    throw M1ProcessingBuildError.invalidLoudnessSpecification(nodeID: node.id)
                 }
                 try specification.validate(nodeID: node.id)
             }
@@ -617,6 +725,28 @@ enum M1ProcessingBuilder {
         guard !processingPoints.isEmpty else {
             return nil
         }
+        return try compileMinimumPhaseTaps(
+            nodeID: nodeID,
+            sampleRate: sampleRate,
+            designLength: designLength
+        ) { frequencyHz in
+            guard frequencyHz >= M1GraphicEQContract.minimumFrequencyHz,
+                  frequencyHz <= M1GraphicEQContract.maximumFrequencyHz else {
+                return 0
+            }
+            return graphicEQGainDB(frequencyHz: frequencyHz, points: processingPoints)
+        }
+    }
+
+    /// Shared minimum-phase FIR compiler: builds the magnitude grid from any
+    /// dB-per-frequency target (GraphicEQ control points, loudness curves)
+    /// under the ADR-0020 length contract; a fully flat target yields no taps.
+    private static func compileMinimumPhaseTaps(
+        nodeID: UUID,
+        sampleRate: Double,
+        designLength: Int,
+        targetGainDB: (Double) -> Double
+    ) throws -> [Float]? {
         guard designLength >= 2,
               designLength.isMultiple(of: 2),
               (designLength & (designLength - 1)) == 0 else {
@@ -630,18 +760,9 @@ enum M1ProcessingBuilder {
         for bin in 0...halfLength {
             if bin.isMultiple(of: 256) { try Task.checkCancellation() }
             let frequencyHz = sampleRate * Double(bin) / Double(designLength)
-            let targetGainDB: Double
-            if frequencyHz >= M1GraphicEQContract.minimumFrequencyHz,
-               frequencyHz <= M1GraphicEQContract.maximumFrequencyHz {
-                targetGainDB = graphicEQGainDB(
-                    frequencyHz: frequencyHz,
-                    points: processingPoints
-                )
-            } else {
-                targetGainDB = 0
-            }
-            if targetGainDB != 0 { isFlat = false }
-            let gainDB = max(targetGainDB, graphicEQMagnitudeFloorDB)
+            let gainTargetDB = targetGainDB(frequencyHz)
+            if gainTargetDB != 0 { isFlat = false }
+            let gainDB = max(gainTargetDB, graphicEQMagnitudeFloorDB)
             let magnitude = max(pow(10, gainDB / 20), magnitudeFloor)
             guard magnitude.isFinite, magnitude > 0 else {
                 throw M1ProcessingBuildError.graphicEQFIRGenerationFailed(nodeID: nodeID)

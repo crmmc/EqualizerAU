@@ -281,6 +281,27 @@ flowchart LR
 - MVP 使用可读、版本化的原生 JSON；EqualizerAPO 文本只作为后续导入或导出兼容目标，
   不与原生配置并列为可写事实来源。
 
+### 7.8 延迟
+
+- 支持单值延迟节点：数值 + 单位（毫秒或采样点），声道差异通过既有通道作用域与多节点表达；
+- 延迟精度为分数采样级（整数 + 分数插值），不做整数采样舍入；
+- 参数域：毫秒单位大于 0 且不超过 1000 ms；采样点单位大于 0 且不超过 192000 采样
+  （内存预算上界，即最高支持采样率 192 kHz 下的 1000 ms）；超预算或按输出采样率折算
+  非法的节点不产生处理阶段并显示归属该节点的诊断；
+- 延迟节点参与通道作用域、启用/停用、Undo/Redo、复制粘贴与显式 Save，契约与既有节点一致；
+- 配置持久化数值与单位；schema 升版时旧配置无损加载。
+
+### 7.9 响度校正
+
+- 小音量听音时按等响曲线差自动补偿频率平衡，音量回到参考音量时补偿归零；参考听音级为
+  文档化假设，补偿强度参数用于个体校准；
+- 补偿曲线随输出设备音量自动跟随：音量变化经防抖后自动更新实时处理链，切换无爆音，不
+  产生新的持久化、generation 或 Undo 步骤，已保存配置与草稿均不变；
+- 节点参数为参考音量与补偿强度；当前音量属运行时环境，不落盘；
+- 曲线峰值不引入净放大（防削波防护）；音量等于参考值时不产生处理阶段；
+- 输出设备音量不可观察或不可换算为分贝时静默降级为无补偿（曲线冻结，ADR-0023 记录的
+  有意取舍：M13 不为该低频故障面增加诊断 UI）。
+
 ## 8. 界面需求
 
 ### 8.1 设计原则
@@ -381,6 +402,7 @@ MVP 完成需满足：
 | M10 Convolution 长度、computational bypass 与 long-IR 内核 | IR 不设文件时长/taps 配额且不做 SRC；Processing Off 停止 wet DSP；dense long IR 使用已测最优多级卷积 |
 | M11 Graphic EQ FIR 随采样率缩放 | 任意输出采样率下均衡频率分辨率不低于 48 kHz 基准，高采样率用户获得同等精度 |
 | M12 经典滤波器节点 | 用户可创建/编辑 EqualizerAPO 八类经典滤波器并直接粘贴 `Filter:` 参数预设，滤波器按参考语义参与实时处理链 |
+| M13 延迟与响度校正节点 | 用户可用分数采样级延迟对齐声道；小音量听音获得随输出音量自动跟随的等响曲线补偿，切换无爆音且不触碰草稿与 Save 语义 |
 
 M0 已完成，详见 [`milestones/M0-native-route.md`](./milestones/M0-native-route.md)。M8、M9 已完成并关闭，
 验收证据分别见 [`milestones/M8-convolution-source-path.md`](./milestones/M8-convolution-source-path.md) 和
@@ -392,6 +414,8 @@ M11 决策 [`ADR-0020`](./adr/0020-sample-rate-scaled-graphic-eq-fir.md) 已接�
 [`milestones/M11-sample-rate-scaled-graphic-eq-fir.md`](./milestones/M11-sample-rate-scaled-graphic-eq-fir.md)。
 M12 决策 [`ADR-0021`](./adr/0021-classic-filter-node.md) 已接受，实现与验收证据见
 [`milestones/M12-classic-filter-node.md`](./milestones/M12-classic-filter-node.md)。
+M13 决策 [`ADR-0022`](./adr/0022-delay-node.md) 与 [`ADR-0023`](./adr/0023-loudness-correction-node.md)
+已接受，实现与验收计划见 [`milestones/M13-delay-loudness.md`](./milestones/M13-delay-loudness.md)。
 
 ## 12. 待确认产品事项
 

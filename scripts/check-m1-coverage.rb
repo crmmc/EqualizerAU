@@ -13,6 +13,7 @@ included_sources = %w[
   EqualizerAUM1/Configuration/M1ConvolutionIR.swift
   EqualizerAUM1/Configuration/M1ProcessingBuilder.swift
   EqualizerAUM1/Configuration/M1BiquadFilterDesign.swift
+  EqualizerAUM1/Configuration/M1EqualLoudnessCurve.swift
   EqualizerAUM1/Configuration/M1Configuration.swift
   EqualizerAUM1/Configuration/M1ConfigurationStore.swift
   EqualizerAUM1/Control/M1RetirementMaintenanceCoordinator.swift
@@ -24,6 +25,7 @@ included_sources = %w[
   EqualizerAUM1/Audio/M1SystemAudioLifecycleMonitor.swift
   EqualizerAUM1/Control/M1ProductController.swift
   EqualizerAUM1/Control/M1EditingSession.swift
+  EqualizerAUM1/Control/M1OutputVolumeMath.swift
   EqualizerAUM1Runtime/src/EAUM1Runtime.cpp
 ].freeze
 
@@ -32,6 +34,7 @@ excluded_sources = {
   "EqualizerAUM1/App/M1SystemAppAdapters.swift" => "NSApplication, panels, alerts, and pasteboard adapter",
   "EqualizerAUM1/Audio/M1SystemAudioIO.swift" => "direct Core Audio and C ABI adapter",
   "EqualizerAUM1/Audio/M1SystemAudioLifecycleOperations.swift" => "direct Core Audio property listener adapter",
+  "EqualizerAUM1/Control/M1OutputVolumeObserver.swift" => "direct Core Audio property listener adapter",
   "EqualizerAUM1/Audio/M1SystemCoreAudioHAL.swift" => "direct Core Audio property adapter mixed with parser pending separation",
   "EqualizerAUM1/Audio/EAUM1AudioIOHost.mm" => "direct Core Audio registration mixed with callback core pending separation",
 }.freeze

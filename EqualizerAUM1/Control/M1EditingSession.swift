@@ -32,7 +32,7 @@ struct M1EncodedNodeEnvelope: Equatable, Sendable {
 }
 
 enum M1NodeEnvelopeCodec {
-    static let schemaVersion = 9
+    static let schemaVersion = 10
     static let maximumDataSize = M1ConfigurationCodec.maximumDataSize
 
     static func encode(_ nodes: [M1ProcessingNode]) throws -> M1EncodedNodeEnvelope {
@@ -362,6 +362,30 @@ struct M1EditingSession: Sendable {
         )
     }
 
+    mutating func addDelay(
+        before id: UUID?,
+        nodeID: UUID,
+        effectsEnabled: Bool
+    ) throws {
+        try insertNode(
+            .delay(id: nodeID),
+            before: id,
+            effectsEnabled: effectsEnabled
+        )
+    }
+
+    mutating func addLoudness(
+        before id: UUID?,
+        nodeID: UUID,
+        effectsEnabled: Bool
+    ) throws {
+        try insertNode(
+            .loudness(id: nodeID),
+            before: id,
+            effectsEnabled: effectsEnabled
+        )
+    }
+
     mutating func addConvolution(
         before id: UUID?,
         nodeID: UUID,
@@ -444,6 +468,32 @@ struct M1EditingSession: Sendable {
             effectsEnabled: effectsEnabled,
             coalescingGestureID: id
         ) { $0.filterSpecification = specification }
+    }
+
+    mutating func setDelaySpecification(
+        id: UUID,
+        specification: M1DelaySpecification,
+        effectsEnabled: Bool
+    ) throws {
+        try requireNodeKind(.delay, id)
+        try updateNode(
+            id: id,
+            effectsEnabled: effectsEnabled,
+            coalescingGestureID: id
+        ) { $0.delaySpecification = specification }
+    }
+
+    mutating func setLoudnessSpecification(
+        id: UUID,
+        specification: M1LoudnessSpecification,
+        effectsEnabled: Bool
+    ) throws {
+        try requireNodeKind(.loudness, id)
+        try updateNode(
+            id: id,
+            effectsEnabled: effectsEnabled,
+            coalescingGestureID: id
+        ) { $0.loudnessSpecification = specification }
     }
 
     mutating func setChannels(

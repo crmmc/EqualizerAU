@@ -95,6 +95,7 @@ approved_dynamic_text = {
     "nodeTitle(node.kind", "nodeSubtitle(node", "ir.sourcePath",
     "channelSummary(node.channels", "validationMessage",
     "filterTypeTitle(specification.type", "filterWidthUnit(specification.width",
+    "delayUnitLabel(specification.unit",
     "titleKey",
 }
 dynamic_text = set(re.findall(r'\bText\((?!")([^\n]+?)\)', app_source))

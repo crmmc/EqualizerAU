@@ -32,11 +32,13 @@ final class M1AppModelTests: XCTestCase {
         fixture.model.addChannels(before: nil)
         fixture.model.addGraphicEQ(before: nil)
         fixture.model.addFilter(before: nil)
+        fixture.model.addDelay(before: nil)
+        fixture.model.addLoudness(before: nil)
         fixture.model.importConvolution(before: nil)
         await fixture.model.waitUntilIdle()
 
         let nodes = fixture.model.snapshot.draft.nodes
-        XCTAssertEqual(nodes.count, 6)
+        XCTAssertEqual(nodes.count, 8)
         let preamp = try XCTUnwrap(nodes.first { $0.kind == .preamp })
         let channels = try XCTUnwrap(nodes.first { $0.kind == .channels })
         let graphicEQ = try XCTUnwrap(nodes.first { $0.kind == .graphicEQ })
@@ -58,6 +60,16 @@ final class M1AppModelTests: XCTestCase {
                 cornerFrequency: true
             ),
             id: filter.id
+        )
+        let delay = try XCTUnwrap(nodes.first { $0.kind == .delay })
+        let loudness = try XCTUnwrap(nodes.first { $0.kind == .loudness })
+        fixture.model.setDelaySpecification(
+            M1DelaySpecification(value: 5, unit: .samples),
+            id: delay.id
+        )
+        fixture.model.setLoudnessSpecification(
+            M1LoudnessSpecification(referenceVolumeDB: -25, strength: 0.5),
+            id: loudness.id
         )
         fixture.model.replaceConvolutionIR(id: convolution.id)
         fixture.model.beginGesture(preamp.id)

@@ -235,7 +235,7 @@ struct M1SystemRuntimeFactory: M1RuntimeCreating, @unchecked Sendable {
             throw M1AudioIOError.invalidConfiguration("invalid Runtime dimensions")
         }
         var capabilities = EAUM1RuntimeCapabilities()
-        guard EAUM1RuntimeABIVersion() == 3,
+        guard EAUM1RuntimeABIVersion() == EAUM1_RUNTIME_ABI_VERSION,
               EAUM1RuntimeGetCapabilities(&capabilities) == EAUM1StatusOK,
               capabilities.activePreparedPointerLockFree != 0,
               capabilities.callbackStateLockFree != 0,

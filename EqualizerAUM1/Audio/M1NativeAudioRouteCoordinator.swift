@@ -395,10 +395,18 @@ actor M1NativeAudioRouteCoordinator {
     }
 
     func prepare(configuration: M1ConfigurationSnapshot) async throws -> M1AudioConfigurationPreparation {
+        try await prepare(configuration: configuration, loudnessVolumeDB: nil)
+    }
+
+    func prepare(
+        configuration: M1ConfigurationSnapshot,
+        loudnessVolumeDB: Double? = nil
+    ) async throws -> M1AudioConfigurationPreparation {
         if let current, current.phase == .running, let output = current.output {
             let compiled = try await compileStages(
                 nodes: configuration.nodes,
-                layout: output.layout
+                layout: output.layout,
+                loudnessVolumeDB: loudnessVolumeDB
             )
             guard isRunning(current) else { return .waitingForOutput }
             return M1AudioConfigurationPreparation(
@@ -416,7 +424,8 @@ actor M1NativeAudioRouteCoordinator {
             let output = try await routeResources.discoverOutput(generation: discoveryGeneration)
             let compiled = try await compileStages(
                 nodes: configuration.nodes,
-                layout: output.layout
+                layout: output.layout,
+                loudnessVolumeDB: loudnessVolumeDB
             )
             guard current == nil, !operationInProgress else { return .waitingForOutput }
             return M1AudioConfigurationPreparation(
@@ -741,14 +750,16 @@ actor M1NativeAudioRouteCoordinator {
 
     private func compileStages(
         nodes: [M1ProcessingNode],
-        layout: M1OutputLayoutSnapshot
+        layout: M1OutputLayoutSnapshot,
+        loudnessVolumeDB: Double? = nil
     ) async throws -> M1CompiledPreampTargets {
         let irLoader = irLoader
         return try await detachedValue {
             try M1ProcessingBuilder.build(
                 nodes: nodes,
                 layout: layout,
-                irLoader: irLoader
+                irLoader: irLoader,
+                loudnessVolumeDB: loudnessVolumeDB
             )
         }
     }
