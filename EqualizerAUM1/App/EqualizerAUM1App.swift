@@ -564,14 +564,14 @@ struct EqualizerAUM1App: App {
                     M1EditorWindowReader { appDelegate.registerEditorWindow($0) }
                 }
                 .sheet(
-                    isPresented: Binding(
-                        get: { model.snapshot.pendingImport != nil },
-                        set: { shown in if !shown { model.cancelImport() } }
+                    item: Binding(
+                        get: {
+                            model.snapshot.pendingImport.map { M1PendingImportPresentation(plan: $0) }
+                        },
+                        set: { if $0 == nil { model.cancelImport() } }
                     )
-                ) {
-                    if let plan = model.snapshot.pendingImport {
-                        M1ImportPreviewSheet(model: model, plan: plan)
-                    }
+                ) { pending in
+                    M1ImportPreviewSheet(model: model, plan: pending.plan)
                 }
         }
         .windowResizability(.contentMinSize)
@@ -2822,8 +2822,10 @@ private struct M1ImportPreviewSheet: View {
                 Button("Cancel") { model.cancelImport() }
                     .keyboardShortcut(.cancelAction)
                 Button("Append at End") { model.applyImport(.appendAtEnd) }
+                    .disabled(plan.nodes.isEmpty)
                 Button("Replace Existing") { model.applyImport(.replaceExisting) }
                     .keyboardShortcut(.defaultAction)
+                    .disabled(plan.nodes.isEmpty)
             }
         }
         .padding(16)
@@ -2884,4 +2886,11 @@ private struct M1ImportPreviewSheet: View {
         case .loudness: return String(localized: "Loudness", locale: m1ApplicationLocale)
         }
     }
+}
+
+/// Identifiable wrapper so sheet dismissal keeps rendering the preview while
+/// the pending plan is being cleared (avoids content collapse on close).
+private struct M1PendingImportPresentation: Identifiable {
+    let id = "pending-import"
+    let plan: M1APOConfigImportPlan
 }

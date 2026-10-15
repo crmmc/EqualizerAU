@@ -2602,6 +2602,16 @@
           }
         }
       }
+    },
+    "The file has %lld Filter lines, above the %lld-line limit; nothing was imported.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件中 Filter 行数达 %lld 行，超出 %lld 行上限；未导入任何内容。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

@@ -131,6 +131,65 @@ final class M1ProductControllerTests: XCTestCase {
     }
 
     @MainActor
+    func testImportLimitErrorsMapToVisibleErrors() async {
+        let fixture = makeFixture()
+        await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)
+
+        struct ThrowingReader: M1ConfigFileReading {
+            func readText(at url: URL) throws -> String {
+                throw M1EqualizerAPOConfigImporterError.totalSizeLimitExceeded(
+                    bytes: 5_000_000,
+                    maximum: M1EqualizerAPOConfigImporter.maximumTotalBytes
+                )
+            }
+        }
+        await fixture.controller.importEqualizerAPOConfiguration(
+            from: URL(fileURLWithPath: "/mig/big.txt"),
+            reader: ThrowingReader()
+        )
+        var snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(
+            snapshot.visibleError,
+            .importedConfigTooLarge(
+                bytes: 5_000_000,
+                maximum: M1EqualizerAPOConfigImporter.maximumTotalBytes
+            )
+        )
+
+        var graphicEQLine = "GraphicEQ: "
+        for index in 0..<(M1GraphicEQContract.maximumPointCount + 1) {
+            graphicEQLine += index == 0 ? "\(20 + index) 0" : "; \(20 + index) 0"
+        }
+        await fixture.controller.importEqualizerAPOConfiguration(
+            from: URL(fileURLWithPath: "/mig/geq.txt"),
+            reader: ImportReaderFake(files: ["/mig/geq.txt": graphicEQLine + "\n"])
+        )
+        snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(
+            snapshot.visibleError,
+            .importedGraphicEQPointLimitExceeded(
+                count: M1GraphicEQContract.maximumPointCount + 1,
+                maximum: M1GraphicEQContract.maximumPointCount
+            )
+        )
+
+        let maximum = M1EqualizerAPOTextCodec.maximumFilterLines
+        var filterLines = ""
+        for index in 1...(maximum + 1) {
+            filterLines += "Filter \(index): ON PK Fc 100 Hz Gain 1 dB Q 1\n"
+        }
+        await fixture.controller.importEqualizerAPOConfiguration(
+            from: URL(fileURLWithPath: "/mig/filters.txt"),
+            reader: ImportReaderFake(files: ["/mig/filters.txt": filterLines])
+        )
+        snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(
+            snapshot.visibleError,
+            .importedFilterLineLimitExceeded(count: maximum + 1, maximum: maximum)
+        )
+    }
+
+    @MainActor
     func testCancelImportClearsPlanWithoutTouchingDraft() async throws {
         let fixture = makeFixture()
         await fixture.controller.bootstrap(initialNodeID: fixture.nodeID)

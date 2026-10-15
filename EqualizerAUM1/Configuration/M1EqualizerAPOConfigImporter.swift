@@ -42,12 +42,6 @@ struct M1APOConfigImportPlan: Equatable, Sendable {
     /// The config contains more than one `Device:` section; all sections were
     /// imported without device gating.
     let hasMultipleDeviceSections: Bool
-
-    /// True when the imported block starts with its own explicit `Channel`
-    /// line, so appending it needs no leading scope guard.
-    var startsWithExplicitChannelNode: Bool {
-        nodes.first?.kind == .channels
-    }
 }
 
 enum M1EqualizerAPOConfigImporterError: Error, Equatable, Sendable {
@@ -55,6 +49,7 @@ enum M1EqualizerAPOConfigImporterError: Error, Equatable, Sendable {
     case noRecognizedCommands
     case totalSizeLimitExceeded(bytes: Int, maximum: Int)
     case graphicEQPointLimitExceeded(count: Int, maximum: Int)
+    case filterLineLimitExceeded(count: Int, maximum: Int)
 }
 
 /// Parses a full EqualizerAPO configuration file (plus its `Include:` chain)
@@ -83,7 +78,14 @@ struct M1DiskConfigFileReader: M1ConfigFileReading {
                 maximum: M1EqualizerAPOConfigImporter.maximumTotalBytes
             )
         }
-        return try String(contentsOf: url, encoding: .utf8)
+        do {
+            return try String(contentsOf: url, encoding: .utf8)
+        } catch {
+            // Windows configs are frequently ANSI/CP1252; the reference falls
+            // back from UTF-8 to the system code page. Latin-1 maps every
+            // byte, so only I/O errors can escape here.
+            return try String(contentsOf: url, encoding: .isoLatin1)
+        }
     }
 }
 
@@ -133,26 +135,35 @@ enum M1EqualizerAPOConfigImporter {
         var totalBytes = 0
         var recognizedCommandCount = 0
         var deviceLineCount = 0
+        var filterLineCount = 0
+        /// Channel selection at the current parse position; saved and restored
+        /// around `Include:` boundaries like the reference FilterEngine.
+        var currentSelection = M1ChannelSelection.all
     }
 
     private static func loadFile(
         url: URL,
         depth: Int,
         required: Bool,
+        origin: (fileIndex: Int, lineNumber: Int)? = nil,
         read: (URL) throws -> String,
         context: inout ImportContext
     ) throws {
         let content: String
         do {
             content = try read(url)
+        } catch let error as M1EqualizerAPOConfigImporterError {
+            throw error
         } catch {
             if required {
                 throw M1EqualizerAPOConfigImporterError.fileUnreadable(path: url.path)
             }
+            // Attribute the failure to the includer's location so the report
+            // can point at a real file and line.
             context.issues.append(
                 M1APOImportIssue(
-                    fileIndex: context.fileNames.count,
-                    lineNumber: 0,
+                    fileIndex: origin?.fileIndex ?? context.fileNames.count,
+                    lineNumber: origin?.lineNumber ?? 0,
                     command: "Include",
                     category: .includeFailure
                 )
@@ -211,7 +222,7 @@ enum M1EqualizerAPOConfigImporter {
                 parsePreamp(parameters, fileIndex, lineNumber, context: &context)
             case "FILTER":
                 context.recognizedCommandCount += 1
-                parseFilter(parameters, fileIndex, lineNumber, context: &context)
+                try parseFilter(parameters, fileIndex, lineNumber, context: &context)
             case "GRAPHICEQ":
                 context.recognizedCommandCount += 1
                 try parseGraphicEQ(line, fileIndex, lineNumber, context: &context)
@@ -235,6 +246,10 @@ enum M1EqualizerAPOConfigImporter {
                 if depth + 1 > maximumIncludeDepth {
                     context.issues.append(issue(fileIndex, lineNumber, command, .includeFailure))
                 } else {
+                    // Reference semantics: restore the outer file's channel
+                    // selection once the included file returns, so later
+                    // commands keep the scope the includer had.
+                    let outerSelection = context.currentSelection
                     try loadInclude(
                         parameters,
                         baseDirectory: fileURL.deletingLastPathComponent(),
@@ -244,6 +259,10 @@ enum M1EqualizerAPOConfigImporter {
                         read: read,
                         context: &context
                     )
+                    if context.currentSelection != outerSelection {
+                        context.nodes.append(.channels(id: UUID(), selection: outerSelection))
+                        context.currentSelection = outerSelection
+                    }
                 }
             case "DEVICE":
                 context.recognizedCommandCount += 1
@@ -270,6 +289,10 @@ enum M1EqualizerAPOConfigImporter {
             case "COPY", "VSTPLUGIN", "LOUDNESSCORRECTION":
                 context.recognizedCommandCount += 1
                 context.issues.append(issue(fileIndex, lineNumber, command, .unsupportedCommand))
+            case "ELSE", "ELSEIF", "ENDIF":
+                // Known command keywords outside any If block.
+                context.recognizedCommandCount += 1
+                context.issues.append(issue(fileIndex, lineNumber, command, .invalidLine))
             default:
                 // Unknown command names are ignored silently, like the
                 // reference parser and REW export headers.
@@ -322,7 +345,7 @@ enum M1EqualizerAPOConfigImporter {
         _ fileIndex: Int,
         _ lineNumber: Int,
         context: inout ImportContext
-    ) {
+    ) throws {
         let tokens = parameters.split(separator: " ").map(String.init)
         guard let stateToken = tokens.first?.lowercased() else {
             // `Filter 3:` with empty parameters is REW slot noise.
@@ -346,20 +369,31 @@ enum M1EqualizerAPOConfigImporter {
         var synthesizedTokens = tokens
         synthesizedTokens[0] = "ON"
         let synthesized = "Filter: " + synthesizedTokens.joined(separator: " ")
+        let outcome: M1EqualizerAPOTextCodec.FilterLineParseOutcome
         do {
-            switch try M1EqualizerAPOTextCodec.parseFilterLine(synthesized) {
-            case .node(let specification, _):
-                context.nodes.append(
-                    .filter(
-                        id: UUID(),
-                        isEnabled: stateToken == "on",
-                        specification: specification
-                    )
-                )
-            case .ignored:
-                context.issues.append(issue(fileIndex, lineNumber, "Filter", .invalidLine))
-            }
+            outcome = try M1EqualizerAPOTextCodec.parseFilterLine(synthesized)
         } catch {
+            context.issues.append(issue(fileIndex, lineNumber, "Filter", .invalidLine))
+            return
+        }
+        switch outcome {
+        case .node(let specification, _):
+            context.nodes.append(
+                .filter(
+                    id: UUID(),
+                    isEnabled: stateToken == "on",
+                    specification: specification
+                )
+            )
+            // Same whole-import abort contract as the paste path.
+            context.filterLineCount += 1
+            if context.filterLineCount > M1EqualizerAPOTextCodec.maximumFilterLines {
+                throw M1EqualizerAPOConfigImporterError.filterLineLimitExceeded(
+                    count: context.filterLineCount,
+                    maximum: M1EqualizerAPOTextCodec.maximumFilterLines
+                )
+            }
+        case .ignored:
             context.issues.append(issue(fileIndex, lineNumber, "Filter", .invalidLine))
         }
     }
@@ -429,6 +463,7 @@ enum M1EqualizerAPOConfigImporter {
             return
         }
         if tokens.count == 1, tokens[0].lowercased() == "all" {
+            context.currentSelection = .all
             context.nodes.append(.channels(id: UUID(), selection: .all))
             return
         }
@@ -440,6 +475,7 @@ enum M1EqualizerAPOConfigImporter {
             }
             identifiers.append(identifier)
         }
+        context.currentSelection = .identifiers(identifiers)
         context.nodes.append(.channels(id: UUID(), selection: .identifiers(identifiers)))
     }
 
@@ -455,7 +491,7 @@ enum M1EqualizerAPOConfigImporter {
             context.issues.append(issue(fileIndex, lineNumber, "Convolution", .invalidLine))
             return
         }
-        let isWindowsAbsolute = path.contains(":") || path.hasPrefix("\\\\")
+        let isWindowsAbsolute = isWindowsAbsolutePath(path)
         // Windows absolute paths are kept verbatim: they can never resolve on
         // this system, and `URL(fileURLWithPath:)` would prefix them with the
         // working directory. The node keeps the string so the user can repoint
@@ -492,7 +528,7 @@ enum M1EqualizerAPOConfigImporter {
             context.issues.append(issue(fileIndex, lineNumber, "Include", .invalidLine))
             return
         }
-        if path.contains(":") || path.hasPrefix("\\\\") {
+        if isWindowsAbsolutePath(path) {
             context.issues.append(issue(fileIndex, lineNumber, "Include", .includeFailure))
             return
         }
@@ -505,7 +541,14 @@ enum M1EqualizerAPOConfigImporter {
             context.issues.append(issue(fileIndex, lineNumber, "Include", .includeFailure))
             return
         }
-        try loadFile(url: url, depth: depth + 1, required: false, read: read, context: &context)
+        try loadFile(
+            url: url,
+            depth: depth + 1,
+            required: false,
+            origin: (fileIndex, lineNumber),
+            read: read,
+            context: &context
+        )
     }
 
     /// Returns the 1-based line number of the `EndIf:` closing the `If` block
@@ -532,6 +575,18 @@ enum M1EqualizerAPOConfigImporter {
         return lines.count
     }
 
+    private static let windowsDrivePrefixExpression = try! NSRegularExpression(
+        pattern: "^[A-Za-z]:[\\\\/]"
+    )
+
+    /// Drive-letter (`C:\\…`, `C:/…`) or UNC (`\\\\…`) paths can never resolve
+    /// on this system; a bare colon elsewhere is a legal macOS file name.
+    private static func isWindowsAbsolutePath(_ path: String) -> Bool {
+        if path.hasPrefix("\\\\") { return true }
+        let range = NSRange(path.startIndex..., in: path)
+        return windowsDrivePrefixExpression.firstMatch(in: path, range: range) != nil
+    }
+
     private static func unquote(_ value: String) -> String {
         if value.count >= 2,
            (value.hasPrefix("\"") && value.hasSuffix("\""))
@@ -556,6 +611,9 @@ enum M1EqualizerAPOConfigImporter {
         "COPY": "Copy",
         "VSTPLUGIN": "VSTPlugin",
         "LOUDNESSCORRECTION": "LoudnessCorrection",
+        "ELSE": "Else",
+        "ELSEIF": "ElseIf",
+        "ENDIF": "EndIf",
     ]
 
     private static func issue(

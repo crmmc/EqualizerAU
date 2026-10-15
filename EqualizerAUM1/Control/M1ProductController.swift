@@ -239,12 +239,13 @@ enum M1PresentationMessage: Equatable, Sendable {
     case importedConfigNoCommands
     case importedConfigTooLarge(bytes: Int, maximum: Int)
     case importedGraphicEQPointLimitExceeded(count: Int, maximum: Int)
+    case importedFilterLineLimitExceeded(count: Int, maximum: Int)
     case terminationCancelled
     case technical(String)
 }
 
 /// M14 config import landing choice from the preview dialog.
-enum M1ImportApplicationMode {
+enum M1ImportApplicationMode: Equatable, Sendable {
     case replaceExisting
     case appendAtEnd
 }
@@ -864,6 +865,8 @@ actor M1ProductController {
                 visibleError = .importedConfigTooLarge(bytes: bytes, maximum: maximum)
             case .graphicEQPointLimitExceeded(let count, let maximum):
                 visibleError = .importedGraphicEQPointLimitExceeded(count: count, maximum: maximum)
+            case .filterLineLimitExceeded(let count, let maximum):
+                visibleError = .importedFilterLineLimitExceeded(count: count, maximum: maximum)
             }
         } catch {
             visibleError = .technical(String(describing: error))

@@ -41,6 +41,23 @@
   （停靠计划不动草稿、硬失败可见错误、替换+Undo 恢复未保存编辑、追加守卫、取消）。
 - App target（含 Sheet/菜单 UI 文件）构建通过（hostless 套件不编译 App UI，单独验证）。
 
+## 审查修复（2026-10-15）
+
+code-simplifier 只读审查（1 P1 + 3 P2 + 9 P3）后收口，全部本地验证通过：
+
+- **P1-1 Include 作用域归位**：进入 Include 前保存作用域、返回后补 Channels 节点恢复
+  （对齐参考 FilterEngine save/restore；外层 L 场景与外层 all 场景各有回归测试）。
+- **P2-1** Filter 行 512 上限沿用（超限整次中止，新增错误映射与文案）；
+  **P2-2** 读取器抛出的 `totalSizeLimitExceeded` 不再被通用 catch 重标成"不可读"；
+  **P2-3** 磁盘读取严格 UTF-8 失败后 Latin-1 容错重读（Windows ANSI 配置可导入）。
+- **P3 批**：不可读 Include 问题归属发起方文件/行号（消除 `?:0`）；孤立
+  Else/ElseIf/EndIf 报 invalidLine；空计划禁用覆盖/追加按钮；Sheet 改 `.sheet(item:)`
+  消除关闭闪烁；`M1ImportApplicationMode` 显式 Equatable+Sendable；删除测试专用的
+  `startsWithExplicitChannelNode`；Windows 路径判定精确为盘符前缀；补控制器三类
+  上限错误映射测试与模型层导入流程测试。
+- 修复后全量 hostless **567 用例 0 失败**（2 例既有竞态跳过）；`make check`、
+  `make coverage`（M1AppModel 92.32%、导入器 93.99%）、App target 构建全部通过。
+
 ## 待完成
 
 - 用户真实导入验收：用真实 Windows 迁移配置（或 REW 导出 + 含 Include/Device/Copy 的

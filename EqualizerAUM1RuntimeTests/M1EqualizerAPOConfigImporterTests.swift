@@ -49,7 +49,7 @@ final class M1EqualizerAPOConfigImporterTests: XCTestCase {
         )
         // The implicit leading `all` scope produced no Channels node, and the
         // single Device line is a per-item issue.
-        XCTAssertFalse(plan.startsWithExplicitChannelNode)
+        XCTAssertNotEqual(plan.nodes.first?.kind, .channels)
         XCTAssertFalse(plan.hasMultipleDeviceSections)
         XCTAssertEqual(plan.issues.map(\.category), [.deviceGate])
     }
@@ -245,6 +245,9 @@ final class M1EqualizerAPOConfigImporterTests: XCTestCase {
         )
         XCTAssertEqual(plan.nodes.map(\.kind), [.preamp])
         XCTAssertEqual(plan.issues.map(\.category), [.includeFailure])
+        // The failure is attributed to the includer's location.
+        XCTAssertEqual(plan.issues[0].fileIndex, 0)
+        XCTAssertEqual(plan.issues[0].lineNumber, 1)
     }
 
     // MARK: - Convolution paths
@@ -323,7 +326,7 @@ final class M1EqualizerAPOConfigImporterTests: XCTestCase {
         }
         XCTAssertEqual(labels.map(\.rawValue), ["1", "2", "C"])
         XCTAssertEqual(plan.issues.map(\.category), [.invalidLine])
-        XCTAssertTrue(plan.startsWithExplicitChannelNode)
+        XCTAssertEqual(plan.nodes.first?.kind, .channels)
     }
 
     // MARK: - Hard failures
@@ -388,5 +391,98 @@ final class M1EqualizerAPOConfigImporterTests: XCTestCase {
         let missing = FileManager.default.temporaryDirectory
             .appendingPathComponent("m14-missing-\(UUID().uuidString).txt")
         XCTAssertThrowsError(try reader.readText(at: missing))
+    }
+
+    func testDiskReaderFallsBackToLatin1Encoding() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("m14-ansi-\(UUID().uuidString).txt")
+        let content = "Preamp: -3 dB\n# Kommentar mit ä\n"
+        try content.data(using: .isoLatin1)!.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        XCTAssertEqual(try M1DiskConfigFileReader().readText(at: url), content)
+    }
+
+    func testIncludeRestoresOuterAllScopeAfterScopedInnerFile() throws {
+        let plan = try makePlan(
+            """
+            Preamp: -6 dB
+            Include: scoped.txt
+            Preamp: -3 dB
+            """,
+            files: [
+                "/fake/config/scoped.txt": """
+                Filter: ON HP Fc 30 Hz
+                Channel: R
+                """,
+            ]
+        )
+        // A restore node returns the chain to the outer implicit-all scope.
+        XCTAssertEqual(
+            plan.nodes.map(\.kind),
+            [.preamp, .filter, .channels, .channels, .preamp]
+        )
+        XCTAssertEqual(plan.nodes[2].channels, .identifiers([M1ChannelIdentifier("R")!]))
+        XCTAssertEqual(plan.nodes[3].channels, .all)
+    }
+
+    func testIncludeRestoresOuterScopedSelectionAfterInnerChange() throws {
+        let plan = try makePlan(
+            """
+            Channel: L
+            Include: scoped.txt
+            Delay: 10 ms
+            """,
+            files: [
+                "/fake/config/scoped.txt": """
+                Channel: R
+                Filter: ON HP Fc 30 Hz
+                """,
+            ]
+        )
+        XCTAssertEqual(
+            plan.nodes.map(\.kind),
+            [.channels, .channels, .filter, .channels, .delay]
+        )
+        XCTAssertEqual(plan.nodes[0].channels, .identifiers([M1ChannelIdentifier("L")!]))
+        XCTAssertEqual(plan.nodes[3].channels, .identifiers([M1ChannelIdentifier("L")!]))
+    }
+
+    func testFilterLineLimitAbortsWholeImport() {
+        let maximum = M1EqualizerAPOTextCodec.maximumFilterLines
+        var lines = ""
+        for index in 1...(maximum + 1) {
+            lines += "Filter \(index): ON PK Fc \(100 + index) Hz Gain 1 dB Q 1\n"
+        }
+        XCTAssertThrowsError(try makePlan(lines)) { error in
+            XCTAssertEqual(
+                error as? M1EqualizerAPOConfigImporterError,
+                .filterLineLimitExceeded(count: maximum + 1, maximum: maximum)
+            )
+        }
+    }
+
+    func testReaderSizeErrorIsNotMaskedAsUnreadable() {
+        XCTAssertThrowsError(
+            try M1EqualizerAPOConfigImporter.makePlan(mainFile: mainURL) { _ in
+                throw M1EqualizerAPOConfigImporterError.totalSizeLimitExceeded(
+                    bytes: 5_000_000,
+                    maximum: M1EqualizerAPOConfigImporter.maximumTotalBytes
+                )
+            }
+        ) { error in
+            guard case .totalSizeLimitExceeded = error as! M1EqualizerAPOConfigImporterError else {
+                return XCTFail("expected totalSizeLimitExceeded to propagate")
+            }
+        }
+    }
+
+    func testOrphanConditionalKeywordsAreReported() throws {
+        let plan = try makePlan("""
+        EndIf:
+        Preamp: -3 dB
+        """)
+        XCTAssertEqual(plan.nodes.map(\.kind), [.preamp])
+        XCTAssertEqual(plan.issues.map(\.category), [.invalidLine])
+        XCTAssertEqual(plan.issues.map(\.command), ["EndIf"])
     }
 }

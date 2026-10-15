@@ -50,6 +50,8 @@ extension M1PresentationMessage {
             "The selected configuration expands to \(bytes) bytes, above the \(maximum)-byte limit; nothing was imported."
         case let .importedGraphicEQPointLimitExceeded(count, maximum):
             "The file has a GraphicEQ line with \(count) points, above the \(maximum)-point limit; nothing was imported."
+        case let .importedFilterLineLimitExceeded(count, maximum):
+            "The file has \(count) Filter lines, above the \(maximum)-line limit; nothing was imported."
         case .terminationCancelled:
             "Termination cancelled"
         case let .technical(reason):
@@ -113,6 +115,11 @@ extension M1PresentationMessage {
         case let .importedGraphicEQPointLimitExceeded(count, maximum):
             String(
                 localized: "The file has a GraphicEQ line with \(count) points, above the \(maximum)-point limit; nothing was imported.",
+                locale: locale
+            )
+        case let .importedFilterLineLimitExceeded(count, maximum):
+            String(
+                localized: "The file has \(count) Filter lines, above the \(maximum)-line limit; nothing was imported.",
                 locale: locale
             )
         case .terminationCancelled:
@@ -385,10 +392,7 @@ final class M1AppModel: ObservableObject {
         performEdit { try await self.controller.applyImport(mode) }
     }
     func cancelImport() {
-        Task {
-            await controller.cancelImport()
-            snapshot = await controller.snapshot()
-        }
+        perform { await self.controller.cancelImport() }
     }
     func moveSelection(to index: Int, operation: M1NodeDragOperation) {
         performEdit {
