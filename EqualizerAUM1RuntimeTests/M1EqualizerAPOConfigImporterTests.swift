@@ -218,9 +218,57 @@ final class M1EqualizerAPOConfigImporterTests: XCTestCase {
         )
         XCTAssertEqual(plan.nodes.map(\.kind), [.filter, .preamp])
         XCTAssertEqual(plan.issues.count, 1)
-        XCTAssertEqual(plan.issues[0].category, .includeFailure)
+        XCTAssertEqual(plan.issues[0].category, .includeDuplicate)
         XCTAssertEqual(plan.issues[0].fileIndex, 1)
         XCTAssertEqual(plan.issues[0].lineNumber, 2)
+    }
+
+    func testDiamondIncludeLoadsSharedFileOnceAsDuplicate() throws {
+        let plan = try makePlan(
+            """
+            Include: headphones.txt
+            Include: speakers.txt
+            """,
+            files: [
+                "/fake/config/headphones.txt": """
+                Include: common.txt
+                Filter: ON HP Fc 30 Hz
+                """,
+                "/fake/config/speakers.txt": """
+                Include: common.txt
+                Filter: ON LP Fc 8000 Hz
+                """,
+                "/fake/config/common.txt": "Preamp: -6 dB\n",
+            ]
+        )
+        // common.txt nodes appear once; the second include is reported as a
+        // duplicate, not a failure (flat chain model, ADR-0024).
+        XCTAssertEqual(
+            plan.nodes.map(\.kind),
+            [.preamp, .filter, .filter]
+        )
+        XCTAssertEqual(plan.issues.count, 1)
+        XCTAssertEqual(plan.issues[0].category, .includeDuplicate)
+        // Load order: config, headphones, common, speakers — the second
+        // include of common.txt originates from speakers.txt (index 3).
+        XCTAssertEqual(plan.issues[0].fileIndex, 3)
+        XCTAssertEqual(plan.issues[0].lineNumber, 1)
+    }
+
+    func testNodeCountLimitAbortsWholeImport() {
+        var lines = ""
+        for _ in 1...(M1EqualizerAPOConfigImporter.maximumNodeCount + 1) {
+            lines += "Preamp: -3 dB\n"
+        }
+        XCTAssertThrowsError(try makePlan(lines)) { error in
+            XCTAssertEqual(
+                error as? M1EqualizerAPOConfigImporterError,
+                .nodeLimitExceeded(
+                    count: M1EqualizerAPOConfigImporter.maximumNodeCount + 1,
+                    maximum: M1EqualizerAPOConfigImporter.maximumNodeCount
+                )
+            )
+        }
     }
 
     func testIncludeBeyondDepthBudgetFailsWithoutLoadingDeepestFile() throws {

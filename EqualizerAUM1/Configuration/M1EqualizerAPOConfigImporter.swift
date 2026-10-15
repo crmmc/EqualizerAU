@@ -19,8 +19,11 @@ enum M1APOImportIssueCategory: Equatable, Sendable {
     case convolutionPath
     /// Convolution source extension is outside the supported WAV set.
     case convolutionFormat
-    /// Include target unreadable, cyclic, or beyond the depth budget.
+    /// Include target unreadable or beyond the depth budget.
     case includeFailure
+    /// Include target was already loaded once (cycle or diamond include);
+    /// the flat chain model loads every file at most once (ADR-0024).
+    case includeDuplicate
 }
 
 struct M1APOImportIssue: Equatable, Sendable {
@@ -50,6 +53,7 @@ enum M1EqualizerAPOConfigImporterError: Error, Equatable, Sendable {
     case totalSizeLimitExceeded(bytes: Int, maximum: Int)
     case graphicEQPointLimitExceeded(count: Int, maximum: Int)
     case filterLineLimitExceeded(count: Int, maximum: Int)
+    case nodeLimitExceeded(count: Int, maximum: Int)
 }
 
 /// Parses a full EqualizerAPO configuration file (plus its `Include:` chain)
@@ -93,6 +97,10 @@ enum M1EqualizerAPOConfigImporter {
     static let maximumTotalBytes = 4 * 1024 * 1024
     static let maximumIncludeDepth = 8
     static let maximumPreampDB = 100.0
+    /// Whole-plan node budget; the product model is a flat single-level chain,
+    /// so pathological deep include graphs abort instead of adapting (M14
+    /// decision, ADR-0024).
+    static let maximumNodeCount = 1024
 
     /// Commands that would map to nodes but are skipped when they carry
     /// inline backtick expressions.
@@ -108,6 +116,12 @@ enum M1EqualizerAPOConfigImporter {
         try loadFile(url: mainFile, depth: 0, required: true, read: read, context: &context)
         guard context.recognizedCommandCount > 0 else {
             throw M1EqualizerAPOConfigImporterError.noRecognizedCommands
+        }
+        guard context.nodes.count <= maximumNodeCount else {
+            throw M1EqualizerAPOConfigImporterError.nodeLimitExceeded(
+                count: context.nodes.count,
+                maximum: maximumNodeCount
+            )
         }
         var nodeCountByKind: [M1ProcessingNodeKind: Int] = [:]
         for node in context.nodes {
@@ -159,11 +173,13 @@ enum M1EqualizerAPOConfigImporter {
                 throw M1EqualizerAPOConfigImporterError.fileUnreadable(path: url.path)
             }
             // Attribute the failure to the includer's location so the report
-            // can point at a real file and line.
+            // can point at a real file and line. The main file (required)
+            // never reaches this branch, so `origin` is always present.
+            guard let origin else { return }
             context.issues.append(
                 M1APOImportIssue(
-                    fileIndex: origin?.fileIndex ?? context.fileNames.count,
-                    lineNumber: origin?.lineNumber ?? 0,
+                    fileIndex: origin.fileIndex,
+                    lineNumber: origin.lineNumber,
                     command: "Include",
                     category: .includeFailure
                 )
@@ -536,9 +552,9 @@ enum M1EqualizerAPOConfigImporter {
             ? URL(fileURLWithPath: path)
             : baseDirectory.appendingPathComponent(path).standardizedFileURL
         if context.visitedPaths.contains(url.path) {
-            // Include cycle: stop at the already-loaded file and report
-            // against the includer's line.
-            context.issues.append(issue(fileIndex, lineNumber, "Include", .includeFailure))
+            // Cycle or diamond include: every file loads at most once in the
+            // flat chain model; reported as a duplicate, not a failure.
+            context.issues.append(issue(fileIndex, lineNumber, "Include", .includeDuplicate))
             return
         }
         try loadFile(

@@ -648,7 +648,9 @@ struct EqualizerAUM1App: App {
                         model.importEqualizerAPOConfiguration(from: url)
                     }
                 }
-                    .disabled(!model.snapshot.canEdit)
+                    .disabled(
+                        !model.snapshot.canEdit || model.snapshot.pendingImport != nil
+                    )
                 Divider()
                 Menu("Processor Selection") {
                     Button("Move Focus Up") { model.moveFocus(by: -1, extending: false) }
@@ -2872,6 +2874,11 @@ private struct M1ImportPreviewSheet: View {
             return String(localized: "format may be unsupported (WAV only)", locale: m1ApplicationLocale)
         case .includeFailure:
             return String(localized: "included file could not be loaded", locale: m1ApplicationLocale)
+        case .includeDuplicate:
+            return String(
+                localized: "already included once; duplicate skipped",
+                locale: m1ApplicationLocale
+            )
         }
     }
 

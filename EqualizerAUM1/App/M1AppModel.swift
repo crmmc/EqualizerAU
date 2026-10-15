@@ -52,6 +52,8 @@ extension M1PresentationMessage {
             "The file has a GraphicEQ line with \(count) points, above the \(maximum)-point limit; nothing was imported."
         case let .importedFilterLineLimitExceeded(count, maximum):
             "The file has \(count) Filter lines, above the \(maximum)-line limit; nothing was imported."
+        case let .importedNodeLimitExceeded(count, maximum):
+            "The file imports to \(count) nodes in total, above the \(maximum)-node import limit; nothing was imported."
         case .terminationCancelled:
             "Termination cancelled"
         case let .technical(reason):
@@ -120,6 +122,11 @@ extension M1PresentationMessage {
         case let .importedFilterLineLimitExceeded(count, maximum):
             String(
                 localized: "The file has \(count) Filter lines, above the \(maximum)-line limit; nothing was imported.",
+                locale: locale
+            )
+        case let .importedNodeLimitExceeded(count, maximum):
+            String(
+                localized: "The file imports to \(count) nodes in total, above the \(maximum)-node import limit; nothing was imported.",
                 locale: locale
             )
         case .terminationCancelled:

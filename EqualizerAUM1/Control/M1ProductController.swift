@@ -240,6 +240,7 @@ enum M1PresentationMessage: Equatable, Sendable {
     case importedConfigTooLarge(bytes: Int, maximum: Int)
     case importedGraphicEQPointLimitExceeded(count: Int, maximum: Int)
     case importedFilterLineLimitExceeded(count: Int, maximum: Int)
+    case importedNodeLimitExceeded(count: Int, maximum: Int)
     case terminationCancelled
     case technical(String)
 }
@@ -867,6 +868,8 @@ actor M1ProductController {
                 visibleError = .importedGraphicEQPointLimitExceeded(count: count, maximum: maximum)
             case .filterLineLimitExceeded(let count, let maximum):
                 visibleError = .importedFilterLineLimitExceeded(count: count, maximum: maximum)
+            case .nodeLimitExceeded(let count, let maximum):
+                visibleError = .importedNodeLimitExceeded(count: count, maximum: maximum)
             }
         } catch {
             visibleError = .technical(String(describing: error))

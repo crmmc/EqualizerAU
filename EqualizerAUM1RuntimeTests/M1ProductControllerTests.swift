@@ -187,6 +187,21 @@ final class M1ProductControllerTests: XCTestCase {
             snapshot.visibleError,
             .importedFilterLineLimitExceeded(count: maximum + 1, maximum: maximum)
         )
+
+        let nodeMaximum = M1EqualizerAPOConfigImporter.maximumNodeCount
+        var nodeLines = ""
+        for _ in 1...(nodeMaximum + 1) {
+            nodeLines += "Preamp: -3 dB\n"
+        }
+        await fixture.controller.importEqualizerAPOConfiguration(
+            from: URL(fileURLWithPath: "/mig/nodes.txt"),
+            reader: ImportReaderFake(files: ["/mig/nodes.txt": nodeLines])
+        )
+        snapshot = await fixture.controller.snapshot()
+        XCTAssertEqual(
+            snapshot.visibleError,
+            .importedNodeLimitExceeded(count: nodeMaximum + 1, maximum: nodeMaximum)
+        )
     }
 
     @MainActor

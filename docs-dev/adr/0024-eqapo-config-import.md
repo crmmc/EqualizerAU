@@ -42,13 +42,17 @@ PRD §3.2 长期目标"评估 EqualizerAPO 配置的部分导入"、§12 挂起"
      路径原样使用，Windows 绝对路径按原样保留为源路径（`URL(fileURLWithPath:)` 会把
      盘符路径当相对路径拼上工作目录，故不经 URL 转换）+ 问题项标注，用户可改路径复活
      （走 M8 缺失旁路契约）；非 WAV 扩展名标注"格式可能不受支持"，不硬拒。
-   - `Include:` 相对所在文件目录跟随加载，已访问集合防循环，深度上限 8；不可读/超深/
-     Windows 路径 → 问题项后继续（问题归属发起 Include 的文件与行号）。导入 + Include
-     展开总文本量 ≤ 4 MiB（磁盘读取器在加载前先查文件大小）。**作用域归位**：进入
-     Include 前记住当前作用域，返回后若被内层文件改变则补发一个 Channels 节点恢复到
-     记住的值（对齐参考实现 FilterEngine 的 save/restore；恢复到外层值，不是统一
-     all）。Windows 路径判定为盘符前缀 `^[A-Za-z]:[\\/]` 或 UNC `\\…`，裸冒号是合法
-     macOS 文件名不作 Windows 处理。
+   - `Include:` 相对所在文件目录跟随加载，深度上限 8；不可读/超深/Windows 路径 →
+     `includeFailure` 问题项后继续（问题归属发起 Include 的文件与行号）。**同一文件只
+     加载一次**：循环包含（A→B→A）与菱形包含（两个文件各包含同一公共文件）统一按
+     "已包含过，跳过重复包含"（`includeDuplicate`）报告——参考实现没有去重、菱形
+     公共文件会复制两份；本项目是扁平单层处理链，全局去重 + 深度上限 + 节点总量上限
+     把层级包含图约束为有界展开，不复制、不为深层级适配（2026-10-15 用户拍板）。
+     导入 + Include 展开总文本量 ≤ 4 MiB（磁盘读取器在加载前先查文件大小）。
+     **作用域归位**：进入 Include 前记住当前作用域，返回后若被内层文件改变则补发一
+     个 Channels 节点恢复到记住的值（对齐参考实现 FilterEngine 的 save/restore；
+     恢复到外层值，不是统一 all）。Windows 路径判定为盘符前缀 `^[A-Za-z]:[\\/]` 或
+     UNC `\\…`，裸冒号是合法 macOS 文件名不作 Windows 处理。
    - 磁盘读取编码：严格 UTF-8 优先，失败后 Latin-1 容错重读（对齐参考实现 UTF-8 →
      CP_ACP 回退；Latin-1 与 CP1252 仅 0x80–0x9F 区有差，配置文件该区罕见）。
    - `Device:`/`Stage:` 不做段落门控：段内其余指令照常导入；`Device:` 行计数 >1 时
@@ -74,11 +78,17 @@ PRD §3.2 长期目标"评估 EqualizerAPO 配置的部分导入"、§12 挂起"
 6. **可扩展性**：覆盖矩阵是数据不是结构——后续 Copy 声道混合节点等能力落地后，解析器
    增加对应行映射即可扩大覆盖（与 M12→M13 行粘贴的递进方式一致）。
 7. **Filter 行数上限**：导入路径沿用粘贴的 `maximumFilterLines`（512）整次中止契约，
-   超限抛 `filterLineLimitExceeded` 并映射为可见错误。
-8. **有意偏差补充**（2026-10-15 审查后固化）：`Preamp`/`Delay` 行按"恰好两个 token +
-   空格分隔"解析，比参考实现的流式前缀匹配更严（如 `Preamp: 6dB` 无空格形式报
-   invalidLine 而非接受）——方向是可见报告而非静默丢失；孤立 `Else`/`ElseIf`/`EndIf`
-   行报 invalidLine（参考实现静默忽略）。
+   超限抛 `filterLineLimitExceeded` 并映射为可见错误。**节点总量上限**：导入计划节点
+   总数 ≤ `maximumNodeCount`（1024），超出整次中止——扁平单层处理链的容量边界，
+   深层级包含图不做适配。
+8. **有意偏差补充**（2026-10-15 两轮审查后固化）：`Preamp`/`Delay` 行按"恰好两个
+   token + 空格分隔"解析，比参考实现的流式前缀匹配更严（如 `Preamp: 6dB` 无空格
+   形式报 invalidLine 而非接受）——方向是可见报告而非静默丢失；孤立
+   `Else`/`ElseIf`/`EndIf` 行报 invalidLine（参考实现静默忽略）；命令匹配大小写
+   不敏感（参考实现区分大小写，宽松方向无损）；裸 `Filter:` 空参数/仅状态词行静默
+   跳过（粘贴路径同类行计入 ignored 报告，口径差异已知）；`Channel: ALL L` 混写报
+   invalidLine（参考实现等效全选，极罕见）；`C:file.txt` 盘符相对路径按 Unix 相对
+   路径处理（极罕见）。
 
 ## 考虑过的替代方案
 
@@ -98,6 +108,8 @@ PRD §3.2 长期目标"评估 EqualizerAPO 配置的部分导入"、§12 挂起"
 
 ## 验证
 
-- `M1EqualizerAPOConfigImporterTests` 22 例、`M1EditingSessionTests` 导入 5 例、
-  `M1ProductControllerTests` 导入 5 例；全套 hostless 558 例 0 失败。
-- `make check`（含本地化一致性 + 隔离审计 + 实时审计）与 `make coverage` 门禁通过。
+- `M1EqualizerAPOConfigImporterTests` 30 例、`M1EditingSessionTests` 导入 5 例、
+  `M1ProductControllerTests` 导入 6 例、`M1AppModelTests` 导入 1 例；全套 hostless
+  569 例 0 失败。
+- `make check`（含本地化一致性 + 隔离审计 + 实时审计）与 `make coverage` 门禁通过
+  （导入器单文件 94.51%）。

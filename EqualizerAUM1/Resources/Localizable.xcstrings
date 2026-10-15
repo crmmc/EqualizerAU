@@ -2612,6 +2612,26 @@
           }
         }
       }
+    },
+    "The file imports to %lld nodes in total, above the %lld-node import limit; nothing was imported.": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件导入后共 %lld 个节点，超出 %lld 个节点的导入上限；未导入任何内容。"
+          }
+        }
+      }
+    },
+    "already included once; duplicate skipped": {
+      "localizations": {
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该文件已包含过；跳过重复包含"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
